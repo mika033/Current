@@ -60,6 +60,14 @@ Cross-product specifications live in the SnorkelAudioStandards repo (`mika033/Sn
 
 ---
 
+## Shared standards repo
+
+`mika033/SnorkelAudioStandards` is the source of truth for cross-product conventions and is available as a sibling repo in this workspace. When we start coding Current, pull in and follow (not re-derive):
+
+- `design/` — visual and UX rules, in particular `design/themes.md` for the Light/Dark theme palette and painting rules (every Snorkel plugin ships the same two themes, same colours, same cascade), plus `design/typography.md`, `design/panels-controls.md`, `design/tabs.md`, `design/steppers.md`, `design/grid-interaction.md`, `design/messaging-area.md`, and `design/modal-dialogs.md` for the rest of the shared UI language.
+- `build-scripts.md` — the canonical names, locations, and roles for the shell scripts at a plugin's repo root (`build_and_run_mac.sh`, `build_and_run_win.bat`, `run_mac.sh`, `generate_xcode.sh`, `release_mac.sh`, etc.). These look the same across all products; Current should reuse the same names and roles rather than inventing its own.
+- `preset-system-guideline.md` and `swing-timing.md` — likely relevant once Current has patches and stepped/generated timing.
+
 ## Status
 
 Not yet started. No code, build scripts, or UI decisions have been made. This file currently holds only the shared cross-plugin principles copied from SnorkelAudioStandards; plugin-specific sections (architecture, build instructions, naming glossary, UI conventions) will be added here as those decisions are made with the user.
