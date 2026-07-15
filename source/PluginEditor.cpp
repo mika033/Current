@@ -51,9 +51,7 @@ void CurrentAudioProcessorEditor::applyTheme()
     CurrentTheme::setActive (CurrentTheme::byIndex (idx));
     lookAndFeel.applyScheme (CurrentTheme::active());
 
-    // Repaint the whole tree so paint-time theme reads land everywhere.
+    // Repaint invalidates the whole subtree, so every child's paint-time theme
+    // read (MainView / MenuBar / Canvas / nodes) lands from this one call.
     repaint();
-    for (int i = 0; i < getNumChildComponents(); ++i)
-        if (auto* c = getChildComponent (i))
-            c->repaint();
 }
