@@ -28,7 +28,7 @@ Applied wherever it makes sense for a given generator:
 
 - **Scale**: two dropdowns. First sets the root (C, C#, ...), second sets the scale type (Major, Minor, ...).
 - **Rate**: e.g. 1/16. Locked to host tempo/transport, except in Standalone mode (no host to sync to) — handled the same way LAM solves this.
-- **Active from/to**: bar range in which the generator is active, e.g. only from bar 5 to 8.
+- **Active from/to**: bar range in which the generator is active, e.g. only from bar 5 to 8. Uses the host's absolute bar count, following the same approach as LAM.
 
 ### Initial (v1)
 
