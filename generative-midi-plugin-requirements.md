@@ -71,7 +71,7 @@ All modulators listed here are initial (v1), except the few marked as possible l
 
 Modulators that impose a rhythm on incoming melodic material, overriding the input's own timing (see Global settings and design decisions).
 
-- **Euclidean**: distributes N hits across M steps and applies that pattern to incoming pitch material. Pitch is fed from another module; Euclidean supplies timing only.
+- **Euclidean**: distributes N hits across M steps and applies that pattern to incoming pitch material. Pitch is fed from another module; Euclidean supplies timing only. On each hit, it retriggers whichever pitch(es) are currently held/active from the incoming stream (not a history buffer, not round-robin cycling); if multiple notes are held (a chord), the whole held set is retriggered together.
 
 ### Dynamics
 
@@ -80,7 +80,7 @@ Modulators that impose a rhythm on incoming melodic material, overriding the inp
 
 ### Routing
 
-- **Add**: two inputs, combines all incoming notes into one output.
+- **Add**: two inputs, combines all incoming notes into one output. Kept despite fan-in auto-summing making it functionally redundant: it gives users an explicit node to organize/label a merge point in the patch.
 - **Split / Router**: send notes to different outputs by pitch or condition, e.g. notes above C3 to one output, below to another.
 - **Chance Branch**: probabilistically route to output A or B.
 
@@ -109,19 +109,20 @@ The graph's endpoints. Both use ports like any other module.
 - A central canvas where the user drops modules.
 - Modules are connected port-to-port with flow arrows that show signal direction.
 - Modules can be freely moved around by the user.
-- Generators are drawn as squares, modulators as circles. I/O module shape is to be decided (see Open items).
-- Module types are distinguished by color and (optionally) a symbol indicating their function.
+- Generators are drawn as squares, modulators as circles. I/O modules are triangles: Input points right, Output points left.
+- Color encodes module family (pitch / time / dynamics / routing), not a unique color per module. A symbol identifies the specific module within its family.
 
 ### Interaction
 
 Gestures are shared between desktop and touch where possible:
 
 - **Select**: click / tap a module or a connection.
+- **Multi-select (marquee)**: drag on the empty canvas background selects all modules within the dragged rectangle. Supports group Copy / Paste / Duplicate.
 - **Move a module**: drag its body.
 - **Open settings**: double-click / double-tap a module.
 - **Connect**: drag from an output port to an input port. On touch, ports have enlarged hit targets, with a tap-output-then-tap-input alternative.
 - **Delete**: right-click or long-press for a context menu (delete, duplicate). On desktop, select and press Delete.
-- **Pan**: drag on the empty canvas background. Needed once patches grow large. Interacts with marquee select (see Selection open item).
+- **Pan**: secondary gesture, since empty-canvas drag is marquee select. Two-finger drag on touch; space+drag (or middle-click drag) on desktop.
 - **Zoom**: deferred for now.
 
 ### Module palette
@@ -131,26 +132,24 @@ Gestures are shared between desktop and touch where possible:
 ### Menu bar (above the canvas)
 
 - Global settings: root, scale, quantize.
-- Edit: Copy, Paste, Duplicate.
-- Load / Save.
+- Edit: Copy, Paste, Duplicate. Undo / Redo deferred to a later phase, not needed initially.
+- Load / Save: user presets, plus automatic persistence of state within the DAW project — both, following the shared `preset-system-guideline.md` convention (identity, storage locations, manager API) as already implemented in LAM.
 
 ## Open items
 
-### Modules
-
-- **Rhythm-application pitch selection**: when a rhythm-applying modulator (e.g. Euclidean) fires a hit, which pitch from the incoming stream does it play? Options: last note held, cycle through currently held notes, or a buffer of recent notes.
-- **Add module redundancy**: with fan-in auto-summing at every input, a dedicated Add module may be unnecessary. Decide whether to drop it or keep it for visual clarity.
-
-### UI
-
-- **Visual encoding**: color likely encodes family (pitch / time / dynamics / routing), with a symbol identifying the specific module, rather than a unique color per module. Also decide the shape for I/O modules (generators are squares, modulators circles).
-- **Selection**: single vs multi-select (marquee) to support Copy / Paste / Duplicate of groups. Must coexist with the pan gesture, since both would use empty-canvas drag.
-- **Undo / Redo**: not yet specified.
-- **Load / Save scope**: user presets vs automatic persistence of state within the DAW project.
+None currently — all resolved above.
 
 ## Phases
 
-### Phase 1: Canvas skeleton
+### Phase 1: Basics
+
+- Build scripts copied from an existing Snorkel plugin (e.g. LAM) and adjusted for Current, per the shared `build-scripts.md` naming/roles convention.
+- A stub app builds and runs as VST3, AU, and Standalone, showing an empty UI window.
+- Basic UI layout is in place: canvas area, menu bar, and a module section (palette). Canvas and module section are empty placeholders.
+- Menu bar is empty except for a Light/Dark theme toggle button.
+- Light/Dark theme switching works, following the shared `design/themes.md` palette and painting rules.
+
+### Phase 2: Canvas skeleton
 
 - Canvas is functional: modules can be dragged in from the palette and moved around.
 - Palette offers two generators and two modulators only (specific modules to be chosen).
