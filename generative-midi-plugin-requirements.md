@@ -161,4 +161,4 @@ None currently — all resolved above.
 
 ### Later phases
 
-To be defined.
+Phase 3 onward will be scoped after testing the results of Phase 2, not defined upfront.
