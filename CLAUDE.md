@@ -70,4 +70,24 @@ Cross-product specifications live in the SnorkelAudioStandards repo (`mika033/Sn
 
 ## Status
 
-Not yet started. No code, build scripts, or UI decisions have been made. This file currently holds only the shared cross-plugin principles copied from SnorkelAudioStandards; plugin-specific sections (architecture, build instructions, naming glossary, UI conventions) will be added here as those decisions are made with the user.
+Phase 1 (canvas skeleton) is implemented, per `generative-midi-plugin-requirements.md`. The plugin builds and runs on Linux (VST3 + Standalone); macOS/Windows/iPad targets and the generative engine are not yet done. Phase 2 has deliberately not been touched.
+
+## Build instructions
+
+- Linux: `./build_and_run_linux.sh` builds the VST3 + Standalone into `build-linux/`, installs the VST3 into `~/.vst3`, and launches the Standalone. Pass `--no-run` to build only (e.g. headless/CI — there's no display to open a window on). First configure fetches JUCE 8.0.12 via FetchContent, so it takes a few minutes; later builds are incremental.
+- Linux dev deps (Ubuntu): `libasound2-dev`, `libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libxcomposite-dev libxrender-dev`, `libgl1-mesa-dev`, `libfreetype-dev libfontconfig1-dev`.
+- macOS/Windows scripts (`build_and_run_mac.sh`, etc.) are not yet ported from Little Arp Monster; only Linux exists so far.
+
+## Phase 1 architecture
+
+Fresh, minimal JUCE plugin. The self-contained `Theme` (two-scheme Light/Dark palette) and `InlineDialog` helpers are adapted from Little Arp Monster; everything else is new to Current.
+
+- `CurrentAudioProcessor` — a MIDI-effect skeleton. No generative engine yet: `processBlock` clears audio and passes MIDI through untouched. APVTS holds the global settings (`root`, `scale`, `quantize`) plus a `theme` param. It also owns the **canvas model** — a `std::vector<ModuleInstance>` (type + x/y) — which is serialized in the DAW project state (a `<Canvas>` child of the APVTS tree). This is state persistence, NOT the user-facing Load/Save, which Phase 1 omits. The model is message-thread only for now; when an engine lands and `processBlock` starts consuming the graph, that handoff needs revisiting.
+- `CurrentAudioProcessorEditor` — derives from `DragAndDropContainer` (must be an ancestor of both the palette and the canvas). Owns the `CurrentLookAndFeel`, hosts `MainView`, and provides `showInlineDialog()` + `applyTheme()`.
+- `MainView` — lays out `MenuBar` (top), `Canvas` (middle), `PaletteBar` (bottom).
+- `MenuBar` — global-settings combos/toggle bound to the APVTS, plus the Theme switch. Edit / Load-Save menus are deferred.
+- `Canvas` — the `DragAndDropTarget` drop surface. Rebuilds nodes from the processor model, writes adds/moves/removes back to it, and opens the settings placeholder on a node's double-click.
+- `ModuleComponent` — a draggable node. Generators paint as squares, modulators as circles; colour encodes the family (see `Theme` genFill/modFill/ioFill). Ports are drawn but decorative — wiring is a later phase.
+- `PaletteBar` / `ModuleTypes` — the Phase 1 catalogue: generators **Arp**, **Random**; modulators **Quantize**, **Shift**. New modules slot in by extending the `ModuleType` enum + `moduleCatalogue()`.
+
+Deferred to later phases (out of scope for Phase 1): real module DSP, port wiring / connections, pan & zoom, marquee/multi-select, undo/redo, and user preset Load/Save.

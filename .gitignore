@@ -1,0 +1,12 @@
+# Build output
+build-linux/
+build-mac/
+build-win/
+build/
+
+# Editor / OS cruft
+.DS_Store
+compile_commands.json
+.cache/
+.vscode/
+.idea/
