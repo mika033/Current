@@ -9,6 +9,7 @@ The user has a canvas onto which they drag modules. Modules come in three kinds:
 ## Global settings and design decisions
 
 - **Pitch and rhythm travel together**: modules pass full note events (pitch and timing together), not separate pitch and trigger signals.
+- **Note event format**: a note event is standard MIDI (note on/off with pitch, velocity, channel, timing) — no custom internal data format. The data flowing between module ports is the same shape as what an Output module sends to the host.
 - **Global root / scale / quantize**: there are global root, scale, and quantize settings. By default, modules use the global settings. A module may ignore them or override them locally.
 - **Deterministic vs probabilistic**: decided per module, not a global switch.
 - **Rhythm-applying modulators**: a class of modulators takes existing melodic material and applies a rhythm to it, and may override the input's existing timing. This is distinct from gating (e.g. Rhythm), which masks notes but keeps their timing.
@@ -26,7 +27,7 @@ The user has a canvas onto which they drag modules. Modules come in three kinds:
 Applied wherever it makes sense for a given generator:
 
 - **Scale**: two dropdowns. First sets the root (C, C#, ...), second sets the scale type (Major, Minor, ...).
-- **Rate**: e.g. 1/16.
+- **Rate**: e.g. 1/16. Locked to host tempo/transport, except in Standalone mode (no host to sync to) — handled the same way LAM solves this.
 - **Active from/to**: bar range in which the generator is active, e.g. only from bar 5 to 8.
 
 ### Initial (v1)
