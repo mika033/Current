@@ -62,6 +62,7 @@ juce_add_plugin(Current
 target_sources(Current PRIVATE
     source/PluginProcessor.cpp
     source/PluginEditor.cpp
+    source/Engine.cpp
     source/MainView.cpp
     source/MenuBar.cpp
     source/Canvas.cpp
@@ -87,3 +88,28 @@ target_link_libraries(Current PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags
 )
+
+# ---------------------------------------------------------------------------
+# Headless engine smoke test (off by default). Enable with
+# -DCURRENT_BUILD_TESTS=ON to build + run it; it links only the engine and the
+# JUCE modules it needs, no plugin wrappers.
+# ---------------------------------------------------------------------------
+option(CURRENT_BUILD_TESTS "Build the headless engine smoke test" OFF)
+if(CURRENT_BUILD_TESTS)
+    juce_add_console_app(current_engine_test)
+    target_sources(current_engine_test PRIVATE
+        tools/engine_smoketest.cpp
+        source/Engine.cpp
+    )
+    target_include_directories(current_engine_test PRIVATE include)
+    target_compile_definitions(current_engine_test PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+    )
+    target_link_libraries(current_engine_test PRIVATE
+        juce::juce_audio_processors
+        juce::juce_audio_basics
+        juce::juce_core
+        juce::juce_recommended_config_flags
+    )
+endif()

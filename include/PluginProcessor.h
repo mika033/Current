@@ -2,7 +2,9 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <vector>
+#include <atomic>
 #include "ModuleTypes.h"
+#include "Engine.h"
 
 // Parameter ids for the global settings. Central so the editor's combos and the
 // processor's APVTS layout can't drift.
@@ -74,10 +76,26 @@ public:
 private:
     juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
+    // Publish which module types are present for the audio thread. Called on the
+    // message thread after any change to moduleList; read lock-free (per-flag
+    // atomics) in processBlock. Position never affects DSP in Phase 1, so only
+    // presence is published.
+    void refreshEngineConfig();
+
     juce::AudioProcessorValueTreeState parameters;
 
     std::vector<ModuleInstance> moduleList;
     int nextModuleId = 1;
+
+    // Audio-thread-facing engine + its config snapshot.
+    Engine engine;
+    std::atomic<bool> engHasArp { false }, engHasRandom { false },
+                      engHasQuantize { false }, engHasShift { false };
+
+    // Cached parameter pointers (set in the ctor, read every block).
+    std::atomic<float>* rootParam     = nullptr;
+    std::atomic<float>* scaleParam    = nullptr;
+    std::atomic<float>* quantizeParam = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CurrentAudioProcessor)
 };

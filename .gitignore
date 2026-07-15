@@ -1,8 +1,5 @@
 # Build output
-build-linux/
-build-mac/
-build-win/
-build/
+build*/
 
 # Editor / OS cruft
 .DS_Store
