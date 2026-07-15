@@ -68,6 +68,28 @@ Cross-product specifications live in the SnorkelAudioStandards repo (`mika033/Sn
 - `build-scripts.md` — the canonical names, locations, and roles for the shell scripts at a plugin's repo root (`build_and_run_mac.sh`, `build_and_run_win.bat`, `run_mac.sh`, `generate_xcode.sh`, `release_mac.sh`, etc.). These look the same across all products; Current should reuse the same names and roles rather than inventing its own.
 - `preset-system-guideline.md` and `swing-timing.md` — likely relevant once Current has patches and stepped/generated timing.
 
+## Build
+
+`./build_and_run_mac.sh` is the dev loop: configures `build-mac/` with the Xcode generator, builds Debug, installs the VST3/AU bundles via CMake's `COPY_PLUGIN_AFTER_BUILD`, launches the Standalone. `./run_mac.sh` relaunches without rebuilding. `./generate_xcode.sh` is configure-only, same `build-mac/` dir, for opening the project in Xcode directly. `./generate_compile_commands.sh` builds a separate `build-clangd/` side dir for the LSP; re-run it after adding/removing files in `CMakeLists.txt`'s `target_sources`. `build_and_run_win.bat` is the Windows counterpart (`build_and_run_win.bat product` for a Release build). Formats are VST3 + AU + Standalone on Mac, VST3 + Standalone on Windows; AUv3/iPad packaging (screen-size AUM tags, plist patching) isn't set up yet since Phase 1 has nothing on the canvas worth testing on a device.
+
+JUCE is pulled via CMake `FetchContent` at configure time, pinned to tag `8.0.14`. No vendored JUCE checkout in this repo.
+
+## Naming and architecture
+
+`CurrentAudioProcessor` / `CurrentAudioProcessorEditor` are the plugin's processor/editor pair (`source/PluginProcessor.*`, `source/PluginEditor.*`). `source/UI/` holds cross-cutting editor chrome: `ColourScheme.h` (the Light/Dark palette per `themes.md`), `PluginLookAndFeel.*` (the `LookAndFeel_V4` subclass, `kUiFontSize`), `InlineDialog.*` (the modal-dialogs.md helper), `GlobalSettingsBar.*` (root/scale/quantize row). `source/Canvas/` holds the canvas itself: `CanvasComponent` (drop target + module container), `ModulePalette` (the drag source tray), `ModuleComponent` (a module instance on the canvas). `source/Modules/ModuleType.h` is the module identity table (type, generator/modulator kind, display name) - the single place that knows which modules exist.
+
+Inline-dialog entry point per `modal-dialogs.md §1.2`: `CurrentAudioProcessorEditor::showInlineDialog(title, message)`, backed by the `InlineDialog` component declared in `source/UI/InlineDialog.h`.
+
+`kUiFontSize` (`source/UI/PluginLookAndFeel.h`) is `15.0f`, matching LAM - `typography.md §2` left LAM's 15pt vs WB's 14pt as an open cross-plugin decision; picked LAM's since it's also the canonical `StepperControl` source Current will likely pull in later.
+
+Native canvas is `1100 x 750` (`PluginEditor.h`), split into a 44px settings bar, canvas filling the middle, and a 100px palette tray at the bottom. Resizable 0.75x-2.00x, aspect-locked, desktop-only for now (see `resize-scaling.md §1` and its open items 2.1/2.2 - Current picked the 2.00x cap, matching LAM/LDM over WC's 2.50x).
+
+Module family colour is one flat colour per kind (`ColourScheme::generatorFill` / `modulatorFill`) rather than a finished pitch/time/dynamics/routing taxonomy - the requirements doc leaves that taxonomy as an open item, and Phase 1 only has two kinds on the palette to distinguish.
+
 ## Status
 
-Not yet started. No code, build scripts, or UI decisions have been made. This file currently holds only the shared cross-plugin principles copied from SnorkelAudioStandards; plugin-specific sections (architecture, build instructions, naming glossary, UI conventions) will be added here as those decisions are made with the user.
+Phase 1 (Canvas skeleton) is implemented: canvas with drag-in-from-palette and free module movement, palette with Random/Arp (generators) and Quantize/Rhythm (modulators), global root/scale/quantize row (no functional effect yet), double-click opens the placeholder `InlineDialog`. No connections/ports, no delete/duplicate, no Load/Save, no Edit menu - all deferred past Phase 1's literal scope (see requirements doc "Phase 1"). No DSP: `CurrentAudioProcessor::processBlock` passes MIDI through untouched: Phase 1 is the visual/interaction skeleton only, not a running signal graph.
+
+Verified this session by building Standalone + VST3 on a Linux sandbox (JUCE supports Linux; this repo has no Linux build script since Mac/Windows/iPad are the real targets) and driving the running Standalone under Xvfb with synthetic mouse events: palette drag-to-canvas, module move, double-click-opens-dialog, and the combo popup behaviour all confirmed visually. Not yet built or run on an actual Mac.
+
+Next decisions for a future session: which two generators/two modulators stay for Phase 2 vs. the full roster, the rhythm-application pitch-selection question, and whether connections (ports, drag-a-wire) are the next phase or global settings actually wiring into module defaults is.

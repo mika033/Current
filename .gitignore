@@ -1,0 +1,9 @@
+build-mac/
+build-win/
+build-ios/
+build-sim/
+build-clangd/
+build-linux/
+compile_commands.json
+ios_team_id
+.DS_Store
