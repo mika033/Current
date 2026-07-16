@@ -70,4 +70,17 @@ Cross-product specifications live in the SnorkelAudioStandards repo (`mika033/Sn
 
 ## Status
 
-Not yet started. No code, build scripts, or UI decisions have been made. This file currently holds only the shared cross-plugin principles copied from SnorkelAudioStandards; plugin-specific sections (architecture, build instructions, naming glossary, UI conventions) will be added here as those decisions are made with the user.
+Phase 2 (canvas skeleton) is implemented, per `generative-midi-plugin-requirements.md`. Because the canvas-skeleton work builds the whole editor shell, it also subsumes Phase 1 (basics) — there is no separate basics-only build. The plugin builds and runs on Linux (VST3 + Standalone); macOS/Windows/iPad targets, port wiring/connections, and the real generative engine are not yet done. See `ARCHITECTURE.md` for the full picture.
+
+Note on numbering: the requirements doc was renumbered after this code was first written (a new "Phase 1: Basics" was inserted, pushing the canvas skeleton to Phase 2). If you find any stray "Phase 1" comment that describes the canvas/engine, read it as Phase 2.
+
+## Build instructions
+
+- Linux: `./build_and_run_linux.sh` builds the VST3 + Standalone into `build-linux/`, installs the VST3 into `~/.vst3`, and launches the Standalone. Pass `--no-run` to build only (e.g. headless/CI — there's no display to open a window on). First configure fetches JUCE 8.0.12 via FetchContent, so it takes a few minutes; later builds are incremental.
+- Headless engine test: configure with `-DCURRENT_BUILD_TESTS=ON` to build `current_engine_test` (`tools/engine_smoketest.cpp`), which asserts the fixed-default engine behaviours and the note-on/off balance.
+- Linux dev deps (Ubuntu): `libasound2-dev`, `libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libxcomposite-dev libxrender-dev`, `libgl1-mesa-dev`, `libfreetype-dev libfontconfig1-dev`.
+- macOS/Windows scripts (`build_and_run_mac.sh`, etc.) are not yet ported from Little Arp Monster; only Linux exists so far.
+
+## Architecture
+
+Full architecture — the message-thread/audio-thread split, every component, the module-catalogue extension point, and what is deliberately deferred — lives in `ARCHITECTURE.md`. Keep it current as the plugin grows.
