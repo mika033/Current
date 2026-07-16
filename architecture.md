@@ -174,6 +174,13 @@ scheme so both themes can tune them.
   app (tools/engine_smoketest.cpp) asserting the engine's fixed-default
   behaviours and, above all, note-on/note-off balance across pass-through,
   modulators, generators, and transport stop. Run it after any engine change.
+- The VST3 passes pluginval at strictness 10 (including Steinberg's embedded
+  vst3validator — which is what required the named default program in
+  getProgramName, and the editor/state/automation stress tests). pluginval
+  isn't vendored; build it from github.com/Tracktion/pluginval and run
+  `pluginval --strictness-level 10 --validate ~/.vst3/Current.vst3` (under
+  Xvfb if headless). Worth re-running before releases and after processor /
+  parameter / state changes.
 - macOS / Windows / iPad targets and their build scripts are not ported yet;
   CMakeLists.txt already carries the universal-binary setup for macOS.
 
