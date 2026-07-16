@@ -46,6 +46,11 @@ private:
     void selectNode (ModuleComponent* node);
     void deleteSelected();
 
+    // The I/O modules' settings dialog (their MIDI channel) and the node
+    // sublabel that mirrors the choice.
+    void openChannelDialog (ModuleComponent& node);
+    static juce::String channelSublabel (ModuleType type, int channel);
+
     CurrentAudioProcessor&        proc;
     CurrentAudioProcessorEditor&  owner;
 

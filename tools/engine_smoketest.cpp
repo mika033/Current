@@ -153,7 +153,107 @@ int main()
         check (ons == offs, "Arp: every note-on balanced by a note-off after stop");
     }
 
-    // --- 6. ScaleTables spot checks -----------------------------------------
+    // --- 6. MIDI In: channel filter drops non-matching input ----------------
+    {
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasMidiIn = true;
+        cfg.inChannelMask = (std::uint16_t) (1u << (2 - 1));   // channel 2 only
+
+        auto midi = noteOnBuf (60, 0, /*chan*/1);
+        e.process (midi, block, playing (false), 0, 0, false, cfg);
+        int ons = 0, offs = 0; tally (midi, ons, offs);
+        check (ons == 0, "MIDI In on ch 2 drops a ch-1 note");
+
+        auto midi2 = noteOnBuf (60, 0, /*chan*/2);
+        e.process (midi2, block, playing (false), 0, 0, false, cfg);
+        ons = 0; offs = 0; tally (midi2, ons, offs);
+        check (ons == 1, "MIDI In on ch 2 passes a ch-2 note");
+    }
+
+    // --- 7. Output: restamps channel, note-off follows ----------------------
+    {
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasOutput = true;
+        cfg.outChannelMask = (std::uint16_t) (1u << (5 - 1));   // channel 5
+
+        juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::noteOn  (1, 60, (juce::uint8) 100), 0);
+        midi.addEvent (juce::MidiMessage::noteOff (1, 60), 256);
+        e.process (midi, block, playing (false), 0, 0, false, cfg);
+        int onCh = -1, offCh = -1;
+        for (const auto meta : midi)
+        {
+            const auto m = meta.getMessage();
+            if (m.isNoteOn())  onCh  = m.getChannel();
+            if (m.isNoteOff()) offCh = m.getChannel();
+        }
+        check (onCh == 5,  "Output restamps the note-on to ch 5");
+        check (offCh == 5, "Output restamps the note-off to ch 5 (no hang)");
+    }
+
+    // --- 8. Two Outputs: stream duplicated onto both channels ---------------
+    {
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasOutput = true;
+        cfg.outChannelMask = (std::uint16_t) ((1u << (2 - 1)) | (1u << (3 - 1)));
+
+        juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::noteOn  (1, 60, (juce::uint8) 100), 0);
+        midi.addEvent (juce::MidiMessage::noteOff (1, 60), 256);
+        e.process (midi, block, playing (false), 0, 0, false, cfg);
+        int ons = 0, offs = 0; tally (midi, ons, offs);
+        check (ons == 2 && offs == 2, "two Outputs duplicate the note onto both channels");
+    }
+
+    // --- 9. Output channel changed mid-note: off still matches the on -------
+    {
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasOutput = true;
+        cfg.outChannelMask = (std::uint16_t) (1u << (2 - 1));   // on goes out on ch 2
+
+        auto midi = noteOnBuf (60, 0, 1);
+        e.process (midi, block, playing (false), 0, 0, false, cfg);
+
+        cfg.outChannelMask = (std::uint16_t) (1u << (7 - 1));   // user edits to ch 7
+        juce::MidiBuffer offBuf;
+        offBuf.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
+        e.process (offBuf, block, playing (false), 0, 0, false, cfg);
+
+        int offCh = -1;
+        for (const auto meta : offBuf)
+            if (meta.getMessage().isNoteOff())
+                offCh = meta.getMessage().getChannel();
+        check (offCh == 2, "note-off released on the channel the note-on used (ch 2)");
+    }
+
+    // --- 10. Random through an Output: generated notes balanced on its ch ---
+    {
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasRandom = true;
+        cfg.hasOutput = true;
+        cfg.outChannelMask = (std::uint16_t) (1u << (4 - 1));
+
+        int ons = 0, offs = 0; bool allCh4 = true;
+        for (int i = 0; i < 100; ++i)
+        {
+            juce::MidiBuffer midi;
+            e.process (midi, block, playing (true), 0, 0, false, cfg);
+            tally (midi, ons, offs);
+            for (const auto meta : midi)
+                if (meta.getMessage().getChannel() != 4)
+                    allCh4 = false;
+        }
+        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, false, cfg); tally (midi, ons, offs); }
+        check (ons > 0 && allCh4, "generated notes leave on the Output's channel");
+        check (ons == offs, "generated notes balanced through the Output after stop");
+    }
+
+    // --- 11. ScaleTables spot checks -----------------------------------------
     {
         check (ScaleTables::isInScale (60, 0, 0), "C is in C major");
         check (! ScaleTables::isInScale (61, 0, 0), "C# is not in C major");

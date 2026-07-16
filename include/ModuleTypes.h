@@ -3,17 +3,16 @@
 #include <juce_graphics/juce_graphics.h>
 #include "Theme.h"
 
-// The catalogue of module types the canvas knows about. Phase 2 ships a
-// deliberately tiny set — two generators and two modulators — enough to prove
-// the canvas / palette / settings-placeholder loop. New modules (and the I/O
-// kind) slot in by extending this enum and kCatalogue; nothing else in the
-// canvas needs to change.
+// The catalogue of module types the canvas knows about. Phase 2 shipped two
+// generators and two modulators; the two I/O modules (MIDI In / Output)
+// joined next. New modules slot in by extending this enum and kCatalogue;
+// nothing else in the canvas needs to change.
 
 enum class ModuleKind
 {
     Generator,   // drawn as a square (has outputs only, once ports land)
     Modulator,   // drawn as a circle
-    IO           // MIDI In / Output — shape TBD; not in the Phase 2 palette
+    IO           // drawn as a triangle: MIDI In points right, Output left
 };
 
 enum class ModuleType
@@ -23,8 +22,25 @@ enum class ModuleType
     Random,
     // Modulators
     Quantize,
-    Shift
+    Shift,
+    // I/O
+    MidiIn,
+    Output
 };
+
+// Which ports a module exposes (decorative until wiring lands, but the shapes
+// already paint them). Derivable from the type: generators and MIDI In are
+// sources, Output is the one sink, modulators have both.
+inline bool moduleHasInputPort (ModuleType t)
+{
+    return t == ModuleType::Quantize || t == ModuleType::Shift
+        || t == ModuleType::Output;
+}
+
+inline bool moduleHasOutputPort (ModuleType t)
+{
+    return t != ModuleType::Output;
+}
 
 struct ModuleDescriptor
 {
@@ -45,14 +61,16 @@ struct ModuleDescriptor
     }
 };
 
-// The Phase 2 palette, in display order. Two generators, two modulators.
-inline const std::array<ModuleDescriptor, 4>& moduleCatalogue()
+// The palette, in display order: generators, modulators, I/O.
+inline const std::array<ModuleDescriptor, 6>& moduleCatalogue()
 {
-    static const std::array<ModuleDescriptor, 4> kCatalogue = {{
+    static const std::array<ModuleDescriptor, 6> kCatalogue = {{
         { ModuleType::Arp,      ModuleKind::Generator, "Arp"      },
         { ModuleType::Random,   ModuleKind::Generator, "Random"   },
         { ModuleType::Quantize, ModuleKind::Modulator, "Quantize" },
-        { ModuleType::Shift,    ModuleKind::Modulator, "Shift"    }
+        { ModuleType::Shift,    ModuleKind::Modulator, "Shift"    },
+        { ModuleType::MidiIn,   ModuleKind::IO,        "MIDI In"  },
+        { ModuleType::Output,   ModuleKind::IO,        "Output"   }
     }};
     return kCatalogue;
 }
@@ -66,7 +84,7 @@ inline const ModuleDescriptor& descriptorFor (ModuleType type)
 }
 
 // Stable string ids for state persistence, so a saved layout survives an enum
-// reorder. Only the four Phase 2 types are covered.
+// reorder.
 inline juce::String moduleTypeToString (ModuleType type)
 {
     switch (type)
@@ -75,6 +93,8 @@ inline juce::String moduleTypeToString (ModuleType type)
         case ModuleType::Random:   return "Random";
         case ModuleType::Quantize: return "Quantize";
         case ModuleType::Shift:    return "Shift";
+        case ModuleType::MidiIn:   return "MidiIn";
+        case ModuleType::Output:   return "Output";
     }
     return "Arp";
 }
@@ -84,5 +104,15 @@ inline ModuleType moduleTypeFromString (const juce::String& s)
     if (s == "Random")   return ModuleType::Random;
     if (s == "Quantize") return ModuleType::Quantize;
     if (s == "Shift")    return ModuleType::Shift;
+    if (s == "MidiIn")   return ModuleType::MidiIn;
+    if (s == "Output")   return ModuleType::Output;
     return ModuleType::Arp;
+}
+
+// The I/O modules' one setting. Semantics differ per type: MIDI In filters
+// which host channel enters the graph (0 = All), Output stamps outgoing
+// events with its channel (1..16, no All). Other module types ignore it.
+inline int defaultChannelFor (ModuleType type)
+{
+    return type == ModuleType::Output ? 1 : 0;
 }

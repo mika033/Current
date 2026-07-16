@@ -43,11 +43,34 @@ playhead jump the buffer simply empties as normal.
 
 ## Implemented modules
 
-The four modules below shipped with the Phase 2 canvas skeleton. They run with
-fixed default settings — double-clicking a module opens a placeholder where
-its settings will appear in a later phase. Until port wiring lands they run as
-one fixed chain: host MIDI feeds the generators, results pass through Quantize
-and then Shift, and everything exits to the host.
+The four generator/modulator modules below shipped with the Phase 2 canvas
+skeleton and run with fixed default settings — double-clicking one opens a
+placeholder where its settings will appear in a later phase. The two I/O
+modules followed and are the first with a real setting: double-clicking them
+opens a channel dialog. Until port wiring lands everything runs as one fixed
+chain: host MIDI enters through MIDI In (or an implicit all-channels input if
+none is placed), feeds the generators, results pass through Quantize and then
+Shift, and exit through Output (or an implicit channel-preserving output).
+
+### MIDI In (I/O)
+
+MIDI In is where the outside world enters the graph: it brings in MIDI from
+the host or an external source. Its one setting is the input channel — "All"
+(the default) accepts everything, or pick a single channel 1–16 to listen to
+just that channel; events on other channels are ignored entirely. Placing
+several MIDI Ins listens to the union of their channels. With no MIDI In on
+the canvas, the plugin behaves as if an all-channels MIDI In were present, so
+nothing is required to get sound flowing.
+
+### Output (I/O)
+
+Output is where the graph leaves for the host. Its one setting is the MIDI
+channel (1–16, default 1): every note and controller passing out is stamped
+with that channel, which is how material gets routed to a specific synth on a
+multitimbral track. Placing several Outputs sends a copy of the stream to each
+channel. With no Output on the canvas, events keep whatever channel they
+already had. Notes always release on the channel they started on, even if the
+channel setting is changed while they sound — nothing hangs.
 
 ### Arp (generator)
 
@@ -98,16 +121,6 @@ shift amount.
 
 These are concrete enough to build. Each entry states the intended behaviour;
 open details, where any, are flagged.
-
-### I/O modules
-
-- **MIDI In** — brings MIDI from the host or an external source into the
-  graph. A source module like a generator: output port only. At least one is
-  present on every canvas. (Today its role is played by the engine's implicit
-  host-MIDI input.)
-- **Output** — sends MIDI to the host, assignable to a MIDI channel. The only
-  module with no output port. Multiple Outputs can exist, each routing to a
-  different channel or destination synth.
 
 ### Generators
 

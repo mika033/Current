@@ -19,17 +19,32 @@ void PaletteBar::PaletteItem::paint (juce::Graphics& g)
     const float sz = (float) juce::jmin (glyph.getWidth(), glyph.getHeight());
     auto shape = juce::Rectangle<float> (sz, sz).withCentre (glyph.getCentre());
 
-    g.setColour (d.familyColour());
-    if (d.kind == ModuleKind::Modulator)
-        g.fillEllipse (shape);
-    else
-        g.fillRoundedRectangle (shape, 6.0f);
+    // Same shape language as the canvas nodes: square / circle / triangle
+    // (MIDI In points right, Output left).
+    juce::Path glyphPath;
+    switch (d.kind)
+    {
+        case ModuleKind::Modulator:
+            glyphPath.addEllipse (shape);
+            break;
+        case ModuleKind::IO:
+            if (type == ModuleType::MidiIn)
+                glyphPath.addTriangle (shape.getTopLeft(), shape.getBottomLeft(),
+                                       { shape.getRight(), shape.getCentreY() });
+            else
+                glyphPath.addTriangle (shape.getTopRight(), shape.getBottomRight(),
+                                       { shape.getX(), shape.getCentreY() });
+            break;
+        case ModuleKind::Generator:
+        default:
+            glyphPath.addRoundedRectangle (shape, 6.0f);
+            break;
+    }
 
+    g.setColour (d.familyColour());
+    g.fillPath (glyphPath);
     g.setColour (s.panelBorder);
-    if (d.kind == ModuleKind::Modulator)
-        g.drawEllipse (shape, 1.2f);
-    else
-        g.drawRoundedRectangle (shape, 6.0f, 1.2f);
+    g.strokePath (glyphPath, juce::PathStrokeType (1.2f));
 
     g.setColour (s.text);
     g.setFont (juce::Font (juce::FontOptions (13.0f)));

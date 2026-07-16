@@ -6,8 +6,8 @@
 #include "ModuleTypes.h"
 
 // The palette tray below the canvas: the set of modules that can be dragged onto
-// it. Phase 2 shows exactly the four catalogue entries (two generators, two
-// modulators). Each item is a drag source; the drop is handled by the Canvas.
+// it — one chip per catalogue entry (generators, modulators, I/O). Each item is
+// a drag source; the drop is handled by the Canvas.
 //
 // A DragAndDropContainer must be an ancestor of both the palette items and the
 // canvas — that's the editor (MainView's parent), which derives from it.

@@ -10,11 +10,13 @@ phases. File references are relative to the repo root; headers live in
 
 A JUCE MIDI-effect plugin (VST3 + Standalone, Linux build only so far). The
 editor shows a menu bar (global root / scale / quantize + theme switch), a
-canvas that modules can be dragged onto from a palette of four (generators Arp
-and Random, modulators Quantize and Shift), and an engine that actually runs
-those modules — but as a fixed implicit chain with baked-in defaults, because
-Phase 2 has no port wiring and no per-module settings. Double-clicking a node
-opens an empty settings placeholder dialog.
+canvas that modules can be dragged onto from a palette of six (generators Arp
+and Random, modulators Quantize and Shift, I/O modules MIDI In and Output),
+and an engine that actually runs those modules — but as a fixed implicit
+chain, because there is no port wiring yet. The generators/modulators run with
+baked-in defaults and double-clicking them opens an empty settings placeholder
+dialog; the I/O modules carry the first real per-module setting (their MIDI
+channel) and double-clicking them opens a working channel dialog.
 
 ## Component map
 
@@ -36,8 +38,9 @@ opens an empty settings placeholder dialog.
 - `Canvas` (Canvas.h/.cpp) — the drop surface and the bridge between on-screen
   nodes and the processor's module model.
 - `ModuleComponent` (ModuleComponent.h/.cpp) — one draggable node. Square for
-  generators, circle for modulators; colour encodes the family; ports are
-  painted but purely decorative until wiring lands.
+  generators, circle for modulators, triangle for I/O; colour encodes the
+  family; an optional sublabel shows the I/O channel; ports are painted but
+  purely decorative until wiring lands.
 - `PaletteBar` + `ModuleTypes` (PaletteBar.h/.cpp, ModuleTypes.h) — the
   draggable chips and the module catalogue that drives them.
 - `Theme` + `CurrentLookAndFeel` (Theme.h, CurrentLookAndFeel.h) — the shared
@@ -45,15 +48,16 @@ opens an empty settings placeholder dialog.
   JUCE widgets.
 - `InlineDialog` (InlineDialog.h/.cpp) — the in-editor modal helper (the
   SnorkelAudioStandards rule forbids `juce::AlertWindow` / `DialogWindow`).
-  Currently backs the settings placeholder; it already supports text fields
-  and multiple buttons so real dialogs can grow on it.
+  Backs the settings placeholder and the I/O channel dialog; it supports text
+  fields, combo boxes, and multiple buttons so real dialogs can grow on it.
 - `tools/engine_smoketest.cpp` — headless engine test, see Testing below.
 
 ## The canvas model and who owns it
 
 The single source of truth for "what is on the canvas" is
 `CurrentAudioProcessor::moduleList`, a `std::vector<ModuleInstance>` where an
-instance is an id, a `ModuleType`, and an x/y position. It lives in the
+instance is an id, a `ModuleType`, an x/y position, and a channel (the I/O
+modules' one setting; other types ignore it). It lives in the
 processor, not the editor, so the layout survives the editor being closed and
 reopened, and so `get/setStateInformation` can persist it in the DAW project
 (a `<Canvas>` child appended to the APVTS tree). This is DAW-project
@@ -83,13 +87,18 @@ reads a lock-free snapshot.
 
 - All canvas edits and state load/save happen on the message thread.
 - After every model change, `refreshEngineConfig()` republishes which module
-  types are present as four `std::atomic<bool>` flags.
+  types are present as `std::atomic<bool>` flags, plus two atomic 16-bit
+  channel masks carrying the I/O modules' settings (input filter, output
+  stamp — semantics documented on `Engine::Config`).
 - `processBlock` reads those atomics plus the raw parameter values (root,
   scale, quantize — themselves atomics via APVTS) and hands the `Engine` a
-  plain `Engine::Config` by value. No locks anywhere.
+  plain `Engine::Config` by value. No locks anywhere. Each field is
+  independently atomic; a block seeing a half-updated combination is
+  indistinguishable from the edit landing one block later, so no seqlock is
+  needed.
 
-Presence flags are enough only because position never affects the sound and
-there is exactly one implicit chain. When wiring lands and the audio thread
+Presence flags and two masks are enough only because position never affects
+the sound and there is exactly one implicit chain. When wiring lands and the audio thread
 needs real graph topology, this handoff must grow into an immutable graph
 snapshot that is swapped in atomically (build on message thread, publish via
 atomic pointer / RCU-style), not per-field atomics. That is the single biggest
@@ -97,11 +106,14 @@ known seam in the design.
 
 ## The engine: fixed implicit chain
 
-Phase 2 has no user wiring, so `Engine::process` hard-codes the signal flow;
-the full commentary (including all fixed defaults) is at the top of
-`Engine.h`. Summary:
+There is no user wiring yet, so `Engine::process` hard-codes the signal flow;
+the full commentary (including all fixed defaults and the I/O channel
+semantics) is at the top of `Engine.h`. Summary:
 
-- Host MIDI acts as the implicit MIDI In.
+- MIDI In modules filter which host events enter the graph by channel (union
+  across modules; "All" = everything). With none placed, the implicit input
+  accepts all channels. Filtered events are dropped before they reach anything
+  — including the Arp's held-note tracking.
 - Generators fire on a 1/16 grid, gate of half a step, and only while the host
   transport is playing. Arp cycles ascending through currently held host notes
   (and swallows those notes, since they are its input); Random plays in-scale
@@ -109,8 +121,14 @@ the full commentary (including all fixed defaults) is at the top of
 - Modulators apply as pure pitch mapping (`mapPitch`): Quantize snaps to the
   global root/scale (also applied when the global quantize toggle is on), then
   Shift transposes +12.
+- Output modules stamp everything leaving the engine with their channel; with
+  several, the stream is duplicated once per channel (the implicit chain's
+  fan-out). With none placed, events keep their own channel.
 - The same `mapPitch` is applied to note-ons and note-offs so their pitches
-  always match — this is the core no-hanging-notes invariant.
+  always match — this is the core no-hanging-notes invariant. Passed-through
+  host notes are additionally remembered in `activePass` as
+  (incoming → emitted) pairs, so a note-off releases exactly what its note-on
+  emitted even if a setting (e.g. an Output channel) changed mid-note.
 - Generated notes are tracked in `activeGen` with a remaining-samples count;
   on transport stop (or all modules removed) everything still sounding gets a
   note-off, per the requirements' transport-boundary rule.
@@ -131,9 +149,13 @@ needs as arguments, which is what makes the headless smoke test possible.
   `Engine::process`; post-wiring it will mean a node implementation).
 
 Palette, drag-and-drop, canvas nodes, selection, deletion, and persistence all
-pick the new module up from the catalogue without further changes. The `IO`
-kind exists in the enum (triangle shapes per the requirements) but is not in
-the Phase 2 palette.
+pick the new module up from the catalogue without further changes. All three
+kinds are in the palette: generators square, modulators circle, I/O triangles
+(MIDI In points right, Output left, toward their single port). The I/O modules
+carry the first per-module setting — a MIDI channel stored on
+`ModuleInstance`, edited via a real settings dialog in `Canvas`
+(`openChannelDialog`), shown as a sublabel on the node, and persisted with the
+canvas state. Per-module settings for the other types are still a later phase.
 
 ## Theming
 

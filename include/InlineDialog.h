@@ -38,6 +38,15 @@ public:
                         const juce::String& label);
     juce::String getTextEditorContents (const juce::String& name) const;
 
+    /** Add a labeled drop-down with one entry per item. The label sits above
+     *  the combo, like addTextEditor. `selectedIndex` is 0-based into `items`;
+     *  read the choice back with getComboBoxSelectedIndex. */
+    void addComboBox (const juce::String& name,
+                      const juce::StringArray& items,
+                      int selectedIndex,
+                      const juce::String& label);
+    int getComboBoxSelectedIndex (const juce::String& name) const;
+
     /** Add an action button. `returnValue` is what gets passed to onResult when
      *  the button is clicked. By convention the first button added is the
      *  affirmative (Return key triggers it). */
@@ -66,6 +75,14 @@ private:
         std::unique_ptr<juce::TextEditor> editor;
     };
     juce::OwnedArray<TextFieldEntry> textFields;
+
+    struct ComboEntry
+    {
+        juce::String                    name;
+        std::unique_ptr<juce::Label>    labelComp;
+        std::unique_ptr<juce::ComboBox> combo;
+    };
+    juce::OwnedArray<ComboEntry> combos;
 
     struct ButtonEntry
     {

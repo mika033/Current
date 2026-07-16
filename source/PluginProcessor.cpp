@@ -81,10 +81,14 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         buffer.clear (ch, 0, buffer.getNumSamples());
 
     Engine::Config cfg;
-    cfg.hasArp      = engHasArp.load();
-    cfg.hasRandom   = engHasRandom.load();
-    cfg.hasQuantize = engHasQuantize.load();
-    cfg.hasShift    = engHasShift.load();
+    cfg.hasArp          = engHasArp.load();
+    cfg.hasRandom       = engHasRandom.load();
+    cfg.hasQuantize     = engHasQuantize.load();
+    cfg.hasShift        = engHasShift.load();
+    cfg.hasMidiIn       = engHasMidiIn.load();
+    cfg.hasOutput       = engHasOutput.load();
+    cfg.inChannelMask   = engInChannelMask.load();
+    cfg.outChannelMask  = engOutChannelMask.load();
 
     const int  root          = (int) (rootParam     != nullptr ? rootParam->load()  : 0.0f);
     const int  scaleIndex    = (int) (scaleParam    != nullptr ? scaleParam->load() : 0.0f);
@@ -108,6 +112,9 @@ juce::AudioProcessorEditor* CurrentAudioProcessor::createEditor()
 void CurrentAudioProcessor::refreshEngineConfig()
 {
     bool arp = false, rnd = false, quant = false, shift = false;
+    bool midiIn = false, output = false;
+    std::uint16_t inMask = 0, outMask = 0;
+
     for (const auto& m : moduleList)
     {
         switch (m.type)
@@ -116,21 +123,40 @@ void CurrentAudioProcessor::refreshEngineConfig()
             case ModuleType::Random:   rnd   = true; break;
             case ModuleType::Quantize: quant = true; break;
             case ModuleType::Shift:    shift = true; break;
+            case ModuleType::MidiIn:
+                midiIn = true;
+                // Channel 0 = All; several MIDI Ins merge (union).
+                inMask |= (m.channel == 0)
+                              ? (std::uint16_t) 0xffff
+                              : (std::uint16_t) (1u << (juce::jlimit (1, 16, m.channel) - 1));
+                break;
+            case ModuleType::Output:
+                output = true;
+                outMask |= (std::uint16_t) (1u << (juce::jlimit (1, 16, m.channel) - 1));
+                break;
         }
     }
+
     engHasArp.store (arp);
     engHasRandom.store (rnd);
     engHasQuantize.store (quant);
     engHasShift.store (shift);
+    engHasMidiIn.store (midiIn);
+    engHasOutput.store (output);
+    // No MIDI In module = implicit all-channels input; no Output = keep each
+    // event's own channel (mask 0 means exactly that in the engine).
+    engInChannelMask.store (midiIn ? inMask : (std::uint16_t) 0xffff);
+    engOutChannelMask.store (output ? outMask : (std::uint16_t) 0);
 }
 
 int CurrentAudioProcessor::addModule (ModuleType type, float x, float y)
 {
     ModuleInstance m;
-    m.id   = nextModuleId++;
-    m.type = type;
-    m.x    = x;
-    m.y    = y;
+    m.id      = nextModuleId++;
+    m.type    = type;
+    m.x       = x;
+    m.y       = y;
+    m.channel = defaultChannelFor (type);
     moduleList.push_back (m);
     refreshEngineConfig();
     return m.id;
@@ -147,6 +173,27 @@ void CurrentAudioProcessor::moveModule (int id, float x, float y)
             return;
         }
     }
+}
+
+void CurrentAudioProcessor::setModuleChannel (int id, int channel)
+{
+    for (auto& m : moduleList)
+    {
+        if (m.id == id)
+        {
+            m.channel = channel;
+            refreshEngineConfig();
+            return;
+        }
+    }
+}
+
+int CurrentAudioProcessor::getModuleChannel (int id) const
+{
+    for (const auto& m : moduleList)
+        if (m.id == id)
+            return m.channel;
+    return 0;
 }
 
 void CurrentAudioProcessor::removeModule (int id)
@@ -173,6 +220,9 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         node.setProperty ("type", moduleTypeToString (m.type), nullptr);
         node.setProperty ("x", m.x, nullptr);
         node.setProperty ("y", m.y, nullptr);
+        // Only the I/O modules have a channel setting worth persisting.
+        if (m.type == ModuleType::MidiIn || m.type == ModuleType::Output)
+            node.setProperty ("channel", m.channel, nullptr);
         canvas.appendChild (node, nullptr);
     }
     state.appendChild (canvas, nullptr);
@@ -199,10 +249,11 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
         for (const auto& node : canvas)
         {
             ModuleInstance m;
-            m.id   = nextModuleId++;
-            m.type = moduleTypeFromString (node.getProperty ("type").toString());
-            m.x    = (float) node.getProperty ("x");
-            m.y    = (float) node.getProperty ("y");
+            m.id      = nextModuleId++;
+            m.type    = moduleTypeFromString (node.getProperty ("type").toString());
+            m.x       = (float) node.getProperty ("x");
+            m.y       = (float) node.getProperty ("y");
+            m.channel = (int) node.getProperty ("channel", defaultChannelFor (m.type));
             moduleList.push_back (m);
         }
         state.removeChild (canvas, nullptr);

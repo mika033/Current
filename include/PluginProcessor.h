@@ -17,14 +17,15 @@ namespace ParamIDs
 }
 
 // One placed module on the canvas. Position is stored in canvas coordinates
-// (top-left of the node). Phase 2 has no per-module settings yet, so type +
-// position is the whole model.
+// (top-left of the node). `channel` is the I/O modules' one setting (see
+// defaultChannelFor for its per-type semantics); other types ignore it.
 struct ModuleInstance
 {
     int        id = 0;
     ModuleType type = ModuleType::Arp;
     float      x = 0.0f;
     float      y = 0.0f;
+    int        channel = 0;
 };
 
 // Phase 2 processor: a MIDI effect whose processBlock produces no audio and
@@ -75,6 +76,8 @@ public:
     int  addModule (ModuleType type, float x, float y);   // returns new id
     void moveModule (int id, float x, float y);
     void removeModule (int id);
+    void setModuleChannel (int id, int channel);
+    int  getModuleChannel (int id) const;
 
     // Fires when the model is replaced wholesale behind the editor's back
     // (setStateInformation while the editor is open — project revert, preset
@@ -96,10 +99,16 @@ private:
     std::vector<ModuleInstance> moduleList;
     int nextModuleId = 1;
 
-    // Audio-thread-facing engine + its config snapshot.
+    // Audio-thread-facing engine + its config snapshot. The masks carry the I/O
+    // modules' channel settings (see Engine::Config for their semantics); each
+    // field is independently atomic, which is fine because a block that sees a
+    // half-updated combination is indistinguishable from the edit landing one
+    // block later.
     Engine engine;
     std::atomic<bool> engHasArp { false }, engHasRandom { false },
-                      engHasQuantize { false }, engHasShift { false };
+                      engHasQuantize { false }, engHasShift { false },
+                      engHasMidiIn { false }, engHasOutput { false };
+    std::atomic<std::uint16_t> engInChannelMask { 0xffff }, engOutChannelMask { 0 };
 
     // Cached parameter pointers (set in the ctor, read every block).
     std::atomic<float>* rootParam     = nullptr;

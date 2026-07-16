@@ -4,10 +4,11 @@
 #include "ModuleTypes.h"
 
 // A single placed module on the canvas: a draggable node the user can move
-// around. Generators paint as squares, modulators as circles (per the
-// requirements' shape encoding); the family colour comes from the theme. Ports
-// are drawn as edge dots for visual completeness — wiring them up is a later
-// phase, so they are decorative in Phase 2.
+// around. Generators paint as squares, modulators as circles, I/O modules as
+// triangles (MIDI In points right, Output left — per the requirements' shape
+// encoding); the family colour comes from the theme. Ports are drawn as edge
+// dots for visual completeness — wiring them up is a later phase, so they are
+// decorative for now.
 //
 // The component owns only its appearance and gestures; the canvas owns the
 // model. Position changes and double-clicks are reported back through the
@@ -25,6 +26,10 @@ public:
     void setSelected (bool shouldBeSelected);
     bool isSelected() const { return selected; }
 
+    // Small secondary line under the name (the I/O modules show their channel
+    // here). Empty = no sublabel.
+    void setSublabel (const juce::String& text);
+
     // id, new top-left position within the canvas (called live during a drag).
     std::function<void (int, juce::Point<int>)> onMoved;
     // Fired on double-click — the canvas opens the settings placeholder.
@@ -41,6 +46,7 @@ private:
     int          id;
     ModuleType   type;
     bool         selected = false;
+    juce::String sublabel;
     juce::ComponentDragger dragger;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ModuleComponent)

@@ -64,6 +64,40 @@ juce::String InlineDialog::getTextEditorContents (const juce::String& name) cons
     return {};
 }
 
+void InlineDialog::addComboBox (const juce::String& name,
+                                const juce::StringArray& items,
+                                int selectedIndex,
+                                const juce::String& label)
+{
+    auto* entry = new ComboEntry();
+    entry->name = name;
+
+    entry->labelComp = std::make_unique<juce::Label> ("", label);
+    entry->labelComp->setColour (juce::Label::textColourId,
+                                 CurrentTheme::active().text.withAlpha (0.85f));
+    addAndMakeVisible (entry->labelComp.get());
+
+    // Colours come from the editor's LookAndFeel (same as the menu-bar combos),
+    // so no per-widget colour setup is needed here.
+    entry->combo = std::make_unique<juce::ComboBox>();
+    entry->combo->addItemList (items, 1);   // ids are 1-based
+    entry->combo->setSelectedItemIndex (juce::jlimit (0, items.size() - 1, selectedIndex),
+                                        juce::dontSendNotification);
+    addAndMakeVisible (entry->combo.get());
+    combos.add (entry);
+
+    if (getParentComponent())
+        resized();
+}
+
+int InlineDialog::getComboBoxSelectedIndex (const juce::String& name) const
+{
+    for (auto* entry : combos)
+        if (entry->name == name)
+            return entry->combo->getSelectedItemIndex();
+    return -1;
+}
+
 void InlineDialog::addButton (const juce::String& text, int returnValue)
 {
     auto* entry = new ButtonEntry();
@@ -117,10 +151,10 @@ int InlineDialog::calculatePanelHeight() const
 
     // Acknowledgement-style dialog (message + buttons, no field): breathing
     // room so buttons don't crowd the last line of text.
-    if (messageText.isNotEmpty() && textFields.isEmpty())
+    if (messageText.isNotEmpty() && textFields.isEmpty() && combos.isEmpty())
         h += messageButtonGap;
 
-    for (int i = 0; i < textFields.size(); ++i)
+    for (int i = 0; i < textFields.size() + combos.size(); ++i)
         h += fieldLabelHeight + fieldHeight + fieldSpacing;
 
     h += buttonHeight + padding;
@@ -180,6 +214,14 @@ void InlineDialog::resized()
         entry->labelComp->setBounds (contentX, y, contentW, fieldLabelHeight);
         y += fieldLabelHeight;
         entry->editor->setBounds (contentX, y, contentW, fieldHeight);
+        y += fieldHeight + fieldSpacing;
+    }
+
+    for (auto* entry : combos)
+    {
+        entry->labelComp->setBounds (contentX, y, contentW, fieldLabelHeight);
+        y += fieldLabelHeight;
+        entry->combo->setBounds (contentX, y, contentW, fieldHeight);
         y += fieldHeight + fieldSpacing;
     }
 

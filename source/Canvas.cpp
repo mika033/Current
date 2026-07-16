@@ -37,10 +37,20 @@ void Canvas::rebuildFromModel()
         addNodeComponent (m);
 }
 
+juce::String Canvas::channelSublabel (ModuleType type, int channel)
+{
+    if (type == ModuleType::MidiIn && channel == 0)
+        return "All ch";
+    return "Ch " + juce::String (channel);
+}
+
 void Canvas::addNodeComponent (const ModuleInstance& instance)
 {
     auto node = std::make_unique<ModuleComponent> (instance.id, instance.type);
     node->setTopLeftPosition ((int) instance.x, (int) instance.y);
+
+    if (instance.type == ModuleType::MidiIn || instance.type == ModuleType::Output)
+        node->setSublabel (channelSublabel (instance.type, instance.channel));
 
     node->onSelected = [this] (ModuleComponent& n) { selectNode (&n); };
 
@@ -51,7 +61,13 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
 
     node->onOpenSettings = [this] (ModuleComponent& n)
     {
-        // Phase 2: an empty placeholder where the module's settings will live.
+        if (n.moduleType() == ModuleType::MidiIn || n.moduleType() == ModuleType::Output)
+        {
+            openChannelDialog (n);
+            return;
+        }
+
+        // Other modules: an empty placeholder where their settings will live.
         auto* dlg = owner.showInlineDialog (juce::String (descriptorFor (n.moduleType()).name)
                                             + " settings",
                                             "Settings for this module will appear here in a later phase.");
@@ -65,6 +81,48 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
 
     addAndMakeVisible (node.get());
     nodes.push_back (std::move (node));
+}
+
+void Canvas::openChannelDialog (ModuleComponent& node)
+{
+    const auto type = node.moduleType();
+    const bool isIn = (type == ModuleType::MidiIn);
+    const int  id   = node.moduleId();
+    const int  chan = proc.getModuleChannel (id);
+
+    // MIDI In offers "All" (stored as channel 0) ahead of 1..16; Output must
+    // pick a concrete channel, so its combo index is channel - 1.
+    juce::StringArray items;
+    if (isIn)
+        items.add ("All");
+    for (int ch = 1; ch <= 16; ++ch)
+        items.add (juce::String (ch));
+
+    auto* dlg = owner.showInlineDialog (juce::String (descriptorFor (type).name) + " settings");
+    dlg->addComboBox ("channel", items, isIn ? chan : chan - 1,
+                      isIn ? "Input channel" : "Output channel");
+    dlg->addButton ("OK", 1);
+    dlg->addButton ("Cancel", 0);
+
+    // Captures the id, not the node — the node can be deleted or rebuilt while
+    // the dialog is up (host state restore), so it is re-looked-up on OK.
+    dlg->onResult = [this, id, isIn] (int result, InlineDialog* d)
+    {
+        if (result == 1)
+        {
+            const int idx = d->getComboBoxSelectedIndex ("channel");
+            if (idx >= 0)
+            {
+                const int newChannel = isIn ? idx : idx + 1;
+                proc.setModuleChannel (id, newChannel);
+                for (auto& n : nodes)
+                    if (n->moduleId() == id)
+                        n->setSublabel (channelSublabel (n->moduleType(), newChannel));
+            }
+        }
+        d->getParentComponent()->removeChildComponent (d);
+        delete d;
+    };
 }
 
 void Canvas::selectNode (ModuleComponent* node)
@@ -192,6 +250,7 @@ void Canvas::itemDropped (const SourceDetails& details)
     inst.type = type;
     inst.x = (float) x;
     inst.y = (float) y;
+    inst.channel = defaultChannelFor (type);
     addNodeComponent (inst);
     selectNode (nodes.back().get());
 
