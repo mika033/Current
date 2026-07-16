@@ -10,7 +10,9 @@
 #include "Engine.h"
 #include "ScaleTables.h"
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <cstdlib>
 #include <iostream>
+#include <vector>
 
 namespace
 {
@@ -253,7 +255,154 @@ int main()
         check (ons == offs, "generated notes balanced through the Output after stop");
     }
 
-    // --- 11. ScaleTables spot checks -----------------------------------------
+    // --- 11. Random settings: range and scale override are respected --------
+    {
+        // Pin the range to a single pitch with a chromatic scale: every note
+        // the generator emits must be exactly that pitch.
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasRandom   = true;
+        cfg.randomScale = 8;    // Chromatic
+        cfg.randomFrom  = 60;
+        cfg.randomTo    = 60;
+
+        int ons = 0, offs = 0; bool all60 = true;
+        for (int i = 0; i < 100; ++i)
+        {
+            juce::MidiBuffer midi;
+            e.process (midi, block, playing (true), 0, 0, false, cfg);
+            tally (midi, ons, offs);
+            for (const auto meta : midi)
+                if (meta.getMessage().isNoteOn() && meta.getMessage().getNoteNumber() != 60)
+                    all60 = false;
+        }
+        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, false, cfg); tally (midi, ons, offs); }
+        check (ons > 0 && all60, "Random with range 60..60 emits only pitch 60");
+        check (ons == offs, "Random settings: balanced after stop");
+    }
+    {
+        // Root override D + major, wide range: everything lands in D major even
+        // though the global root says C.
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasRandom   = true;
+        cfg.randomRoot  = 2;    // D
+        cfg.randomScale = 0;    // Major
+        cfg.randomFrom  = 48;
+        cfg.randomTo    = 72;
+
+        bool allInDMajor = true; bool inRange = true; int ons = 0, offs = 0;
+        for (int i = 0; i < 100; ++i)
+        {
+            juce::MidiBuffer midi;
+            e.process (midi, block, playing (true), /*global root*/0, /*global scale*/0, false, cfg);
+            tally (midi, ons, offs);
+            for (const auto meta : midi)
+                if (meta.getMessage().isNoteOn())
+                {
+                    const int n = meta.getMessage().getNoteNumber();
+                    if (! ScaleTables::isInScale (n, 2, 0)) allInDMajor = false;
+                    if (n < 48 || n > 72) inRange = false;
+                }
+        }
+        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, false, cfg); }
+        check (ons > 0 && allInDMajor, "Random root/scale override draws from D major");
+        check (inRange, "Random stays inside its note range");
+    }
+
+    // --- 12. Random rate: 1/8 emits half as many notes as 1/16 --------------
+    {
+        auto countOns = [&] (double stepQn)
+        {
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasRandom = true;
+            cfg.randomStepQn = stepQn;
+            int ons = 0, offs = 0;
+            for (int i = 0; i < 200; ++i)
+            {
+                juce::MidiBuffer midi;
+                e.process (midi, block, playing (true), 0, 0, false, cfg);
+                tally (midi, ons, offs);
+            }
+            return ons;
+        };
+        const int at16 = countOns (0.25);
+        const int at8  = countOns (0.5);
+        check (at8 > 0 && std::abs (at16 - 2 * at8) <= 2,
+               "Random 1/8 rate fires half as often as 1/16");
+    }
+
+    // --- 13. Scale generator: pattern, end-on, repeat, balance --------------
+    {
+        // C major, up, 1 octave, end on the octave root, 1/4 steps, repeat
+        // every bar (4 steps): the pattern (8 notes) is cut to C D E F, then
+        // repeats. Collect the first 8 note-ons and check the wrap.
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasScaleGen   = true;
+        cfg.scaleStepQn   = 1.0;   // 1/4 notes
+        cfg.scaleRepeatQn = 4.0;   // 1 bar
+        cfg.scaleOctaves  = 1;
+        cfg.scaleEndOnRoot = true;
+
+        std::vector<int> pitches;
+        int ons = 0, offs = 0;
+        for (int i = 0; i < 800 && pitches.size() < 8; ++i)
+        {
+            juce::MidiBuffer midi;
+            e.process (midi, block, playing (true), 0, 0, false, cfg);
+            tally (midi, ons, offs);
+            for (const auto meta : midi)
+                if (meta.getMessage().isNoteOn())
+                    pitches.push_back (meta.getMessage().getNoteNumber());
+        }
+        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, false, cfg); tally (midi, ons, offs); }
+
+        const std::vector<int> expected { 48, 50, 52, 53, 48, 50, 52, 53 };
+        check (pitches == expected,
+               "Scale gen: 1-bar repeat truncates C-major walk to C D E F and wraps");
+        check (ons == offs, "Scale gen: balanced after stop");
+    }
+    {
+        // Full pattern shape: 4-bar repeat window (16 steps) leaves room for
+        // the whole octave + octave root, then rests. Down mode reverses it.
+        auto firstPitches = [&] (bool down, bool endOnRoot, size_t count)
+        {
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasScaleGen    = true;
+            cfg.scaleStepQn    = 1.0;
+            cfg.scaleRepeatQn  = 16.0;   // 4 bars = 16 steps
+            cfg.scaleOctaves   = 1;
+            cfg.scaleDown      = down;
+            cfg.scaleEndOnRoot = endOnRoot;
+
+            std::vector<int> pitches;
+            for (int i = 0; i < 2000 && pitches.size() < count; ++i)
+            {
+                juce::MidiBuffer midi;
+                e.process (midi, block, playing (true), 0, 0, false, cfg);
+                for (const auto meta : midi)
+                    if (meta.getMessage().isNoteOn())
+                        pitches.push_back (meta.getMessage().getNoteNumber());
+            }
+            { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, false, cfg); }
+            return pitches;
+        };
+
+        check (firstPitches (false, true, 8)
+                   == std::vector<int> { 48, 50, 52, 53, 55, 57, 59, 60 },
+               "Scale gen up + end-on-root walks C major and caps with C4");
+        check (firstPitches (false, false, 7)
+                   == std::vector<int> { 48, 50, 52, 53, 55, 57, 59 },
+               "Scale gen end-on-7th stops at B (no octave root)");
+        check (firstPitches (true, true, 8)
+                   == std::vector<int> { 60, 59, 57, 55, 53, 52, 50, 48 },
+               "Scale gen down plays the same notes reversed");
+    }
+
+    // --- 14. ScaleTables spot checks -----------------------------------------
     {
         check (ScaleTables::isInScale (60, 0, 0), "C is in C major");
         check (! ScaleTables::isInScale (61, 0, 0), "C# is not in C major");

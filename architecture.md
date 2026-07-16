@@ -10,13 +10,14 @@ phases. File references are relative to the repo root; headers live in
 
 A JUCE MIDI-effect plugin (VST3 + Standalone, Linux build only so far). The
 editor shows a menu bar (global root / scale / quantize + theme switch), a
-canvas that modules can be dragged onto from a palette of six (generators Arp
-and Random, modulators Quantize and Shift, I/O modules MIDI In and Output),
-and an engine that actually runs those modules — but as a fixed implicit
-chain, because there is no port wiring yet. The generators/modulators run with
-baked-in defaults and double-clicking them opens an empty settings placeholder
-dialog; the I/O modules carry the first real per-module setting (their MIDI
-channel) and double-clicking them opens a working channel dialog.
+canvas that modules can be dragged onto from a palette of seven (generators
+Arp, Random, and Scale, modulators Quantize and Shift, I/O modules MIDI In and
+Output), and an engine that actually runs those modules — but as a fixed
+implicit chain, because there is no port wiring yet. The I/O modules carry a
+per-module MIDI channel and the Random / Scale generators carry full settings
+(root/scale override, rate, and their type-specific fields), all edited
+through real double-click dialogs; Arp, Quantize, and Shift still run
+baked-in defaults behind a settings placeholder.
 
 ## Component map
 
@@ -87,9 +88,11 @@ reads a lock-free snapshot.
 
 - All canvas edits and state load/save happen on the message thread.
 - After every model change, `refreshEngineConfig()` republishes which module
-  types are present as `std::atomic<bool>` flags, plus two atomic 16-bit
-  channel masks carrying the I/O modules' settings (input filter, output
-  stamp — semantics documented on `Engine::Config`).
+  types are present as `std::atomic<bool>` flags, two atomic 16-bit channel
+  masks carrying the I/O modules' settings (input filter, output stamp —
+  semantics documented on `Engine::Config`), and a set of atomic ints/bools
+  carrying the first Random / Scale module's generator settings (the implicit
+  chain runs one of each; extra copies share the first one's settings).
 - `processBlock` reads those atomics plus the raw parameter values (root,
   scale, quantize — themselves atomics via APVTS) and hands the `Engine` a
   plain `Engine::Config` by value. No locks anywhere. Each field is
@@ -114,10 +117,16 @@ semantics) is at the top of `Engine.h`. Summary:
   across modules; "All" = everything). With none placed, the implicit input
   accepts all channels. Filtered events are dropped before they reach anything
   — including the Arp's held-note tracking.
-- Generators fire on a 1/16 grid, gate of half a step, and only while the host
-  transport is playing. Arp cycles ascending through currently held host notes
-  (and swallows those notes, since they are its input); Random plays in-scale
-  notes in MIDI 48..72.
+- Generators fire only while the host transport is playing, each on its own
+  step clock (they have independent rates now), gate of half its step. Arp
+  cycles ascending through currently held host notes on a fixed 1/16 grid (and
+  swallows those notes, since they are its input); Random draws uniformly from
+  its scale within its note range at its rate; Scale walks its scale from the
+  root at octave 3 across its octave span, up or down, restarting every repeat
+  interval (a step counter from transport start — longer patterns truncate,
+  shorter ones rest). Root/scale overrides of -1 fall back to the globals, so
+  the shared option tables live in `GeneratorSettings.h` (GUI-free), used by
+  the engine config, the processor, and the canvas dialogs alike.
 - Modulators apply as pure pitch mapping (`mapPitch`): Quantize snaps to the
   global root/scale (also applied when the global quantize toggle is on), then
   Shift transposes +12.
@@ -151,11 +160,15 @@ needs as arguments, which is what makes the headless smoke test possible.
 Palette, drag-and-drop, canvas nodes, selection, deletion, and persistence all
 pick the new module up from the catalogue without further changes. All three
 kinds are in the palette: generators square, modulators circle, I/O triangles
-(MIDI In points right, Output left, toward their single port). The I/O modules
-carry the first per-module setting — a MIDI channel stored on
-`ModuleInstance`, edited via a real settings dialog in `Canvas`
-(`openChannelDialog`), shown as a sublabel on the node, and persisted with the
-canvas state. Per-module settings for the other types are still a later phase.
+(MIDI In points right, Output left, toward their single port). Per-module
+settings live on `ModuleInstance`: the I/O modules' MIDI channel and the
+Random / Scale generators' `GeneratorSettings` blob, each edited via a real
+settings dialog in `Canvas` (`openChannelDialog`, `openRandomDialog`,
+`openScaleGenDialog`), reflected in a node sublabel (channel or rate), and
+persisted with the canvas state. The dialogs' root/scale lists are sourced
+from the APVTS choice parameters ("Global" prepended), so they can't drift
+from the menu bar. Settings for Arp, Quantize, and Shift are still a later
+phase.
 
 ## Theming
 

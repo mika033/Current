@@ -6,22 +6,33 @@
 #include <vector>
 
 // The MIDI engine. There is no user wiring yet, so the modules run as a fixed
-// implicit chain with baked-in default settings (the requirements' "the four
-// modules run with fixed default settings that the user cannot change yet");
-// the I/O modules are the first with a real, user-editable setting (their MIDI
-// channel). Signal flow, per block:
+// implicit chain; the I/O modules and the Random/Scale generators carry real,
+// user-editable settings, the rest still run baked-in defaults. Signal flow,
+// per block:
 //
 //   host MIDI -> MIDI In (channel filter)
-//     -> generators add notes   (Arp, Random)
+//     -> generators add notes   (Arp, Random, Scale)
 //     -> modulators transform    (Quantize, then Shift)
 //     -> Output (channel stamp) -> host
 //
+// Generator behaviour (each on its own step clock, gate = half its step,
+// velocity 100; a root/scale override of -1 means "use the global value"):
+//   - Arp:      arpeggiates currently-held host notes, ascending, on a fixed
+//               1/16 grid. Consumes the host notes (they are the arp's input,
+//               so they don't also pass straight through).
+//   - Random:   one random note per step, drawn uniformly from the pitches of
+//               its (root, scale) that lie inside its inclusive note range.
+//   - Scale:    walks its (root, scale) stepwise from the root at octave 3
+//               (MIDI 48 + root), spanning `scaleOctaves` octaves, up or down
+//               (down = the same notes reversed). endOnRoot appends the octave
+//               root as a final step; otherwise the pattern ends on the
+//               scale's last degree (the 7th in a 7-note scale). The pattern
+//               restarts every `scaleRepeatQn` quarter notes counted from
+//               transport start (repeat choices assume 4/4): a pattern longer
+//               than the window is cut off, a shorter one rests until the
+//               window restarts.
+//
 // Fixed defaults (deliberately not user-editable yet):
-//   - Arp:      arpeggiates currently-held host notes, ascending, on a 1/16
-//               grid, gate = half a step. Consumes the host notes (they are the
-//               arp's input, so they don't also pass straight through).
-//   - Random:   free-running random notes drawn from the global scale within
-//               MIDI 48..72, 1/16 grid, gate = half a step.
 //   - Quantize: snaps every note to the global root + scale.
 //   - Shift:    transposes every note by +12 semitones.
 //
@@ -54,10 +65,29 @@ public:
     {
         bool hasArp      = false;
         bool hasRandom   = false;
+        bool hasScaleGen = false;
         bool hasQuantize = false;
         bool hasShift    = false;
         bool hasMidiIn   = false;
         bool hasOutput   = false;
+
+        // Random generator settings. Root/scale of -1 = use the global value.
+        // Until wiring lands the implicit chain runs one Random at most; extra
+        // copies on the canvas share the first one's settings.
+        int    randomRoot   = -1;
+        int    randomScale  = -1;
+        double randomStepQn = 0.25;   // step length in quarter notes (1/16)
+        int    randomFrom   = 24;     // inclusive MIDI note range
+        int    randomTo     = 48;
+
+        // Scale generator settings (same one-instance rule as Random).
+        int    scaleRoot      = -1;
+        int    scaleScale     = -1;
+        double scaleStepQn    = 0.5;    // step length in quarter notes (1/8)
+        double scaleRepeatQn  = 4.0;    // pattern restarts every this many qn
+        int    scaleOctaves   = 1;
+        bool   scaleDown      = false;
+        bool   scaleEndOnRoot = true;
 
         // Bit (ch - 1) set = channel ch participates. inChannelMask is all-ones
         // when no MIDI In module narrows the input; outChannelMask is 0 when no
@@ -67,8 +97,8 @@ public:
 
         bool anyModule() const
         {
-            return hasArp || hasRandom || hasQuantize || hasShift
-                || hasMidiIn || hasOutput;
+            return hasArp || hasRandom || hasScaleGen || hasQuantize
+                || hasShift || hasMidiIn || hasOutput;
         }
     };
 
@@ -112,9 +142,15 @@ private:
     struct PassNote { int inNote; int inChannel; int outNote; int outChannel; };
     std::vector<PassNote> activePass;
 
-    // 1/16 step clock. Free-running sample counter reset on transport start.
-    double samplesToNextStep = 0.0;
-    int    arpIndex = 0;
+    // Per-generator step clocks (samples until the next step lands), all reset
+    // on transport start so every generator's first step fires at sample 0.
+    // The rates differ per generator now, so they can't share one counter.
+    double arpSamplesToNext    = 0.0;
+    double randomSamplesToNext = 0.0;
+    double scaleSamplesToNext  = 0.0;
+    int    arpIndex   = 0;
+    int    scaleStep  = 0;   // steps since transport start; % steps-per-repeat
+                             // gives the position inside the repeat window
     bool   wasPlaying = false;
 
     juce::Random rng;

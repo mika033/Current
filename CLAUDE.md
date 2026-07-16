@@ -74,7 +74,7 @@ The "never use git" rule above applies to local sessions, where the user manages
 
 ## Status
 
-Phases 1 (basics) and 2 (canvas skeleton) of `generative-midi-plugin-requirements.md` are implemented, plus the two I/O modules (MIDI In / Output) with per-module channel settings — the first modules with a real settings dialog. The plugin builds and runs on Linux (VST3 + Standalone); macOS/Windows/iPad targets are not yet ported. Phase 3 will be scoped after the user tests Phase 2.
+Phases 1 (basics) and 2 (canvas skeleton) of `generative-midi-plugin-requirements.md` are implemented, plus the two I/O modules (MIDI In / Output) with per-module channel settings, a reworked Random generator (rate, root/scale override, note range) and a new Scale generator (root/scale override, up/down, octaves, end-on, rate, repeat) — both with full settings dialogs. The plugin builds and runs on Linux (VST3 + Standalone); macOS/Windows/iPad targets are not yet ported. Phase 3 will be scoped after the user tests Phase 2.
 
 Note on phase numbering: the requirements were renumbered after the first coding session — what the phase-1 branch and its commits called "Phase 1: Canvas skeleton" is now Phase 2. Code comments follow the current numbering.
 

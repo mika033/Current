@@ -43,14 +43,17 @@ playhead jump the buffer simply empties as normal.
 
 ## Implemented modules
 
-The four generator/modulator modules below shipped with the Phase 2 canvas
-skeleton and run with fixed default settings — double-clicking one opens a
-placeholder where its settings will appear in a later phase. The two I/O
-modules followed and are the first with a real setting: double-clicking them
-opens a channel dialog. Until port wiring lands everything runs as one fixed
-chain: host MIDI enters through MIDI In (or an implicit all-channels input if
-none is placed), feeds the generators, results pass through Quantize and then
-Shift, and exit through Output (or an implicit channel-preserving output).
+The first four generator/modulator modules shipped with the Phase 2 canvas
+skeleton running fixed default settings; the two I/O modules followed with the
+first real setting (their channel dialog), and the Random and Scale generators
+now carry full settings dialogs of their own. Arp, Quantize, and Shift still
+run fixed defaults — double-clicking them opens a placeholder. Until port
+wiring lands everything runs as one fixed chain: host MIDI enters through MIDI
+In (or an implicit all-channels input if none is placed), feeds the
+generators, results pass through Quantize and then Shift, and exit through
+Output (or an implicit channel-preserving output). A consequence of the fixed
+chain: placing several copies of the same generator doesn't layer them — extra
+copies share the first one's settings until wiring lands.
 
 Each implemented module's entry ends with a "User settings" line listing what
 the user can change today, so the gap between current and planned settings is
@@ -98,16 +101,46 @@ User settings: none yet.
 
 ### Random (generator)
 
-Random plays notes drawn at random from the global root and scale, one per
-step while the transport runs. It is a quick way to get evolving in-key
-material to feed other modules.
+Random plays notes drawn at random from a root and scale, one per step while
+the transport runs. It is a quick way to get evolving in-key material to feed
+other modules. Each step picks uniformly from the pitches of the selected
+scale that lie inside the note range; the gate is half a step, velocity 100.
 
-Current fixed behaviour: notes are drawn between C3 and C5 (MIDI 48–72),
-snapped into the global scale, at a 1/16-note rate with a gate of half a step
-and velocity 100. Planned settings: the note range boundaries (per the
-requirements, lower and upper limits) plus the common generator settings.
+Root and scale each default to Global — the module follows the menu bar, and
+tracks later menu-bar changes — or can be set locally (root C to B, the same
+scale list as the menu bar). The rate sets the step length from 1/32 to 1/1.
+The range is a pair of MIDI notes (inclusive); when the module is dropped it
+defaults to the root at octave 1 up to the root at octave 3 (C1 to C3 for a C
+root). If the range boundaries end up reversed the module swaps them, and if
+the range contains no scale note at all it snaps to the nearest one rather
+than fall silent. The node shows its rate as a sublabel.
 
-User settings: none yet.
+User settings: Root — Global (default) or C to B. Scale — Global (default) or
+any scale from the global list. Rate — 1/32 to 1/1 (default 1/16). Range from
+/ to — any MIDI note (default root octave 1 to root octave 3).
+
+### Scale (generator)
+
+Scale walks a scale stepwise, one note per step while the transport runs — an
+instant scale-run pattern. The walk starts at the root in octave 3 (C3 for a C
+root), spans the set number of octaves, and either climbs (Up) or descends
+(Down — the same notes played top-to-bottom). "End on" chooses how the run
+closes: Root (octave) appends the octave root as a final step — the classic
+eight-note scale run — while 7th stops on the scale's last degree (for a
+pentatonic that is its 5th degree; the option keeps the "7th" name from the
+common seven-note case). Root and scale each default to Global, like Random.
+
+The rate sets the step length; Repeat sets when the pattern restarts, counted
+from transport start (1/4 to 4 bars, assuming 4/4). A pattern longer than the
+repeat window is cut off mid-run; a shorter one rests until the window comes
+round. The defaults line up deliberately: 1/8 steps, one octave, End on Root,
+repeat every bar — an eight-note run filling exactly one bar. Gate is half a
+step, velocity 100, and the node shows its rate as a sublabel.
+
+User settings: Root — Global (default) or C to B. Scale — Global (default) or
+any scale from the global list. Mode — Up (default) or Down. Octaves — 1
+(default) to 4. End on — Root (octave, default) or 7th. Rate — 1/16 to 1/1
+(default 1/8). Repeat — 1/4, 1/2, 1 bar (default), 2, 3, or 4 bars.
 
 ### Quantize (modulator)
 

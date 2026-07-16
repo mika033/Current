@@ -1,5 +1,7 @@
 #include "Engine.h"
 #include "ScaleTables.h"
+#include <algorithm>
+#include <cmath>
 
 namespace
 {
@@ -36,8 +38,11 @@ void Engine::reset()
     held.fill (false);
     activeGen.clear();
     activePass.clear();
-    samplesToNextStep = 0.0;
+    arpSamplesToNext = 0.0;
+    randomSamplesToNext = 0.0;
+    scaleSamplesToNext = 0.0;
     arpIndex = 0;
+    scaleStep = 0;
     wasPlaying = false;
 }
 
@@ -97,15 +102,17 @@ void Engine::process (juce::MidiBuffer& midi,
                 bpm = *b;
     }
 
-    // 1/16-note grid.
-    const double samplesPerStep = juce::jmax (1.0, (60.0 / bpm) * sr / 4.0);
-    const int    gateSamples    = juce::jmax (1, (int) (samplesPerStep * 0.5));
+    const double samplesPerQn = juce::jmax (1.0, (60.0 / bpm) * sr);
 
-    // Transport start: align the step clock so a step fires at sample 0.
+    // Transport start: align every generator's step clock so its first step
+    // fires at sample 0, and rewind the Scale pattern to its beginning.
     if (isPlaying && ! wasPlaying)
     {
-        samplesToNextStep = 0.0;
+        arpSamplesToNext = 0.0;
+        randomSamplesToNext = 0.0;
+        scaleSamplesToNext = 0.0;
         arpIndex = 0;
+        scaleStep = 0;
     }
 
     // Capture the host's incoming events, then rebuild the buffer.
@@ -185,47 +192,108 @@ void Engine::process (juce::MidiBuffer& midi,
         }
     }
 
-    // --- Generators: fire on the step grid ----------------------------------
-    if (isPlaying && (cfg.hasArp || cfg.hasRandom))
+    // --- Generators: each fires on its own step grid -------------------------
+    if (isPlaying)
     {
-        std::vector<int> heldList;
+        // Map through the modulator chain and emit on the Output channel(s),
+        // remembering the note for its gate-timed release.
+        auto emitGenerated = [&] (int rawPitch, int sample, int gateSamples)
+        {
+            const int p = mapPitch (rawPitch, root, scaleIndex, globalQuantize, cfg);
+            forEachOutChannel (cfg.outChannelMask, 1, [&] (int ch)
+            {
+                midi.addEvent (juce::MidiMessage::noteOn (ch, p, (juce::uint8) 100), sample);
+                activeGen.push_back ({ p, ch, sample + gateSamples });
+            });
+        };
+
+        // Walk one generator's step clock across this block, firing `step` at
+        // each grid point and carrying the remainder into the next block.
+        auto runSteps = [&] (double& samplesToNext, double stepQn, auto&& step)
+        {
+            const double stepSamples = juce::jmax (1.0, samplesPerQn * stepQn);
+            const int    gateSamples = juce::jmax (1, (int) (stepSamples * 0.5));
+            double sPos = samplesToNext;
+            while (sPos < (double) numSamples)
+            {
+                step ((int) sPos, gateSamples);
+                sPos += stepSamples;
+            }
+            samplesToNext = sPos - (double) numSamples;
+        };
+
         if (cfg.hasArp)
+        {
+            std::vector<int> heldList;
             for (int n = 0; n < 128; ++n)
                 if (held[(size_t) n])
                     heldList.push_back (n);   // ascending
 
-        double sPos = samplesToNextStep;
-        while (sPos < (double) numSamples)
-        {
-            const int s = (int) sPos;
-
-            if (cfg.hasArp && ! heldList.empty())
+            runSteps (arpSamplesToNext, 0.25, [&] (int s, int gate)
             {
+                if (heldList.empty())
+                    return;
                 const int raw = heldList[(size_t) (arpIndex % (int) heldList.size())];
                 ++arpIndex;
-                const int p = mapPitch (raw, root, scaleIndex, globalQuantize, cfg);
-                forEachOutChannel (cfg.outChannelMask, 1, [&] (int ch)
-                {
-                    midi.addEvent (juce::MidiMessage::noteOn (ch, p, (juce::uint8) 100), s);
-                    activeGen.push_back ({ p, ch, s + gateSamples });
-                });
-            }
-
-            if (cfg.hasRandom)
-            {
-                const int cand = 48 + rng.nextInt (25);              // MIDI 48..72
-                const int raw  = ScaleTables::snapToScale (cand, root, scaleIndex);
-                const int p    = mapPitch (raw, root, scaleIndex, globalQuantize, cfg);
-                forEachOutChannel (cfg.outChannelMask, 1, [&] (int ch)
-                {
-                    midi.addEvent (juce::MidiMessage::noteOn (ch, p, (juce::uint8) 100), s);
-                    activeGen.push_back ({ p, ch, s + gateSamples });
-                });
-            }
-
-            sPos += samplesPerStep;
+                emitGenerated (raw, s, gate);
+            });
         }
-        samplesToNextStep = sPos - (double) numSamples;
+
+        if (cfg.hasRandom)
+        {
+            // All in-scale pitches inside the module's range; drawn uniformly.
+            const int rRoot  = cfg.randomRoot  >= 0 ? cfg.randomRoot  : root;
+            const int rScale = cfg.randomScale >= 0 ? cfg.randomScale : scaleIndex;
+            const int lo = juce::jlimit (0, 127, juce::jmin (cfg.randomFrom, cfg.randomTo));
+            const int hi = juce::jlimit (0, 127, juce::jmax (cfg.randomFrom, cfg.randomTo));
+
+            std::vector<int> candidates;
+            for (int n = lo; n <= hi; ++n)
+                if (ScaleTables::isInScale (n, rRoot, rScale))
+                    candidates.push_back (n);
+            // A degenerate range can miss the scale entirely (e.g. from == to
+            // on a non-scale pitch); snap rather than fall silent.
+            if (candidates.empty())
+                candidates.push_back (ScaleTables::snapToScale ((lo + hi) / 2, rRoot, rScale));
+
+            runSteps (randomSamplesToNext, cfg.randomStepQn, [&] (int s, int gate)
+            {
+                emitGenerated (candidates[(size_t) rng.nextInt ((int) candidates.size())], s, gate);
+            });
+        }
+
+        if (cfg.hasScaleGen)
+        {
+            // Build the pattern: the scale walked from the root at octave 3
+            // (MIDI 48 + root) across `scaleOctaves`, optionally capped with
+            // the octave root; Down plays the same notes reversed.
+            const int sRoot  = cfg.scaleRoot  >= 0 ? cfg.scaleRoot  : root;
+            const int sScale = cfg.scaleScale >= 0 ? cfg.scaleScale : scaleIndex;
+            const int base   = 48 + juce::jlimit (0, 11, sRoot);
+            const int octs   = juce::jlimit (1, 4, cfg.scaleOctaves);
+
+            std::vector<int> pattern;
+            for (int o = 0; o < octs; ++o)
+                for (int iv : ScaleTables::intervalsForScale (sScale))
+                    pattern.push_back (juce::jlimit (0, 127, base + o * 12 + iv));
+            if (cfg.scaleEndOnRoot)
+                pattern.push_back (juce::jlimit (0, 127, base + octs * 12));
+            if (cfg.scaleDown)
+                std::reverse (pattern.begin(), pattern.end());
+
+            const int stepsPerRepeat = juce::jmax (1,
+                (int) std::llround (cfg.scaleRepeatQn / juce::jmax (0.001, cfg.scaleStepQn)));
+
+            runSteps (scaleSamplesToNext, cfg.scaleStepQn, [&] (int s, int gate)
+            {
+                // Position inside the repeat window; steps past the pattern's
+                // end are rests until the window wraps.
+                const int idx = scaleStep % stepsPerRepeat;
+                ++scaleStep;
+                if (idx < (int) pattern.size())
+                    emitGenerated (pattern[(size_t) idx], s, gate);
+            });
+        }
     }
 
     // --- Release generated notes whose gate ends this block ------------------

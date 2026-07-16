@@ -46,10 +46,18 @@ private:
     void selectNode (ModuleComponent* node);
     void deleteSelected();
 
-    // The I/O modules' settings dialog (their MIDI channel) and the node
-    // sublabel that mirrors the choice.
+    // The per-module settings dialogs (I/O channel, Random / Scale generator
+    // settings) and the node sublabels that mirror the choices.
     void openChannelDialog (ModuleComponent& node);
+    void openRandomDialog (ModuleComponent& node);
+    void openScaleGenDialog (ModuleComponent& node);
     static juce::String channelSublabel (ModuleType type, int channel);
+    static juce::String rateSublabel (const GeneratorSettings& gen);
+
+    // "Global" followed by the choices of a global APVTS parameter — the
+    // dialogs' root/scale lists, sourced from the parameter so they can't
+    // drift from the menu bar.
+    juce::StringArray choicesWithGlobal (const char* paramID) const;
 
     CurrentAudioProcessor&        proc;
     CurrentAudioProcessorEditor&  owner;

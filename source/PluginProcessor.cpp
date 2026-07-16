@@ -83,12 +83,27 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     Engine::Config cfg;
     cfg.hasArp          = engHasArp.load();
     cfg.hasRandom       = engHasRandom.load();
+    cfg.hasScaleGen     = engHasScaleGen.load();
     cfg.hasQuantize     = engHasQuantize.load();
     cfg.hasShift        = engHasShift.load();
     cfg.hasMidiIn       = engHasMidiIn.load();
     cfg.hasOutput       = engHasOutput.load();
     cfg.inChannelMask   = engInChannelMask.load();
     cfg.outChannelMask  = engOutChannelMask.load();
+
+    cfg.randomRoot   = engRandomRoot.load();
+    cfg.randomScale  = engRandomScale.load();
+    cfg.randomStepQn = GeneratorOptions::rateQuarterNotes (engRandomRate.load());
+    cfg.randomFrom   = engRandomFrom.load();
+    cfg.randomTo     = engRandomTo.load();
+
+    cfg.scaleRoot      = engScaleRoot.load();
+    cfg.scaleScale     = engScaleScale.load();
+    cfg.scaleStepQn    = GeneratorOptions::rateQuarterNotes (engScaleRate.load());
+    cfg.scaleRepeatQn  = GeneratorOptions::repeatQuarterNotes (engScaleRepeat.load());
+    cfg.scaleOctaves   = engScaleOctaves.load();
+    cfg.scaleDown      = engScaleDown.load();
+    cfg.scaleEndOnRoot = engScaleEndOnRoot.load();
 
     const int  root          = (int) (rootParam     != nullptr ? rootParam->load()  : 0.0f);
     const int  scaleIndex    = (int) (scaleParam    != nullptr ? scaleParam->load() : 0.0f);
@@ -111,7 +126,7 @@ juce::AudioProcessorEditor* CurrentAudioProcessor::createEditor()
 
 void CurrentAudioProcessor::refreshEngineConfig()
 {
-    bool arp = false, rnd = false, quant = false, shift = false;
+    bool arp = false, rnd = false, scaleGen = false, quant = false, shift = false;
     bool midiIn = false, output = false;
     std::uint16_t inMask = 0, outMask = 0;
 
@@ -120,7 +135,32 @@ void CurrentAudioProcessor::refreshEngineConfig()
         switch (m.type)
         {
             case ModuleType::Arp:      arp   = true; break;
-            case ModuleType::Random:   rnd   = true; break;
+            case ModuleType::Random:
+                // First instance's settings win — the implicit chain runs one
+                // Random at most until wiring lands. Same below for Scale.
+                if (! rnd)
+                {
+                    engRandomRoot.store (m.gen.rootOverride);
+                    engRandomScale.store (m.gen.scaleOverride);
+                    engRandomRate.store (m.gen.rate);
+                    engRandomFrom.store (m.gen.rangeFrom);
+                    engRandomTo.store (m.gen.rangeTo);
+                }
+                rnd = true;
+                break;
+            case ModuleType::ScaleGen:
+                if (! scaleGen)
+                {
+                    engScaleRoot.store (m.gen.rootOverride);
+                    engScaleScale.store (m.gen.scaleOverride);
+                    engScaleRate.store (m.gen.rate);
+                    engScaleRepeat.store (m.gen.repeat);
+                    engScaleOctaves.store (m.gen.octaves);
+                    engScaleDown.store (m.gen.down);
+                    engScaleEndOnRoot.store (m.gen.endOnRoot);
+                }
+                scaleGen = true;
+                break;
             case ModuleType::Quantize: quant = true; break;
             case ModuleType::Shift:    shift = true; break;
             case ModuleType::MidiIn:
@@ -139,6 +179,7 @@ void CurrentAudioProcessor::refreshEngineConfig()
 
     engHasArp.store (arp);
     engHasRandom.store (rnd);
+    engHasScaleGen.store (scaleGen);
     engHasQuantize.store (quant);
     engHasShift.store (shift);
     engHasMidiIn.store (midiIn);
@@ -157,6 +198,23 @@ int CurrentAudioProcessor::addModule (ModuleType type, float x, float y)
     m.x       = x;
     m.y       = y;
     m.channel = defaultChannelFor (type);
+
+    if (type == ModuleType::Random)
+    {
+        // Default range per the requirements: root at octave 1 up to root at
+        // octave 3 (e.g. C1..C3 = MIDI 24..48), taken from the global root at
+        // drop time since the module's own root starts on Global.
+        const int root = (int) (rootParam != nullptr ? rootParam->load() : 0.0f);
+        m.gen.rangeFrom = juce::jlimit (0, 127, 24 + root);
+        m.gen.rangeTo   = juce::jlimit (0, 127, 48 + root);
+    }
+    else if (type == ModuleType::ScaleGen)
+    {
+        // 1/8 steps + 1-bar repeat: the default one-octave pattern capped with
+        // the octave root is 8 notes, which fills the bar exactly.
+        m.gen.rate = GeneratorOptions::kRate1_8;
+    }
+
     moduleList.push_back (m);
     refreshEngineConfig();
     return m.id;
@@ -196,6 +254,27 @@ int CurrentAudioProcessor::getModuleChannel (int id) const
     return 0;
 }
 
+void CurrentAudioProcessor::setModuleGenSettings (int id, const GeneratorSettings& settings)
+{
+    for (auto& m : moduleList)
+    {
+        if (m.id == id)
+        {
+            m.gen = settings;
+            refreshEngineConfig();
+            return;
+        }
+    }
+}
+
+GeneratorSettings CurrentAudioProcessor::getModuleGenSettings (int id) const
+{
+    for (const auto& m : moduleList)
+        if (m.id == id)
+            return m.gen;
+    return {};
+}
+
 void CurrentAudioProcessor::removeModule (int id)
 {
     moduleList.erase (std::remove_if (moduleList.begin(), moduleList.end(),
@@ -223,6 +302,25 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         // Only the I/O modules have a channel setting worth persisting.
         if (m.type == ModuleType::MidiIn || m.type == ModuleType::Output)
             node.setProperty ("channel", m.channel, nullptr);
+        // The generator settings, only where the type actually uses them.
+        if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen)
+        {
+            node.setProperty ("root",  m.gen.rootOverride, nullptr);
+            node.setProperty ("scale", m.gen.scaleOverride, nullptr);
+            node.setProperty ("rate",  m.gen.rate, nullptr);
+        }
+        if (m.type == ModuleType::Random)
+        {
+            node.setProperty ("from", m.gen.rangeFrom, nullptr);
+            node.setProperty ("to",   m.gen.rangeTo, nullptr);
+        }
+        if (m.type == ModuleType::ScaleGen)
+        {
+            node.setProperty ("octaves",   m.gen.octaves, nullptr);
+            node.setProperty ("down",      m.gen.down, nullptr);
+            node.setProperty ("endOnRoot", m.gen.endOnRoot, nullptr);
+            node.setProperty ("repeat",    m.gen.repeat, nullptr);
+        }
         canvas.appendChild (node, nullptr);
     }
     state.appendChild (canvas, nullptr);
@@ -254,6 +352,22 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             m.x       = (float) node.getProperty ("x");
             m.y       = (float) node.getProperty ("y");
             m.channel = (int) node.getProperty ("channel", defaultChannelFor (m.type));
+
+            // Missing properties (older saves, other types) keep the struct's
+            // defaults via the fallback argument.
+            GeneratorSettings def;
+            m.gen.rootOverride  = (int)  node.getProperty ("root",  def.rootOverride);
+            m.gen.scaleOverride = (int)  node.getProperty ("scale", def.scaleOverride);
+            m.gen.rate          = (int)  node.getProperty ("rate",
+                                      m.type == ModuleType::ScaleGen ? GeneratorOptions::kRate1_8
+                                                                     : def.rate);
+            m.gen.rangeFrom     = (int)  node.getProperty ("from", def.rangeFrom);
+            m.gen.rangeTo       = (int)  node.getProperty ("to",   def.rangeTo);
+            m.gen.octaves       = (int)  node.getProperty ("octaves", def.octaves);
+            m.gen.down          = (bool) node.getProperty ("down", def.down);
+            m.gen.endOnRoot     = (bool) node.getProperty ("endOnRoot", def.endOnRoot);
+            m.gen.repeat        = (int)  node.getProperty ("repeat", def.repeat);
+
             moduleList.push_back (m);
         }
         state.removeChild (canvas, nullptr);
