@@ -52,6 +52,10 @@ chain: host MIDI enters through MIDI In (or an implicit all-channels input if
 none is placed), feeds the generators, results pass through Quantize and then
 Shift, and exit through Output (or an implicit channel-preserving output).
 
+Each implemented module's entry ends with a "User settings" line listing what
+the user can change today, so the gap between current and planned settings is
+always explicit.
+
 ### MIDI In (I/O)
 
 MIDI In is where the outside world enters the graph: it brings in MIDI from
@@ -62,6 +66,8 @@ several MIDI Ins listens to the union of their channels. With no MIDI In on
 the canvas, the plugin behaves as if an all-channels MIDI In were present, so
 nothing is required to get sound flowing.
 
+User settings: Channel — All (default) or 1 to 16.
+
 ### Output (I/O)
 
 Output is where the graph leaves for the host. Its one setting is the MIDI
@@ -71,6 +77,8 @@ multitimbral track. Placing several Outputs sends a copy of the stream to each
 channel. With no Output on the canvas, events keep whatever channel they
 already had. Notes always release on the channel they started on, even if the
 channel setting is changed while they sound — nothing hangs.
+
+User settings: Channel — 1 to 16 (default 1).
 
 ### Arp (generator)
 
@@ -86,6 +94,8 @@ Current fixed behaviour: ascending order, 1/16-note rate, gate length of half
 a step, velocity 100. Planned settings are the usual arp controls — direction,
 octave range, rate, gate — plus the common generator settings.
 
+User settings: none yet.
+
 ### Random (generator)
 
 Random plays notes drawn at random from the global root and scale, one per
@@ -96,6 +106,8 @@ Current fixed behaviour: notes are drawn between C3 and C5 (MIDI 48–72),
 snapped into the global scale, at a 1/16-note rate with a gate of half a step
 and velocity 100. Planned settings: the note range boundaries (per the
 requirements, lower and upper limits) plus the common generator settings.
+
+User settings: none yet.
 
 ### Quantize (modulator)
 
@@ -109,6 +121,9 @@ a local root/scale override. Note that the global Quantize toggle in the menu
 bar applies the same snapping graph-wide; the module exists so quantization
 can be placed at a specific point in the flow.
 
+User settings: none yet (the global root, scale, and quantize toggle in the
+menu bar apply, but nothing is settable on the module itself).
+
 ### Shift (modulator)
 
 Shift transposes every note passing through it up or down by a fixed number
@@ -116,6 +131,8 @@ of semitones. Note-ons and note-offs shift together, so nothing ever hangs.
 
 Current fixed behaviour: +12 semitones (one octave up). Planned settings: the
 shift amount.
+
+User settings: none yet.
 
 ## Planned — speced
 

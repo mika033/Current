@@ -68,6 +68,10 @@ Cross-product specifications live in the SnorkelAudioStandards repo (`mika033/Sn
 - `build-scripts.md` — the canonical names, locations, and roles for the shell scripts at a plugin's repo root (`build_and_run_mac.sh`, `build_and_run_win.bat`, `run_mac.sh`, `generate_xcode.sh`, `release_mac.sh`, etc.). These look the same across all products; Current should reuse the same names and roles rather than inventing its own.
 - `preset-system-guideline.md` and `swing-timing.md` — likely relevant once Current has patches and stepped/generated timing.
 
+## Closing a remote session
+
+The "never use git" rule above applies to local sessions, where the user manages version control. In a remote (cloud) session git is the only way work leaves the container, so there: commit and push to the session's designated branch as work completes, and at the end of the close pass merge the session branch into `main` and push it, so a new session always knows where to start. Still never revert changes with git.
+
 ## Status
 
 Phases 1 (basics) and 2 (canvas skeleton) of `generative-midi-plugin-requirements.md` are implemented, plus the two I/O modules (MIDI In / Output) with per-module channel settings — the first modules with a real settings dialog. The plugin builds and runs on Linux (VST3 + Standalone); macOS/Windows/iPad targets are not yet ported. Phase 3 will be scoped after the user tests Phase 2.
