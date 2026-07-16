@@ -84,3 +84,7 @@ Note on phase numbering: the requirements were renumbered after the first coding
 ## Architecture
 
 See `architecture.md`: component map, canvas-model ownership and persistence, the message-thread/audio-thread handoff, the fixed implicit engine chain and its defaults, the module-catalogue extension recipe, theming, and what's deferred to later phases.
+
+## Module reference
+
+See `modules.md`: manual-style docs for the implemented modules plus the planned catalogue, tiered into speced (codable as-is) and idea-only (open questions listed per module). Keep it updated as modules gain real settings or specs firm up.
