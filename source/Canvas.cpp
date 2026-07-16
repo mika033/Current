@@ -7,10 +7,20 @@ Canvas::Canvas (CurrentAudioProcessor& processor, CurrentAudioProcessorEditor& e
     : proc (processor), owner (editor)
 {
     setWantsKeyboardFocus (true);
+    proc.canvasModelReplaced.addChangeListener (this);
     rebuildFromModel();
 }
 
-Canvas::~Canvas() = default;
+Canvas::~Canvas()
+{
+    proc.canvasModelReplaced.removeChangeListener (this);
+}
+
+void Canvas::changeListenerCallback (juce::ChangeBroadcaster*)
+{
+    rebuildFromModel();
+    repaint();
+}
 
 juce::var Canvas::makeDragDescription (ModuleType type)
 {
@@ -41,7 +51,7 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
 
     node->onOpenSettings = [this] (ModuleComponent& n)
     {
-        // Phase 1: an empty placeholder where the module's settings will live.
+        // Phase 2: an empty placeholder where the module's settings will live.
         auto* dlg = owner.showInlineDialog (juce::String (descriptorFor (n.moduleType()).name)
                                             + " settings",
                                             "Settings for this module will appear here in a later phase.");
@@ -73,7 +83,7 @@ void Canvas::selectNode (ModuleComponent* node)
 
 void Canvas::deleteSelected()
 {
-    // Phase 1 convenience so placed nodes aren't permanent while testing the
+    // Phase 2 convenience so placed nodes aren't permanent while testing the
     // canvas. Removes from both the view and the model.
     if (selectedNode == nullptr)
         return;

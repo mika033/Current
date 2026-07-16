@@ -17,7 +17,7 @@ namespace ParamIDs
 }
 
 // One placed module on the canvas. Position is stored in canvas coordinates
-// (top-left of the node). Phase 1 has no per-module settings yet, so type +
+// (top-left of the node). Phase 2 has no per-module settings yet, so type +
 // position is the whole model.
 struct ModuleInstance
 {
@@ -27,15 +27,17 @@ struct ModuleInstance
     float      y = 0.0f;
 };
 
-// Phase 1 processor. The audio/MIDI path is a pass-through skeleton — no
-// generative engine yet — so the deliverable this phase is the editor's canvas.
-// The module layout lives here (not in the editor) so it survives the editor
-// being closed and reopened and is persisted in the DAW project state.
+// Phase 2 processor: a MIDI effect whose processBlock produces no audio and
+// drives the Engine (fixed implicit module chain, see Engine.h). The module
+// layout lives here (not in the editor) so it survives the editor being closed
+// and reopened and is persisted in the DAW project state.
 //
 // Threading: the module list is touched only from the message thread (editor +
-// canvas). processBlock never reads it, so no lock is needed in Phase 1. When a
-// real engine lands and processBlock starts consuming the graph, this becomes a
-// message-thread-writes / audio-thread-reads handoff and will need revisiting.
+// canvas). The audio thread never reads it directly — it reads a lock-free
+// presence snapshot (per-module-type atomics) republished by
+// refreshEngineConfig() after every model change. Once real port wiring lands
+// and the audio thread needs the graph topology, this handoff will need a
+// bigger snapshot (e.g. a swapped immutable graph), not just flags.
 class CurrentAudioProcessor : public juce::AudioProcessor
 {
 public:
@@ -73,12 +75,18 @@ public:
     void moveModule (int id, float x, float y);
     void removeModule (int id);
 
+    // Fires when the model is replaced wholesale behind the editor's back
+    // (setStateInformation while the editor is open — project revert, preset
+    // load). The canvas listens and rebuilds; its own edits don't need it
+    // because it already knows what it changed.
+    juce::ChangeBroadcaster canvasModelReplaced;
+
 private:
     juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
     // Publish which module types are present for the audio thread. Called on the
     // message thread after any change to moduleList; read lock-free (per-flag
-    // atomics) in processBlock. Position never affects DSP in Phase 1, so only
+    // atomics) in processBlock. Position never affects DSP in Phase 2, so only
     // presence is published.
     void refreshEngineConfig();
 

@@ -34,9 +34,9 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
-# Current — Phase 1 canvas skeleton. A MIDI-effect plugin: VST3 + Standalone on
+# Current — Phase 2 canvas skeleton. A MIDI-effect plugin: VST3 + Standalone on
 # desktop. macOS would also ship an AU MIDI-FX variant like Little Arp Monster,
-# but Phase 1 is developed and build-tested on Linux, where only VST3 +
+# but Phase 2 is developed and build-tested on Linux, where only VST3 +
 # Standalone exist.
 #
 # NEEDS_MIDI_INPUT/OUTPUT + IS_MIDI_EFFECT mark it as a MIDI processor.

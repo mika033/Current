@@ -3,7 +3,7 @@
 #include <juce_graphics/juce_graphics.h>
 #include "Theme.h"
 
-// The catalogue of module types the canvas knows about. Phase 1 ships a
+// The catalogue of module types the canvas knows about. Phase 2 ships a
 // deliberately tiny set — two generators and two modulators — enough to prove
 // the canvas / palette / settings-placeholder loop. New modules (and the I/O
 // kind) slot in by extending this enum and kCatalogue; nothing else in the
@@ -13,7 +13,7 @@ enum class ModuleKind
 {
     Generator,   // drawn as a square (has outputs only, once ports land)
     Modulator,   // drawn as a circle
-    IO           // MIDI In / Output — shape TBD; not in the Phase 1 palette
+    IO           // MIDI In / Output — shape TBD; not in the Phase 2 palette
 };
 
 enum class ModuleType
@@ -45,7 +45,7 @@ struct ModuleDescriptor
     }
 };
 
-// The Phase 1 palette, in display order. Two generators, two modulators.
+// The Phase 2 palette, in display order. Two generators, two modulators.
 inline const std::array<ModuleDescriptor, 4>& moduleCatalogue()
 {
     static const std::array<ModuleDescriptor, 4> kCatalogue = {{
@@ -66,7 +66,7 @@ inline const ModuleDescriptor& descriptorFor (ModuleType type)
 }
 
 // Stable string ids for state persistence, so a saved layout survives an enum
-// reorder. Only the four Phase 1 types are covered.
+// reorder. Only the four Phase 2 types are covered.
 inline juce::String moduleTypeToString (ModuleType type)
 {
     switch (type)

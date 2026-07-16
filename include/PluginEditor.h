@@ -7,7 +7,7 @@
 #include "CurrentLookAndFeel.h"
 #include "MainView.h"
 
-// Phase 1 editor. Derives from DragAndDropContainer so the palette chips and the
+// Phase 2 editor. Derives from DragAndDropContainer so the palette chips and the
 // canvas share one drag context (the container must be an ancestor of both).
 class CurrentAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     public juce::DragAndDropContainer
@@ -22,7 +22,7 @@ public:
     /** Spawn an inline modal dialog inside the editor's component hierarchy.
      *  Returns a non-owning pointer the caller configures (addButton / onResult)
      *  then disposes of inside its onResult callback. Replaces juce::AlertWindow
-     *  per the SnorkelAudioStandards modal-dialog rule. In Phase 1 this backs the
+     *  per the SnorkelAudioStandards modal-dialog rule. In Phase 2 this backs the
      *  empty module-settings placeholder. */
     InlineDialog* showInlineDialog (const juce::String& title,
                                     const juce::String& message = {});

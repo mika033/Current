@@ -7,7 +7,7 @@ namespace
     const juce::StringArray kRootNames { "C", "C#", "D", "D#", "E", "F",
                                          "F#", "G", "G#", "A", "A#", "B" };
 
-    // A representative handful for Phase 1; the full scale set arrives with the
+    // A representative handful for Phase 2; the full scale set arrives with the
     // Quantize module's real settings in a later phase.
     const juce::StringArray kScaleNames { "Major", "Minor", "Dorian", "Phrygian",
                                           "Lydian", "Mixolydian", "Locrian",
@@ -163,7 +163,7 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     // Root of the saved state is the APVTS tree; the canvas layout rides along
     // as a child node. This is DAW-project persistence, not the user-facing
-    // Load/Save of patches (which Phase 1 deliberately omits).
+    // Load/Save of patches (which Phase 2 deliberately omits).
     auto state = parameters.copyState();
 
     juce::ValueTree canvas ("Canvas");
@@ -210,6 +210,10 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
 
     refreshEngineConfig();
     parameters.replaceState (state);
+
+    // Async + thread-safe, so it's fine even if a host calls
+    // setStateInformation off the message thread.
+    canvasModelReplaced.sendChangeMessage();
 }
 
 // This creates new instances of the plugin.

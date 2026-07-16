@@ -4,14 +4,14 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 
-// The bar above the canvas. Phase 1 carries the global settings only — root,
+// The bar above the canvas. Phase 2 carries the global settings only — root,
 // scale, quantize — plus a Theme switch. The Edit and Load/Save menus described
-// in the requirements are deferred (Phase 1 has no Load/Save), so they aren't
+// in the requirements are deferred (Phase 2 has no Load/Save), so they aren't
 // shown yet.
 //
 // The combos / toggle are bound straight to the processor's APVTS, so the global
 // settings are real parameters that persist and (later) automate — even though
-// no module consumes them yet in Phase 1.
+// no module consumes them yet in Phase 2.
 class MenuBar : public juce::Component
 {
 public:

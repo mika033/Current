@@ -10,7 +10,6 @@ void Engine::prepare (double sampleRate)
 void Engine::reset()
 {
     held.fill (false);
-    heldVel.fill (0);
     activeGen.clear();
     samplesToNextStep = 0.0;
     arpIndex = 0;
@@ -95,8 +94,7 @@ void Engine::process (juce::MidiBuffer& midi,
 
         if (m.isNoteOn())
         {
-            held[(size_t) m.getNoteNumber()]    = true;
-            heldVel[(size_t) m.getNoteNumber()] = (juce::uint8) m.getVelocity();
+            held[(size_t) m.getNoteNumber()] = true;
             if (! swallowHostNotes)
                 midi.addEvent (juce::MidiMessage::noteOn (
                                    m.getChannel(),

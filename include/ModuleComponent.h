@@ -7,7 +7,7 @@
 // around. Generators paint as squares, modulators as circles (per the
 // requirements' shape encoding); the family colour comes from the theme. Ports
 // are drawn as edge dots for visual completeness — wiring them up is a later
-// phase, so they are decorative in Phase 1.
+// phase, so they are decorative in Phase 2.
 //
 // The component owns only its appearance and gestures; the canvas owns the
 // model. Position changes and double-clicks are reported back through the

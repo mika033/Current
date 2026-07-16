@@ -68,7 +68,7 @@ void ModuleComponent::paint (juce::Graphics& g)
                                               juce::Font::bold)));
     g.drawText (d.name, body.toNearestInt(), juce::Justification::centred);
 
-    // Ports (decorative in Phase 1). Generators expose an output on the right;
+    // Ports (decorative in Phase 2). Generators expose an output on the right;
     // modulators an input on the left and an output on the right.
     const float portR = 4.0f;
     g.setColour (s.port);

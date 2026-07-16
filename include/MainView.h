@@ -8,7 +8,7 @@
 class CurrentAudioProcessor;
 class CurrentAudioProcessorEditor;
 
-// Assembles the Phase 1 editor layout: the global-settings menu bar on top, the
+// Assembles the Phase 2 editor layout: the global-settings menu bar on top, the
 // canvas filling the middle, and the module palette tray along the bottom.
 class MainView : public juce::Component
 {

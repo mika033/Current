@@ -15,7 +15,8 @@ class CurrentAudioProcessorEditor;
 // module model — it rebuilds its nodes from the model on construction and writes
 // adds/moves back to it.
 class Canvas : public juce::Component,
-               public juce::DragAndDropTarget
+               public juce::DragAndDropTarget,
+               private juce::ChangeListener
 {
 public:
     Canvas (CurrentAudioProcessor& processor, CurrentAudioProcessorEditor& editor);
@@ -37,6 +38,9 @@ public:
     void itemDropped   (const SourceDetails&) override;
 
 private:
+    // Model replaced behind our back (host state restore) — rebuild the nodes.
+    void changeListenerCallback (juce::ChangeBroadcaster*) override;
+
     void addNodeComponent (const ModuleInstance& instance);
     void rebuildFromModel();
     void selectNode (ModuleComponent* node);

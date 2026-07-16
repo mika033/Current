@@ -1,4 +1,4 @@
-// Headless smoke test for the Phase 1 Engine. Exercises the fixed-default
+// Headless smoke test for the Phase 2 Engine. Exercises the fixed-default
 // module behaviours and, above all, asserts the safety property that matters
 // for a MIDI effect: every note-on the engine emits is balanced by a note-off,
 // so nothing hangs — across pass-through, modulators, generators, and a

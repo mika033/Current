@@ -11,7 +11,7 @@
  *  repaints from CurrentTheme::active() every frame, so theme swaps land for
  *  free.
  *
- *  In Phase 1 this backs the empty "settings placeholder" a module opens on
+ *  In Phase 2 this backs the empty "settings placeholder" a module opens on
  *  double-click; the message/text-field plumbing is carried over from Little Arp
  *  Monster so later phases can grow real settings dialogs on the same base.
  *

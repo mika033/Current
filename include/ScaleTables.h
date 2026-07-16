@@ -4,7 +4,7 @@
 #include <vector>
 #include <juce_core/juce_core.h>
 
-// Scale interval tables + pitch helpers used by the Phase 1 engine (the Quantize
+// Scale interval tables + pitch helpers used by the Phase 2 engine (the Quantize
 // modulator and the Random generator). The interval sets are semitone offsets
 // within one octave from the root. Index order matches kScaleNames in
 // PluginProcessor.cpp — keep the two in lock-step.
@@ -49,22 +49,5 @@ namespace ScaleTables
             if (note + dist <= 127 && isInScale (note + dist, root, scaleIndex)) return note + dist;
         }
         return note;   // unreachable for any real scale, but keeps the note valid
-    }
-
-    // The `degreeIndex`-th scale note at or above `minNote` (used by the Random
-    // generator to pick in-scale pitches across a range).
-    inline int scaleNoteAtOrAbove (int minNote, int degreeIndex, int root, int scaleIndex)
-    {
-        const auto& iv = intervalsForScale (scaleIndex);
-        const int perOctave = (int) iv.size();
-        const int octave = degreeIndex / perOctave;
-        const int step   = degreeIndex % perOctave;
-
-        // Lowest root at or below minNote, then walk up by octaves + degree.
-        int base = root;
-        while (base + 12 <= minNote) base += 12;
-        while (base > minNote)       base -= 12;
-
-        return juce::jlimit (0, 127, base + 12 * octave + iv[(size_t) step]);
     }
 }

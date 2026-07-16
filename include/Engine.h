@@ -4,7 +4,7 @@
 #include <array>
 #include <vector>
 
-// The Phase 1 MIDI engine. There is no user wiring yet, so the modules run as a
+// The Phase 2 MIDI engine. There is no user wiring yet, so the modules run as a
 // fixed implicit chain with baked-in default settings (the requirements' "the
 // four modules run with fixed default settings that the user cannot change
 // yet"). Signal flow, per block:
@@ -14,7 +14,7 @@
 //     -> modulators transform    (Quantize, then Shift)
 //     -> host output
 //
-// Fixed defaults (all deliberately not user-editable in Phase 1):
+// Fixed defaults (all deliberately not user-editable in Phase 2):
 //   - Arp:      arpeggiates currently-held host notes, ascending, on a 1/16
 //               grid, gate = half a step. Consumes the host notes (they are the
 //               arp's input, so they don't also pass straight through).
@@ -68,7 +68,6 @@ private:
 
     // Host notes currently held (raw incoming pitch), the Arp's input.
     std::array<bool, 128> held {};
-    std::array<juce::uint8, 128> heldVel {};
 
     // Notes the engine generated that still need a note-off, with the remaining
     // sample count until release. Pitch stored here is the already-mapped
