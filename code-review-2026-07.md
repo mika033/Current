@@ -62,7 +62,8 @@ way LAM solves this" note for rate sync. This is a product decision as much as
 a code change — "from transport start" vs "from the song's bar 0" changes how
 every module feels — and it gets more expensive the more modules exist, so it
 should be decided at the start of Phase 3, before the catalogue grows.
-Recommendation: anchor to host position.
+Recommendation: anchor to host position. (Decided: this will be fixed soon —
+see "Fix preparation for findings 1 and 2" below.)
 
 ## 2. The Standalone build is musically inert
 
@@ -73,8 +74,91 @@ this". Nothing implements that: in the Standalone there is no playhead, so
 pass-through and Delay echoes work. Neither `architecture.md`'s deferred list
 nor `modules.md` mentions this gap, so a future session (or a tester using the
 Standalone, which the build script launches by default) would rediscover it
-the hard way. Needs either the LAM-style internal transport or at least a line
-in the docs saying generators require a host until that lands.
+the hard way. Needs the LAM-style internal transport. (Decided: this will be
+fixed soon — see "Fix preparation for findings 1 and 2" below.)
+
+## Fix preparation for findings 1 and 2 (for the next session)
+
+Both fixes are planned to land soon. Both problems are already solved in
+Little Arp Monster — the next session should pull the LAM repo into its
+workspace (via add_repo; ask the user for the exact repo name if needed) and
+copy the approach rather than re-derive it. This review deliberately did not
+open the LAM repo, so the notes below map out the Current side only: where the
+change lands, what has to be decided, and what to look up in LAM.
+
+### Finding 1 — anchor the engine's clocks to the host position
+
+What to look up in LAM: how it derives its step grid from the playhead each
+block (it implements the standards repo's `swing-timing.md`, so it almost
+certainly computes grid positions from `ppqPosition` rather than counting
+locally), and how it behaves when a host supplies a playhead without a ppq
+value. The standards repo's `swing-timing.md` itself defines the pair-based
+swing maths in loop-length-invariant (i.e. position-anchored) terms — good
+cross-reference for the Quantize part.
+
+The Current side, concretely:
+
+- Everything to change is inside `Engine::process` (`source/Engine.cpp`);
+  `Engine::Config` and the processor handoff are untouched. The current
+  anchoring is the `isPlaying && ! wasPlaying` block (which zeroes
+  `arpSamplesToNext` / `randomSamplesToNext` / `scaleSamplesToNext` /
+  `lfoSamplesToNext`, `arpIndex`/`arpStep`/`scaleStep`/`lfoStep`,
+  `quantSamplesToNext`/`quantStep`, `progQn`) plus the freewheeling advance at
+  the bottom of `process` (`quantSamplesToNext`, `quantStep`, `progQn`).
+- The fix direction: read `pos->getPpqPosition()` each block and *derive*
+  positions instead of carrying counters. Per stepped module: the grid index
+  at block start is floor(ppq / stepQn); a step fires at every boundary whose
+  ppq lies in [blockStartPpq, blockEndPpq), converted to a block sample via
+  samplesPerQn. Repeat-window position becomes fmod(ppq, repeatQn); the LFO's
+  cycle position becomes fmod(ppq / cycleQn + phase, 1); the Progression index
+  becomes floor(ppq / progRateQn) % stepCount (replacing `progQn`); Quantize's
+  straight boundary index (whose parity drives swing) is floor over
+  quantStepQn the same way. Tempo changes and loop wraps then come out right
+  with no special cases.
+- Decisions to make deliberately, not by accident:
+  - Boundary ownership must be half-open ([start, end) per block) or a loop
+    wrap landing exactly on a step will double-fire or skip it.
+  - Negative ppq exists (host pre-roll / count-in): floor and fmod must be the
+    mathematical versions (round toward −∞), not C truncation, or the grid
+    misaligns before bar 1.
+  - The Arp's walk position (`arpIndex`) currently advances only when a note
+    fires. Deriving it from the grid index instead makes the arp phrase
+    identical on every loop pass — almost certainly the musical intent, but it
+    is a behaviour change; check what LAM does.
+  - Keep the 4/4 assumption for the bar-based tables (repeat, bar lengths) —
+    reading the host time signature is a separate, later step, and
+    `ModuleSettings.h` already documents the assumption.
+- The smoke test builds its `PositionInfo` with bpm + isPlaying only; it needs
+  `setPpqPosition` fed per block (a small advancing-position helper), plus the
+  two tests already suggested in the coverage section: play starting mid-bar
+  (first step must land on the next grid point, not at sample 0) and a
+  simulated loop wrap (ppq jumping back; pattern position must follow).
+
+### Finding 2 — give the Standalone (and playhead-less hosts) a transport
+
+What to look up in LAM: where it detects "no usable host transport" and what
+it substitutes — whether it free-runs at a fixed/user-set BPM, whether the
+Standalone gets a tempo control or play/stop affordance in the UI, and where
+that state lives (parameter? standalone-only widget?). Copy those product
+choices; they are exactly the "handled the same way LAM solves this" the
+requirements call for.
+
+The Current side, concretely:
+
+- Do finding 1 first. Once the engine consumes a ppq position, the fallback
+  is just a synthesized position, and the engine keeps a single code path.
+- Implement the fallback in `CurrentAudioProcessor::processBlock`, not in the
+  engine: where `pos` is built from `getPlayHead()` today, detect the missing
+  cases (null playhead — the Standalone; a playhead without bpm or ppq) and
+  substitute a processor-owned internal transport: isPlaying true, bpm from
+  whatever source LAM uses, ppq accumulated across blocks
+  (+= numSamples / samplesPerQn). The engine then never knows the difference.
+- The accumulator is audio-thread-owned state (like the engine's counters);
+  reset policy (does the Standalone's transport ever rewind?) should follow
+  LAM.
+- The smoke test can then cover the fallback by calling the engine with a
+  null position — today that path silently produces no generator output,
+  which is exactly finding 2.
 
 ## 3. The settings handoff should become a snapshot swap before wiring lands
 
