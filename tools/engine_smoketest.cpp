@@ -1,14 +1,16 @@
-// Headless smoke test for the Phase 2 Engine. Exercises the fixed-default
-// module behaviours and, above all, asserts the safety property that matters
-// for a MIDI effect: every note-on the engine emits is balanced by a note-off,
-// so nothing hangs — across pass-through, modulators, generators, and a
-// transport stop. Built only when CURRENT_BUILD_TESTS=ON.
+// Headless smoke test for the Engine. Exercises the module behaviours —
+// defaults and user settings (rates, ranges, modes, repeat windows, gates) —
+// and, above all, asserts the safety property that matters for a MIDI effect:
+// every note-on the engine emits is balanced by a note-off, so nothing hangs —
+// across pass-through, modulators, stepped modules, and a transport stop.
+// Built only when CURRENT_BUILD_TESTS=ON.
 //
 // Not a unit-test framework — just asserts + a pass/fail summary, so it can run
 // in CI without extra deps.
 
 #include "Engine.h"
 #include "ScaleTables.h"
+#include "ModuleSettings.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <cstdlib>
 #include <iostream>
@@ -73,23 +75,56 @@ int main()
         check (ons == 1 && found60, "pass-through keeps the note-on at pitch 60");
     }
 
-    // --- 2. Shift: +12, and the matching note-off is also shifted -----------
+    // --- 2. Shift: settings-driven transpose, off follows the on ------------
     {
-        Engine e; e.prepare (sr);
-        Engine::Config cfg; cfg.hasShift = true;
-        juce::MidiBuffer midi;
-        midi.addEvent (juce::MidiMessage::noteOn  (1, 60, (juce::uint8) 100), 0);
-        midi.addEvent (juce::MidiMessage::noteOff (1, 60), 256);
-        e.process (midi, block, playing (false), 0, 0, false, cfg);
-        int onPitch = -1, offPitch = -1;
-        for (const auto meta : midi)
+        // Chromatic (scale Off): plain semitone transpose.
+        auto shiftedPitches = [&] (int amount, int shiftScale, int inNote,
+                                   int globalRoot, int globalScale)
         {
-            const auto m = meta.getMessage();
-            if (m.isNoteOn())  onPitch  = m.getNoteNumber();
-            if (m.isNoteOff()) offPitch = m.getNoteNumber();
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasShift    = true;
+            cfg.shiftAmount = amount;
+            cfg.shiftScale  = shiftScale;
+            juce::MidiBuffer midi;
+            midi.addEvent (juce::MidiMessage::noteOn  (1, inNote, (juce::uint8) 100), 0);
+            midi.addEvent (juce::MidiMessage::noteOff (1, inNote), 256);
+            e.process (midi, block, playing (false), globalRoot, globalScale, false, cfg);
+            int onPitch = -1, offPitch = -1;
+            for (const auto meta : midi)
+            {
+                const auto m = meta.getMessage();
+                if (m.isNoteOn())  onPitch  = m.getNoteNumber();
+                if (m.isNoteOff()) offPitch = m.getNoteNumber();
+            }
+            return std::pair<int, int> (onPitch, offPitch);
+        };
+
+        auto [on, off] = shiftedPitches (12, ModuleOptions::kScaleOff, 60, 0, 0);
+        check (on == 72,  "Shift chromatic +12 maps note-on 60 -> 72");
+        check (off == 72, "Shift maps the note-off to 72 as well (no hang)");
+        check (shiftedPitches (-3, ModuleOptions::kScaleOff, 60, 0, 0).first == 57,
+               "Shift chromatic -3 maps 60 -> 57");
+
+        // Scale degrees on the global scale (-1 = Global): C major, +2 degrees
+        // from C is E; -1 degree from C is B below.
+        check (shiftedPitches (2, -1, 60, 0, 0).first == 64,
+               "Shift +2 degrees in C major maps C4 -> E4");
+        check (shiftedPitches (-1, -1, 60, 0, 0).first == 59,
+               "Shift -1 degree in C major maps C4 -> B3");
+        // Out-of-scale input snaps into the scale as part of the degree walk.
+        {
+            const int p = shiftedPitches (1, -1, 61, 0, 0).first;
+            check (ScaleTables::isInScale (p, 0, 0) && (p == 62 || p == 64),
+                   "Shift by degrees snaps out-of-scale C#4 into C major first");
         }
-        check (onPitch == 72,  "Shift maps note-on 60 -> 72");
-        check (offPitch == 72, "Shift maps the note-off to 72 as well (no hang)");
+        // Named-scale override wins over the global scale: +1 degree in D
+        // major from D4 is E4, even with the global scale set elsewhere.
+        check (shiftedPitches (1, 0, 62, 2, 7).first == 64,
+               "Shift degree walk follows its own scale, not the global");
+        // Amount 0 is a strict no-op even for out-of-scale notes.
+        check (shiftedPitches (0, -1, 61, 0, 0).first == 61,
+               "Shift amount 0 leaves an out-of-scale note untouched");
     }
 
     // --- 3. Quantize module: snaps an out-of-scale note to C major ----------
@@ -153,6 +188,74 @@ int main()
 
         check (ons > 0,     "Arp emitted notes from the held chord");
         check (ons == offs, "Arp: every note-on balanced by a note-off after stop");
+    }
+
+    // --- 5b. Arp settings: mode, octaves, repeat window, full gate ----------
+    {
+        // Collect the first `count` arp pitches for a held C-E-G triad under
+        // the given settings.
+        auto arpPitches = [&] (int mode, int octaves, double repeatQn, double gateFrac,
+                               size_t count, int& onsOut, int& offsOut)
+        {
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasArp      = true;
+            cfg.arpMode     = mode;
+            cfg.arpOctaves  = octaves;
+            cfg.arpRepeatQn = repeatQn;
+            cfg.arpGateFrac = gateFrac;
+            cfg.arpStepQn   = 0.25;   // 1/16
+
+            std::vector<int> pitches;
+            int ons = 0, offs = 0;
+            {
+                juce::MidiBuffer midi;
+                midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+                midi.addEvent (juce::MidiMessage::noteOn (1, 64, (juce::uint8) 100), 0);
+                midi.addEvent (juce::MidiMessage::noteOn (1, 67, (juce::uint8) 100), 0);
+                e.process (midi, block, playing (true), 0, 0, false, cfg);
+                tally (midi, ons, offs);
+                for (const auto meta : midi)
+                    if (meta.getMessage().isNoteOn())
+                        pitches.push_back (meta.getMessage().getNoteNumber());
+            }
+            for (int i = 0; i < 2000 && pitches.size() < count; ++i)
+            {
+                juce::MidiBuffer midi;
+                e.process (midi, block, playing (true), 0, 0, false, cfg);
+                tally (midi, ons, offs);
+                for (const auto meta : midi)
+                    if (meta.getMessage().isNoteOn())
+                        pitches.push_back (meta.getMessage().getNoteNumber());
+            }
+            { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, false, cfg); tally (midi, ons, offs); }
+            onsOut = ons; offsOut = offs;
+            return pitches;
+        };
+
+        int ons = 0, offs = 0;
+        check (arpPitches (ModuleOptions::kModeUp, 1, 0.0, 0.5, 6, ons, offs)
+                   == std::vector<int> { 60, 64, 67, 60, 64, 67 },
+               "Arp Up cycles the held triad ascending");
+        check (arpPitches (ModuleOptions::kModeDown, 1, 0.0, 0.5, 6, ons, offs)
+                   == std::vector<int> { 67, 64, 60, 67, 64, 60 },
+               "Arp Down cycles the held triad descending");
+        check (arpPitches (ModuleOptions::kModeUpDown, 1, 0.0, 0.5, 8, ons, offs)
+                   == std::vector<int> { 60, 64, 67, 64, 60, 64, 67, 64 },
+               "Arp Up-Down bounces without doubling the endpoints");
+        check (arpPitches (ModuleOptions::kModeUp, 2, 0.0, 0.5, 7, ons, offs)
+                   == std::vector<int> { 60, 64, 67, 72, 76, 79, 60 },
+               "Arp octaves=2 extends the walk an octave up");
+        // Repeat 1/2 = 8 sixteenth steps: the walk restarts mid-cycle at the
+        // window boundary (after 60 64 67 60 64 67 60 64 comes 60 again).
+        check (arpPitches (ModuleOptions::kModeUp, 1, 2.0, 0.5, 11, ons, offs)
+                   == std::vector<int> { 60, 64, 67, 60, 64, 67, 60, 64,
+                                         60, 64, 67 },
+               "Arp repeat 1/2 resets the walk every 8 steps");
+        // Full gate: the note-off is capped one sample short of the step, so
+        // everything still balances.
+        arpPitches (ModuleOptions::kModeUp, 1, 0.0, 1.0, 8, ons, offs);
+        check (ons > 0 && ons == offs, "Arp 100% gate: balanced after stop");
     }
 
     // --- 6. MIDI In: channel filter drops non-matching input ----------------
@@ -375,7 +478,7 @@ int main()
             cfg.scaleStepQn    = 1.0;
             cfg.scaleRepeatQn  = 16.0;   // 4 bars = 16 steps
             cfg.scaleOctaves   = 1;
-            cfg.scaleDown      = down;
+            cfg.scaleMode      = down ? ModuleOptions::kModeDown : ModuleOptions::kModeUp;
             cfg.scaleEndOnRoot = endOnRoot;
 
             std::vector<int> pitches;
@@ -401,13 +504,239 @@ int main()
                    == std::vector<int> { 60, 59, 57, 55, 53, 52, 50, 48 },
                "Scale gen down plays the same notes reversed");
     }
+    {
+        // Endless repeat: the 8-note pattern loops back-to-back, no rests and
+        // no truncation.
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasScaleGen    = true;
+        cfg.scaleStepQn    = 1.0;
+        cfg.scaleRepeatQn  = 0.0;   // Endless
+        cfg.scaleOctaves   = 1;
+        cfg.scaleEndOnRoot = true;
 
-    // --- 14. ScaleTables spot checks -----------------------------------------
+        std::vector<int> pitches;
+        for (int i = 0; i < 2000 && pitches.size() < 10; ++i)
+        {
+            juce::MidiBuffer midi;
+            e.process (midi, block, playing (true), 0, 0, false, cfg);
+            for (const auto meta : midi)
+                if (meta.getMessage().isNoteOn())
+                    pitches.push_back (meta.getMessage().getNoteNumber());
+        }
+        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, false, cfg); }
+        check (pitches == std::vector<int> { 48, 50, 52, 53, 55, 57, 59, 60, 48, 50 },
+               "Scale gen Endless loops the pattern back-to-back");
+    }
+
+    // --- 14. LFO generator: shapes, depth, phase, balance --------------------
+    {
+        // Collect the first `count` LFO pitches under the given settings.
+        // Defaults here: C major (globals), 1/4-note grid, 1-bar cycle -> a
+        // 16-step cycle sampled every 4 steps... (stepQn 1.0, cycleQn 4.0 = 4
+        // steps per cycle, so x advances 0, .25, .5, .75 per note).
+        auto lfoPitches = [&] (int shape, int depthOct, int depthSteps,
+                               double phaseFrac, size_t count,
+                               int& onsOut, int& offsOut)
+        {
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasLfo        = true;
+            cfg.lfoShape      = shape;
+            cfg.lfoDepthOct   = depthOct;
+            cfg.lfoDepthSteps = depthSteps;
+            cfg.lfoPhase      = phaseFrac;
+            cfg.lfoStepQn     = 1.0;
+            cfg.lfoCycleQn    = 4.0;
+
+            std::vector<int> pitches;
+            int ons = 0, offs = 0;
+            for (int i = 0; i < 2000 && pitches.size() < count; ++i)
+            {
+                juce::MidiBuffer midi;
+                e.process (midi, block, playing (true), 0, 0, false, cfg);
+                tally (midi, ons, offs);
+                for (const auto meta : midi)
+                    if (meta.getMessage().isNoteOn())
+                        pitches.push_back (meta.getMessage().getNoteNumber());
+            }
+            { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, false, cfg); tally (midi, ons, offs); }
+            onsOut = ons; offsOut = offs;
+            return pitches;
+        };
+
+        int ons = 0, offs = 0;
+
+        // Square, depth 1 octave, C major: +1 octave for the first half cycle,
+        // -1 octave for the second (centre C3 = 48, so 60 60 36 36).
+        check (lfoPitches (ModuleOptions::kLfoSquare, 1, 0, 0.0, 4, ons, offs)
+                   == std::vector<int> { 60, 60, 36, 36 },
+               "LFO square depth 1 oct alternates centre +/- an octave");
+        check (ons == offs, "LFO: balanced after stop");
+
+        // Phase 180 starts the square in its low half.
+        check (lfoPitches (ModuleOptions::kLfoSquare, 1, 0, 0.5, 4, ons, offs)
+                   == std::vector<int> { 36, 36, 60, 60 },
+               "LFO phase 180 starts the square half a cycle in");
+
+        // Sine at x = 0, .25, .5, .75: values 0, +1, 0, -1 -> C3, C4, C3, C2.
+        check (lfoPitches (ModuleOptions::kLfoSine, 1, 0, 0.0, 4, ons, offs)
+                   == std::vector<int> { 48, 60, 48, 36 },
+               "LFO sine sweeps centre, +1 oct, centre, -1 oct");
+
+        // Saw Up starts at -1 and climbs; x = 0, .25, .5, .75 -> -1, -.5, 0,
+        // +.5. Depth 2 steps: -2, -1, 0, +1 degrees from C3 in C major.
+        check (lfoPitches (ModuleOptions::kLfoSawUp, 0, 2, 0.0, 4, ons, offs)
+                   == std::vector<int> { 45, 47, 48, 50 },
+               "LFO saw up climbs through scale degrees");
+
+        // Depth 0: every note is the centre.
+        check (lfoPitches (ModuleOptions::kLfoTriangle, 0, 0, 0.0, 4, ons, offs)
+                   == std::vector<int> { 48, 48, 48, 48 },
+               "LFO depth 0 pins every note to the centre");
+
+        // Depth mixes octaves and steps: 1 oct + 2 steps in C major = 9
+        // degrees; the square's opening +1 lands 9 degrees above C3, which is
+        // E4 (C3 +7 = C4, +8 = D4, +9 = E4 = 64).
+        check (lfoPitches (ModuleOptions::kLfoSquare, 1, 2, 0.0, 1, ons, offs).front() == 64,
+               "LFO depth 1 oct + 2 steps reaches 9 degrees up");
+
+        // Random shape: still in scale, still balanced.
+        {
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasLfo   = true;
+            cfg.lfoShape = ModuleOptions::kLfoRandom;
+            bool allInScale = true;
+            int rons = 0, roffs = 0;
+            for (int i = 0; i < 200; ++i)
+            {
+                juce::MidiBuffer midi;
+                e.process (midi, block, playing (true), 0, 0, false, cfg);
+                tally (midi, rons, roffs);
+                for (const auto meta : midi)
+                    if (meta.getMessage().isNoteOn()
+                        && ! ScaleTables::isInScale (meta.getMessage().getNoteNumber(), 0, 0))
+                        allInScale = false;
+            }
+            { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, false, cfg); tally (midi, rons, roffs); }
+            check (rons > 0 && allInScale, "LFO random shape stays in scale");
+            check (rons == roffs, "LFO random shape: balanced after stop");
+        }
+    }
+
+    // --- 15. Delay: echo decay, per-echo shift, chain termination ------------
+    {
+        // One host note (on + off), then empty blocks until the echo chain has
+        // played out; collect the echoes' (pitch, velocity) pairs.
+        auto delayEchoes = [&] (double fb, int shift, int srcNote,
+                                int& onsOut, int& offsOut)
+        {
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasDelay      = true;
+            cfg.delayTimeQn   = 0.5;   // 1/8 at 120bpm = 11025 samples
+            cfg.delayFeedback = fb;
+            cfg.delayShift    = shift;
+
+            std::vector<std::pair<int, int>> echoes;
+            int ons = 0, offs = 0;
+            auto collect = [&] (const juce::MidiBuffer& b, bool skipSource)
+            {
+                for (const auto meta : b)
+                    if (meta.getMessage().isNoteOn())
+                        if (! (skipSource && meta.getMessage().getNoteNumber() == srcNote
+                                          && meta.getMessage().getVelocity() == 100))
+                            echoes.push_back ({ meta.getMessage().getNoteNumber(),
+                                                (int) meta.getMessage().getVelocity() });
+            };
+            {
+                juce::MidiBuffer midi;
+                midi.addEvent (juce::MidiMessage::noteOn  (1, srcNote, (juce::uint8) 100), 0);
+                midi.addEvent (juce::MidiMessage::noteOff (1, srcNote), 256);
+                e.process (midi, block, playing (false), 0, 0, false, cfg);
+                tally (midi, ons, offs);
+                collect (midi, true);
+            }
+            for (int i = 0; i < 600; ++i)
+            {
+                juce::MidiBuffer midi;
+                e.process (midi, block, playing (false), 0, 0, false, cfg);
+                tally (midi, ons, offs);
+                collect (midi, false);
+            }
+            onsOut = ons; offsOut = offs;
+            return echoes;
+        };
+
+        int ons = 0, offs = 0;
+
+        // Feedback 50%: velocities halve (roundToInt rounds half-to-even, so
+        // 12.5 -> 12) until they cross the floor of 5 — four echoes, all at
+        // the source pitch with shift 0.
+        check (delayEchoes (0.5, 0, 60, ons, offs)
+                   == std::vector<std::pair<int, int>> { { 60, 50 }, { 60, 25 },
+                                                         { 60, 12 }, { 60, 6 } },
+               "Delay fb 50%: four echoes with halving velocities");
+        check (ons == 5 && ons == offs, "Delay: source + echoes all balanced");
+
+        // Shift +12: each echo an octave above the one before.
+        {
+            const auto e12 = delayEchoes (0.5, 12, 60, ons, offs);
+            check (e12.size() == 4
+                       && e12[0].first == 72 && e12[1].first == 84
+                       && e12[2].first == 96 && e12[3].first == 108,
+                   "Delay shift +12 climbs an octave per echo");
+        }
+
+        // Lower feedback = fewer repeats (25%: 25, 6 -> two echoes).
+        check (delayEchoes (0.25, 0, 60, ons, offs).size() == 2,
+               "Delay fb 25% yields a shorter chain");
+
+        // An echo that would leave the MIDI range ends the chain (no clamp).
+        check (delayEchoes (0.5, 12, 120, ons, offs).empty(),
+               "Delay shift past 127 ends the chain instead of clamping");
+    }
+
+    // --- 15b. Delay: transport stop discards buffered echoes -----------------
+    {
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasDelay    = true;
+        cfg.delayTimeQn = 0.5;
+
+        int ons = 0, offs = 0;
+        {
+            juce::MidiBuffer midi;
+            midi.addEvent (juce::MidiMessage::noteOn  (1, 60, (juce::uint8) 100), 0);
+            midi.addEvent (juce::MidiMessage::noteOff (1, 60), 256);
+            e.process (midi, block, playing (true), 0, 0, false, cfg);
+            tally (midi, ons, offs);
+        }
+        // Stop before the first echo (11025 samples away) fires: the pending
+        // echo is discarded, so only the source note ever sounds.
+        for (int i = 0; i < 200; ++i)
+        {
+            juce::MidiBuffer midi;
+            e.process (midi, block, playing (false), 0, 0, false, cfg);
+            tally (midi, ons, offs);
+        }
+        check (ons == 1 && offs == 1,
+               "Delay: transport stop discards the buffered echo");
+    }
+
+    // --- 16. ScaleTables spot checks -----------------------------------------
     {
         check (ScaleTables::isInScale (60, 0, 0), "C is in C major");
         check (! ScaleTables::isInScale (61, 0, 0), "C# is not in C major");
         check (ScaleTables::snapToScale (61, 0, 0) == 60 || ScaleTables::snapToScale (61, 0, 0) == 62,
                "snap 61 -> 60/62 in C major");
+        check (ScaleTables::stepInScale (60, 0, 0, 7) == 72,
+               "step +7 degrees in C major = +1 octave");
+        check (ScaleTables::stepInScale (60, 0, 0, -7) == 48,
+               "step -7 degrees in C major = -1 octave");
+        check (ScaleTables::stepInScale (127, 0, 0, 5) == 127,
+               "degree walk clamps at the top of the MIDI range");
     }
 
     if (failures == 0)

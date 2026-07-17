@@ -84,26 +84,50 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.hasArp          = engHasArp.load();
     cfg.hasRandom       = engHasRandom.load();
     cfg.hasScaleGen     = engHasScaleGen.load();
+    cfg.hasLfo          = engHasLfo.load();
     cfg.hasQuantize     = engHasQuantize.load();
     cfg.hasShift        = engHasShift.load();
+    cfg.hasDelay        = engHasDelay.load();
     cfg.hasMidiIn       = engHasMidiIn.load();
     cfg.hasOutput       = engHasOutput.load();
     cfg.inChannelMask   = engInChannelMask.load();
     cfg.outChannelMask  = engOutChannelMask.load();
 
+    cfg.arpMode     = engArpMode.load();
+    cfg.arpStepQn   = ModuleOptions::rateQuarterNotes (engArpRate.load());
+    cfg.arpOctaves  = engArpOctaves.load();
+    cfg.arpGateFrac = ModuleOptions::gateFraction (engArpGate.load());
+    cfg.arpRepeatQn = ModuleOptions::repeatQuarterNotes (engArpRepeat.load());
+
     cfg.randomRoot   = engRandomRoot.load();
     cfg.randomScale  = engRandomScale.load();
-    cfg.randomStepQn = GeneratorOptions::rateQuarterNotes (engRandomRate.load());
+    cfg.randomStepQn = ModuleOptions::rateQuarterNotes (engRandomRate.load());
     cfg.randomFrom   = engRandomFrom.load();
     cfg.randomTo     = engRandomTo.load();
 
     cfg.scaleRoot      = engScaleRoot.load();
     cfg.scaleScale     = engScaleScale.load();
-    cfg.scaleStepQn    = GeneratorOptions::rateQuarterNotes (engScaleRate.load());
-    cfg.scaleRepeatQn  = GeneratorOptions::repeatQuarterNotes (engScaleRepeat.load());
+    cfg.scaleStepQn    = ModuleOptions::rateQuarterNotes (engScaleRate.load());
+    cfg.scaleRepeatQn  = ModuleOptions::repeatQuarterNotes (engScaleRepeat.load());
     cfg.scaleOctaves   = engScaleOctaves.load();
-    cfg.scaleDown      = engScaleDown.load();
+    cfg.scaleMode      = engScaleMode.load();
     cfg.scaleEndOnRoot = engScaleEndOnRoot.load();
+
+    cfg.lfoRoot       = engLfoRoot.load();
+    cfg.lfoScale      = engLfoScale.load();
+    cfg.lfoStepQn     = ModuleOptions::rateQuarterNotes (engLfoRate.load());
+    cfg.lfoCycleQn    = ModuleOptions::lfoCycleQuarterNotes (engLfoCycle.load());
+    cfg.lfoShape      = engLfoShape.load();
+    cfg.lfoDepthOct   = engLfoDepthOct.load();
+    cfg.lfoDepthSteps = engLfoDepthSteps.load();
+    cfg.lfoPhase      = ModuleOptions::lfoPhaseFraction (engLfoPhase.load());
+
+    cfg.shiftAmount = engShiftAmount.load();
+    cfg.shiftScale  = engShiftScale.load();
+
+    cfg.delayTimeQn   = ModuleOptions::rateQuarterNotes (engDelayRate.load());
+    cfg.delayFeedback = ModuleOptions::feedbackFraction (engDelayFeedback.load());
+    cfg.delayShift    = engDelayShift.load();
 
     const int  root          = (int) (rootParam     != nullptr ? rootParam->load()  : 0.0f);
     const int  scaleIndex    = (int) (scaleParam    != nullptr ? scaleParam->load() : 0.0f);
@@ -126,7 +150,8 @@ juce::AudioProcessorEditor* CurrentAudioProcessor::createEditor()
 
 void CurrentAudioProcessor::refreshEngineConfig()
 {
-    bool arp = false, rnd = false, scaleGen = false, quant = false, shift = false;
+    bool arp = false, rnd = false, scaleGen = false, lfo = false;
+    bool quant = false, shift = false, delay = false;
     bool midiIn = false, output = false;
     std::uint16_t inMask = 0, outMask = 0;
 
@@ -134,35 +159,75 @@ void CurrentAudioProcessor::refreshEngineConfig()
     {
         switch (m.type)
         {
-            case ModuleType::Arp:      arp   = true; break;
-            case ModuleType::Random:
+            case ModuleType::Arp:
                 // First instance's settings win — the implicit chain runs one
-                // Random at most until wiring lands. Same below for Scale.
+                // Arp at most until wiring lands. Same below for Random/Scale.
+                if (! arp)
+                {
+                    engArpMode.store (m.settings.mode);
+                    engArpRate.store (m.settings.rate);
+                    engArpOctaves.store (m.settings.octaves);
+                    engArpGate.store (m.settings.gate);
+                    engArpRepeat.store (m.settings.repeat);
+                }
+                arp = true;
+                break;
+            case ModuleType::Random:
                 if (! rnd)
                 {
-                    engRandomRoot.store (m.gen.rootOverride);
-                    engRandomScale.store (m.gen.scaleOverride);
-                    engRandomRate.store (m.gen.rate);
-                    engRandomFrom.store (m.gen.rangeFrom);
-                    engRandomTo.store (m.gen.rangeTo);
+                    engRandomRoot.store (m.settings.rootOverride);
+                    engRandomScale.store (m.settings.scaleOverride);
+                    engRandomRate.store (m.settings.rate);
+                    engRandomFrom.store (m.settings.rangeFrom);
+                    engRandomTo.store (m.settings.rangeTo);
                 }
                 rnd = true;
                 break;
             case ModuleType::ScaleGen:
                 if (! scaleGen)
                 {
-                    engScaleRoot.store (m.gen.rootOverride);
-                    engScaleScale.store (m.gen.scaleOverride);
-                    engScaleRate.store (m.gen.rate);
-                    engScaleRepeat.store (m.gen.repeat);
-                    engScaleOctaves.store (m.gen.octaves);
-                    engScaleDown.store (m.gen.down);
-                    engScaleEndOnRoot.store (m.gen.endOnRoot);
+                    engScaleRoot.store (m.settings.rootOverride);
+                    engScaleScale.store (m.settings.scaleOverride);
+                    engScaleRate.store (m.settings.rate);
+                    engScaleRepeat.store (m.settings.repeat);
+                    engScaleOctaves.store (m.settings.octaves);
+                    engScaleMode.store (m.settings.mode);
+                    engScaleEndOnRoot.store (m.settings.endOnRoot);
                 }
                 scaleGen = true;
                 break;
+            case ModuleType::Lfo:
+                if (! lfo)
+                {
+                    engLfoRoot.store (m.settings.rootOverride);
+                    engLfoScale.store (m.settings.scaleOverride);
+                    engLfoRate.store (m.settings.rate);
+                    engLfoCycle.store (m.settings.lfoCycle);
+                    engLfoShape.store (m.settings.lfoShape);
+                    engLfoDepthOct.store (m.settings.lfoDepthOct);
+                    engLfoDepthSteps.store (m.settings.lfoDepthSteps);
+                    engLfoPhase.store (m.settings.lfoPhase);
+                }
+                lfo = true;
+                break;
             case ModuleType::Quantize: quant = true; break;
-            case ModuleType::Shift:    shift = true; break;
+            case ModuleType::Shift:
+                if (! shift)
+                {
+                    engShiftAmount.store (m.settings.shiftAmount);
+                    engShiftScale.store (m.settings.scaleOverride);
+                }
+                shift = true;
+                break;
+            case ModuleType::Delay:
+                if (! delay)
+                {
+                    engDelayRate.store (m.settings.rate);
+                    engDelayFeedback.store (m.settings.delayFeedback);
+                    engDelayShift.store (m.settings.delayShift);
+                }
+                delay = true;
+                break;
             case ModuleType::MidiIn:
                 midiIn = true;
                 // Channel 0 = All; several MIDI Ins merge (union).
@@ -180,8 +245,10 @@ void CurrentAudioProcessor::refreshEngineConfig()
     engHasArp.store (arp);
     engHasRandom.store (rnd);
     engHasScaleGen.store (scaleGen);
+    engHasLfo.store (lfo);
     engHasQuantize.store (quant);
     engHasShift.store (shift);
+    engHasDelay.store (delay);
     engHasMidiIn.store (midiIn);
     engHasOutput.store (output);
     // No MIDI In module = implicit all-channels input; no Output = keep each
@@ -205,14 +272,22 @@ int CurrentAudioProcessor::addModule (ModuleType type, float x, float y)
         // octave 3 (e.g. C1..C3 = MIDI 24..48), taken from the global root at
         // drop time since the module's own root starts on Global.
         const int root = (int) (rootParam != nullptr ? rootParam->load() : 0.0f);
-        m.gen.rangeFrom = juce::jlimit (0, 127, 24 + root);
-        m.gen.rangeTo   = juce::jlimit (0, 127, 48 + root);
+        m.settings.rangeFrom = juce::jlimit (0, 127, 24 + root);
+        m.settings.rangeTo   = juce::jlimit (0, 127, 48 + root);
     }
     else if (type == ModuleType::ScaleGen)
     {
         // 1/8 steps + 1-bar repeat: the default one-octave pattern capped with
-        // the octave root is 8 notes, which fills the bar exactly.
-        m.gen.rate = GeneratorOptions::kRate1_8;
+        // the octave root is 8 notes, which fills the bar exactly. (Repeat is
+        // Endless everywhere else — this default lineup is the exception.)
+        m.settings.rate   = ModuleOptions::kRate1_8;
+        m.settings.repeat = ModuleOptions::kRepeatOneBar;
+    }
+    else if (type == ModuleType::Delay)
+    {
+        // 1/8 echoes: the shared rate default of 1/16 is generator-paced and
+        // too fast to read as an echo.
+        m.settings.rate = ModuleOptions::kRate1_8;
     }
 
     moduleList.push_back (m);
@@ -254,24 +329,24 @@ int CurrentAudioProcessor::getModuleChannel (int id) const
     return 0;
 }
 
-void CurrentAudioProcessor::setModuleGenSettings (int id, const GeneratorSettings& settings)
+void CurrentAudioProcessor::setModuleSettings (int id, const ModuleSettings& settings)
 {
     for (auto& m : moduleList)
     {
         if (m.id == id)
         {
-            m.gen = settings;
+            m.settings = settings;
             refreshEngineConfig();
             return;
         }
     }
 }
 
-GeneratorSettings CurrentAudioProcessor::getModuleGenSettings (int id) const
+ModuleSettings CurrentAudioProcessor::getModuleSettings (int id) const
 {
     for (const auto& m : moduleList)
         if (m.id == id)
-            return m.gen;
+            return m.settings;
     return {};
 }
 
@@ -302,24 +377,50 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         // Only the I/O modules have a channel setting worth persisting.
         if (m.type == ModuleType::MidiIn || m.type == ModuleType::Output)
             node.setProperty ("channel", m.channel, nullptr);
-        // The generator settings, only where the type actually uses them.
-        if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen)
+        // The shared module settings, only where the type actually uses them.
+        if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen
+            || m.type == ModuleType::Lfo)
         {
-            node.setProperty ("root",  m.gen.rootOverride, nullptr);
-            node.setProperty ("scale", m.gen.scaleOverride, nullptr);
-            node.setProperty ("rate",  m.gen.rate, nullptr);
+            node.setProperty ("root",  m.settings.rootOverride, nullptr);
+            node.setProperty ("scale", m.settings.scaleOverride, nullptr);
+        }
+        if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen
+            || m.type == ModuleType::Arp || m.type == ModuleType::Lfo
+            || m.type == ModuleType::Delay)
+            node.setProperty ("rate", m.settings.rate, nullptr);
+        if (m.type == ModuleType::ScaleGen || m.type == ModuleType::Arp)
+        {
+            node.setProperty ("mode",    m.settings.mode, nullptr);
+            node.setProperty ("octaves", m.settings.octaves, nullptr);
+            node.setProperty ("repeat",  m.settings.repeat, nullptr);
         }
         if (m.type == ModuleType::Random)
         {
-            node.setProperty ("from", m.gen.rangeFrom, nullptr);
-            node.setProperty ("to",   m.gen.rangeTo, nullptr);
+            node.setProperty ("from", m.settings.rangeFrom, nullptr);
+            node.setProperty ("to",   m.settings.rangeTo, nullptr);
         }
         if (m.type == ModuleType::ScaleGen)
+            node.setProperty ("endOnRoot", m.settings.endOnRoot, nullptr);
+        if (m.type == ModuleType::Arp)
+            node.setProperty ("gate", m.settings.gate, nullptr);
+        if (m.type == ModuleType::Shift)
         {
-            node.setProperty ("octaves",   m.gen.octaves, nullptr);
-            node.setProperty ("down",      m.gen.down, nullptr);
-            node.setProperty ("endOnRoot", m.gen.endOnRoot, nullptr);
-            node.setProperty ("repeat",    m.gen.repeat, nullptr);
+            // "scale" doubles as Shift's chromatic/degree switch (kScaleOff).
+            node.setProperty ("scale",       m.settings.scaleOverride, nullptr);
+            node.setProperty ("shiftAmount", m.settings.shiftAmount, nullptr);
+        }
+        if (m.type == ModuleType::Lfo)
+        {
+            node.setProperty ("lfoShape",      m.settings.lfoShape, nullptr);
+            node.setProperty ("lfoCycle",      m.settings.lfoCycle, nullptr);
+            node.setProperty ("lfoDepthOct",   m.settings.lfoDepthOct, nullptr);
+            node.setProperty ("lfoDepthSteps", m.settings.lfoDepthSteps, nullptr);
+            node.setProperty ("lfoPhase",      m.settings.lfoPhase, nullptr);
+        }
+        if (m.type == ModuleType::Delay)
+        {
+            node.setProperty ("feedback",   m.settings.delayFeedback, nullptr);
+            node.setProperty ("delayShift", m.settings.delayShift, nullptr);
         }
         canvas.appendChild (node, nullptr);
     }
@@ -354,19 +455,36 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             m.channel = (int) node.getProperty ("channel", defaultChannelFor (m.type));
 
             // Missing properties (older saves, other types) keep the struct's
-            // defaults via the fallback argument.
-            GeneratorSettings def;
-            m.gen.rootOverride  = (int)  node.getProperty ("root",  def.rootOverride);
-            m.gen.scaleOverride = (int)  node.getProperty ("scale", def.scaleOverride);
-            m.gen.rate          = (int)  node.getProperty ("rate",
-                                      m.type == ModuleType::ScaleGen ? GeneratorOptions::kRate1_8
-                                                                     : def.rate);
-            m.gen.rangeFrom     = (int)  node.getProperty ("from", def.rangeFrom);
-            m.gen.rangeTo       = (int)  node.getProperty ("to",   def.rangeTo);
-            m.gen.octaves       = (int)  node.getProperty ("octaves", def.octaves);
-            m.gen.down          = (bool) node.getProperty ("down", def.down);
-            m.gen.endOnRoot     = (bool) node.getProperty ("endOnRoot", def.endOnRoot);
-            m.gen.repeat        = (int)  node.getProperty ("repeat", def.repeat);
+            // defaults via the fallback argument. Per-type defaults (Scale's
+            // rate/repeat) are restated so an untouched module reloads as it
+            // was dropped.
+            ModuleSettings def;
+            // Types whose drop-time rate default differs from the struct's
+            // (see addModule) restate it here so an untouched module reloads
+            // as it was dropped.
+            const bool isScaleGen = m.type == ModuleType::ScaleGen;
+            const bool isDelay    = m.type == ModuleType::Delay;
+            m.settings.rootOverride  = (int)  node.getProperty ("root",  def.rootOverride);
+            m.settings.scaleOverride = (int)  node.getProperty ("scale", def.scaleOverride);
+            m.settings.rate          = (int)  node.getProperty ("rate",
+                                          (isScaleGen || isDelay) ? ModuleOptions::kRate1_8
+                                                                  : def.rate);
+            m.settings.rangeFrom     = (int)  node.getProperty ("from", def.rangeFrom);
+            m.settings.rangeTo       = (int)  node.getProperty ("to",   def.rangeTo);
+            m.settings.octaves       = (int)  node.getProperty ("octaves", def.octaves);
+            m.settings.endOnRoot     = (bool) node.getProperty ("endOnRoot", def.endOnRoot);
+            m.settings.gate          = (int)  node.getProperty ("gate", def.gate);
+            m.settings.mode          = (int)  node.getProperty ("mode", def.mode);
+            m.settings.repeat        = (int)  node.getProperty ("repeat",
+                                          isScaleGen ? ModuleOptions::kRepeatOneBar : def.repeat);
+            m.settings.shiftAmount   = (int)  node.getProperty ("shiftAmount", def.shiftAmount);
+            m.settings.lfoShape      = (int)  node.getProperty ("lfoShape", def.lfoShape);
+            m.settings.lfoCycle      = (int)  node.getProperty ("lfoCycle", def.lfoCycle);
+            m.settings.lfoDepthOct   = (int)  node.getProperty ("lfoDepthOct", def.lfoDepthOct);
+            m.settings.lfoDepthSteps = (int)  node.getProperty ("lfoDepthSteps", def.lfoDepthSteps);
+            m.settings.lfoPhase      = (int)  node.getProperty ("lfoPhase", def.lfoPhase);
+            m.settings.delayFeedback = (int)  node.getProperty ("feedback", def.delayFeedback);
+            m.settings.delayShift    = (int)  node.getProperty ("delayShift", def.delayShift);
 
             moduleList.push_back (m);
         }

@@ -4,7 +4,7 @@
 #include <vector>
 #include <atomic>
 #include "ModuleTypes.h"
-#include "GeneratorSettings.h"
+#include "ModuleSettings.h"
 #include "Engine.h"
 
 // Parameter ids for the global settings. Central so the editor's combos and the
@@ -19,8 +19,9 @@ namespace ParamIDs
 
 // One placed module on the canvas. Position is stored in canvas coordinates
 // (top-left of the node). `channel` is the I/O modules' one setting (see
-// defaultChannelFor for its per-type semantics); `gen` is the Random/Scale
-// generators' settings blob. Each type ignores the fields that aren't its.
+// defaultChannelFor for its per-type semantics); `settings` is the shared
+// settings blob used by Random, Scale, and Arp. Each type ignores the fields
+// that aren't its.
 struct ModuleInstance
 {
     int        id = 0;
@@ -28,7 +29,7 @@ struct ModuleInstance
     float      x = 0.0f;
     float      y = 0.0f;
     int        channel = 0;
-    GeneratorSettings gen;
+    ModuleSettings settings;
 };
 
 // Phase 2 processor: a MIDI effect whose processBlock produces no audio and
@@ -81,8 +82,8 @@ public:
     void removeModule (int id);
     void setModuleChannel (int id, int channel);
     int  getModuleChannel (int id) const;
-    void setModuleGenSettings (int id, const GeneratorSettings& settings);
-    GeneratorSettings getModuleGenSettings (int id) const;
+    void setModuleSettings (int id, const ModuleSettings& settings);
+    ModuleSettings getModuleSettings (int id) const;
 
     // Fires when the model is replaced wholesale behind the editor's back
     // (setStateInformation while the editor is open — project revert, preset
@@ -111,24 +112,43 @@ private:
     // block later.
     Engine engine;
     std::atomic<bool> engHasArp { false }, engHasRandom { false },
-                      engHasScaleGen { false },
+                      engHasScaleGen { false }, engHasLfo { false },
                       engHasQuantize { false }, engHasShift { false },
+                      engHasDelay { false },
                       engHasMidiIn { false }, engHasOutput { false };
     std::atomic<std::uint16_t> engInChannelMask { 0xffff }, engOutChannelMask { 0 };
 
-    // Generator settings for the audio thread, from the first Random / Scale
-    // module on the canvas (the implicit chain runs one of each; extra copies
-    // share the first one's settings until wiring lands). Rates and the repeat
-    // are published as option-table indices; processBlock converts to quarter
-    // notes. Root/scale of -1 = follow the global parameter.
+    // Module settings for the audio thread, from the first Arp / Random /
+    // Scale module on the canvas (the implicit chain runs one of each; extra
+    // copies share the first one's settings until wiring lands). Rates,
+    // repeats, and gates are published as option-table indices; processBlock
+    // converts to quarter notes / fractions. Root/scale of -1 = follow the
+    // global parameter.
+    std::atomic<int> engArpMode { ModuleOptions::kModeUp },
+                     engArpRate { ModuleOptions::kRate1_16 },
+                     engArpOctaves { 1 },
+                     engArpGate { ModuleOptions::kGateHalf },
+                     engArpRepeat { ModuleOptions::kRepeatEndless };
     std::atomic<int> engRandomRoot { -1 }, engRandomScale { -1 },
-                     engRandomRate { GeneratorOptions::kRate1_16 },
+                     engRandomRate { ModuleOptions::kRate1_16 },
                      engRandomFrom { 24 }, engRandomTo { 48 };
     std::atomic<int> engScaleRoot { -1 }, engScaleScale { -1 },
-                     engScaleRate { GeneratorOptions::kRate1_8 },
-                     engScaleRepeat { GeneratorOptions::kRepeatOneBar },
-                     engScaleOctaves { 1 };
-    std::atomic<bool> engScaleDown { false }, engScaleEndOnRoot { true };
+                     engScaleRate { ModuleOptions::kRate1_8 },
+                     engScaleRepeat { ModuleOptions::kRepeatOneBar },
+                     engScaleOctaves { 1 },
+                     engScaleMode { ModuleOptions::kModeUp };
+    std::atomic<bool> engScaleEndOnRoot { true };
+    std::atomic<int> engLfoRoot { -1 }, engLfoScale { -1 },
+                     engLfoRate { ModuleOptions::kRate1_16 },
+                     engLfoCycle { ModuleOptions::kLfoCycleOneBar },
+                     engLfoShape { ModuleOptions::kLfoSine },
+                     engLfoDepthOct { 1 }, engLfoDepthSteps { 0 },
+                     engLfoPhase { 0 };
+    std::atomic<int> engShiftAmount { 0 },
+                     engShiftScale { ModuleOptions::kScaleGlobal };
+    std::atomic<int> engDelayRate { ModuleOptions::kRate1_8 },
+                     engDelayFeedback { ModuleOptions::kFeedbackHalf },
+                     engDelayShift { 0 };
 
     // Cached parameter pointers (set in the ctor, read every block).
     std::atomic<float>* rootParam     = nullptr;

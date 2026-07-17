@@ -6,20 +6,25 @@
 #include <vector>
 
 // The MIDI engine. There is no user wiring yet, so the modules run as a fixed
-// implicit chain; the I/O modules and the Random/Scale generators carry real,
-// user-editable settings, the rest still run baked-in defaults. Signal flow,
-// per block:
+// implicit chain; the I/O modules, the Random/Scale/LFO generators, the Arp,
+// Shift, and Delay carry real, user-editable settings — only Quantize still
+// runs a baked-in default. Signal flow, per block:
 //
 //   host MIDI -> MIDI In (channel filter)
-//     -> generators add notes   (Arp, Random, Scale)
-//     -> modulators transform    (Quantize, then Shift)
-//     -> Output (channel stamp) -> host
+//     -> stepped modules add notes  (Arp, Random, Scale, LFO)
+//     -> modulators transform       (Quantize, then Shift)
+//     -> Output (channel stamp) -> Delay adds echoes -> host
 //
-// Generator behaviour (each on its own step clock, gate = half its step,
-// velocity 100; a root/scale override of -1 means "use the global value"):
-//   - Arp:      arpeggiates currently-held host notes, ascending, on a fixed
-//               1/16 grid. Consumes the host notes (they are the arp's input,
-//               so they don't also pass straight through).
+// Stepped-module behaviour (each on its own step clock, gate = a fraction of
+// its step — fixed at half for Random/Scale, the Arp's is user-set; velocity
+// 100; a root/scale override of -1 means "use the global value"; a repeat
+// window of <= 0 qn means Endless — the pattern never resets):
+//   - Arp:      a modulator that re-times its input: arpeggiates currently-held
+//               host notes on its step grid, walking them per its mode (Up,
+//               Down, Up-Down, Random) across `arpOctaves` octaves. Consumes
+//               the host notes (they are the arp's input, so they don't also
+//               pass straight through). Every `arpRepeatQn` quarter notes the
+//               walk resets to the pattern start (Endless by default).
 //   - Random:   one random note per step, drawn uniformly from the pitches of
 //               its (root, scale) that lie inside its inclusive note range.
 //   - Scale:    walks its (root, scale) stepwise from the root at octave 3
@@ -30,11 +35,37 @@
 //               restarts every `scaleRepeatQn` quarter notes counted from
 //               transport start (repeat choices assume 4/4): a pattern longer
 //               than the window is cut off, a shorter one rests until the
-//               window restarts.
+//               window restarts. With repeat Endless it loops back-to-back —
+//               the pattern restarts right after its last note.
+//   - LFO:      a classic LFO sampled on the note grid and mapped to pitch.
+//               Each step evaluates the shape at the current position inside
+//               the cycle (cycle length in bars from transport start, plus the
+//               start-phase offset) and maps the bipolar value to a scale
+//               member around the centre note (the root at octave 3), swinging
+//               ± its depth (whole octaves + extra scale steps, both counted
+//               in scale degrees). The Random shape redraws a value per note
+//               instead of tracking the cycle.
 //
-// Fixed defaults (deliberately not user-editable yet):
-//   - Quantize: snaps every note to the global root + scale.
-//   - Shift:    transposes every note by +12 semitones.
+// Modulators:
+//   - Quantize: snaps every note to the global root + scale (fixed default —
+//               its local override is a later phase).
+//   - Shift:    transposes every note by `shiftAmount`. With a scale active
+//               (shiftScale Global/-1 or a named scale index) the amount moves
+//               in scale degrees — out-of-scale notes snap to the scale first;
+//               with the scale Off (kScaleOff) it moves chromatic semitones.
+//   - Delay:    every note-on leaving the chain (pass-through and generated
+//               alike) schedules an echo one delay time (`delayTimeQn`) later
+//               at `delayFeedback` times its velocity, which in turn schedules
+//               the next, until the velocity decays below the audible floor —
+//               feedback is thus also the repeat count. Each echo is shifted
+//               `delayShift` semitones from the note before it (cumulative
+//               across the chain); an echo that would leave the MIDI range
+//               ends the chain instead of clamping. Echoes derive from the
+//               final emitted stream, so they are not re-mapped through
+//               Quantize/Shift, and their gate is half the delay time. On
+//               transport stop pending echoes are discarded (and sounding
+//               ones released) per the shared transport rules; echoes keep
+//               running while the transport is stopped for live playing.
 //
 // I/O module behaviour (channel editable per module):
 //   - MIDI In:  filters which host events enter the graph by channel. With no
@@ -46,8 +77,8 @@
 //               Outputs duplicate the stream, one copy per channel (the
 //               implicit chain's fan-out).
 //
-// Generators require the host transport to be playing; on stop, every note the
-// engine generated is released (note-off) so nothing hangs — matching the
+// Stepped modules require the host transport to be playing; on stop, every note
+// the engine generated is released (note-off) so nothing hangs — matching the
 // requirements' transport-boundary rule. Host notes that passed through are
 // remembered with the exact pitch/channel they were emitted at (activePass), so
 // their note-offs always match the note-ons even if a module setting changed
@@ -66,28 +97,58 @@ public:
         bool hasArp      = false;
         bool hasRandom   = false;
         bool hasScaleGen = false;
+        bool hasLfo      = false;
         bool hasQuantize = false;
         bool hasShift    = false;
+        bool hasDelay    = false;
         bool hasMidiIn   = false;
         bool hasOutput   = false;
 
+        // Arp settings. Until wiring lands the implicit chain runs one Arp at
+        // most; extra copies on the canvas share the first one's settings (the
+        // same one-instance rule applies to Random and Scale below).
+        int    arpMode     = 0;      // ModuleOptions::kModeUp/Down/UpDown/Random
+        double arpStepQn   = 0.25;   // step length in quarter notes (1/16)
+        int    arpOctaves  = 1;
+        double arpGateFrac = 0.5;    // note length as a fraction of the step
+        double arpRepeatQn = 0.0;    // <= 0 = Endless (walk never resets)
+
         // Random generator settings. Root/scale of -1 = use the global value.
-        // Until wiring lands the implicit chain runs one Random at most; extra
-        // copies on the canvas share the first one's settings.
         int    randomRoot   = -1;
         int    randomScale  = -1;
         double randomStepQn = 0.25;   // step length in quarter notes (1/16)
         int    randomFrom   = 24;     // inclusive MIDI note range
         int    randomTo     = 48;
 
-        // Scale generator settings (same one-instance rule as Random).
+        // Scale generator settings.
         int    scaleRoot      = -1;
         int    scaleScale     = -1;
         double scaleStepQn    = 0.5;    // step length in quarter notes (1/8)
-        double scaleRepeatQn  = 4.0;    // pattern restarts every this many qn
+        double scaleRepeatQn  = 4.0;    // pattern restarts every this many qn;
+                                        // <= 0 = Endless (loops back-to-back)
         int    scaleOctaves   = 1;
-        bool   scaleDown      = false;
+        int    scaleMode      = 0;      // kModeUp or kModeDown (Up/Down only)
         bool   scaleEndOnRoot = true;
+
+        // LFO generator settings.
+        int    lfoRoot       = -1;
+        int    lfoScale      = -1;
+        double lfoStepQn     = 0.25;   // note grid in quarter notes (1/16)
+        double lfoCycleQn    = 4.0;    // one full shape sweep (1 bar)
+        int    lfoShape      = 0;      // ModuleOptions::kLfo* shape indices
+        int    lfoDepthOct   = 1;      // swing around the centre: whole octaves
+        int    lfoDepthSteps = 0;      //   ... plus extra scale steps
+        double lfoPhase      = 0.0;    // start phase as a cycle fraction (0..1)
+
+        // Shift settings. shiftScale -1 = global scale (shift in degrees),
+        // >= 0 = named scale (degrees), kScaleOff (-2) = chromatic semitones.
+        int shiftAmount = 0;
+        int shiftScale  = -1;
+
+        // Delay settings.
+        double delayTimeQn   = 0.5;   // echo spacing in quarter notes (1/8)
+        double delayFeedback = 0.5;   // per-echo velocity multiplier
+        int    delayShift    = 0;     // per-echo pitch shift, semitones
 
         // Bit (ch - 1) set = channel ch participates. inChannelMask is all-ones
         // when no MIDI In module narrows the input; outChannelMask is 0 when no
@@ -97,8 +158,8 @@ public:
 
         bool anyModule() const
         {
-            return hasArp || hasRandom || hasScaleGen || hasQuantize
-                || hasShift || hasMidiIn || hasOutput;
+            return hasArp || hasRandom || hasScaleGen || hasLfo || hasQuantize
+                || hasShift || hasDelay || hasMidiIn || hasOutput;
         }
     };
 
@@ -142,15 +203,30 @@ private:
     struct PassNote { int inNote; int inChannel; int outNote; int outChannel; };
     std::vector<PassNote> activePass;
 
-    // Per-generator step clocks (samples until the next step lands), all reset
-    // on transport start so every generator's first step fires at sample 0.
-    // The rates differ per generator now, so they can't share one counter.
+    // Echoes the Delay has scheduled but not yet sounded. `samplesUntil` is
+    // relative to the current block's start and is decremented as blocks pass;
+    // once an echo fires it moves into activeGen for its gate-timed release
+    // and schedules its successor. Cleared on transport stop (the shared
+    // "buffered material is discarded" rule) — sample-based counting means a
+    // host loop wrap simply spills echoes into the next pass, as speced.
+    struct EchoNote { int note; int channel; int velocity; int samplesUntil; };
+    std::vector<EchoNote> pendingEchoes;
+
+    // Per-module step clocks (samples until the next step lands), all reset
+    // on transport start so every stepped module's first step fires at sample
+    // 0. The rates differ per module now, so they can't share one counter.
     double arpSamplesToNext    = 0.0;
     double randomSamplesToNext = 0.0;
     double scaleSamplesToNext  = 0.0;
-    int    arpIndex   = 0;
+    double lfoSamplesToNext    = 0.0;
+    int    arpIndex   = 0;   // position in the arp walk; advances only when a
+                             // note fires, resets at each repeat-window start
+    int    arpStep    = 0;   // arp grid steps since transport start — locates
+                             // the repeat-window boundaries
     int    scaleStep  = 0;   // steps since transport start; % steps-per-repeat
                              // gives the position inside the repeat window
+    int    lfoStep    = 0;   // steps since transport start — locates the
+                             // position inside the LFO cycle
     bool   wasPlaying = false;
 
     juce::Random rng;

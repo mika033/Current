@@ -44,9 +44,16 @@ juce::String Canvas::channelSublabel (ModuleType type, int channel)
     return "Ch " + juce::String (channel);
 }
 
-juce::String Canvas::rateSublabel (const GeneratorSettings& gen)
+juce::String Canvas::rateSublabel (const ModuleSettings& settings)
 {
-    return GeneratorOptions::rateNames()[gen.rate];
+    return ModuleOptions::rateNames()[settings.rate];
+}
+
+juce::String Canvas::shiftSublabel (const ModuleSettings& settings)
+{
+    // Signed amount, explicit "+" so direction reads at a glance.
+    const auto n = juce::String (settings.shiftAmount);
+    return settings.shiftAmount > 0 ? "+" + n : n;
 }
 
 juce::StringArray Canvas::choicesWithGlobal (const char* paramID) const
@@ -57,6 +64,73 @@ juce::StringArray Canvas::choicesWithGlobal (const char* paramID) const
     return items;
 }
 
+// --- Shared dialog controls ---------------------------------------------------
+// One add/read pair per shared setting, so every module's dialog presents the
+// identical control (same key, label, option list, and index mapping).
+
+void Canvas::addRootScaleControls (InlineDialog& dlg, const ModuleSettings& s)
+{
+    // Combo index 0 = Global = override -1, so index = override + 1.
+    dlg.addComboBox ("root",  choicesWithGlobal (ParamIDs::root),  s.rootOverride + 1,  "Root");
+    dlg.addComboBox ("scale", choicesWithGlobal (ParamIDs::scale), s.scaleOverride + 1, "Scale");
+}
+
+void Canvas::readRootScaleControls (const InlineDialog& dlg, ModuleSettings& s)
+{
+    s.rootOverride  = dlg.getComboBoxSelectedIndex ("root") - 1;
+    s.scaleOverride = dlg.getComboBoxSelectedIndex ("scale") - 1;
+}
+
+void Canvas::addRateControl (InlineDialog& dlg, const ModuleSettings& s, int firstRate)
+{
+    // `firstRate` trims the head of the shared rate list (the Scale generator
+    // starts at 1/16), so the combo index is the shared index minus the offset.
+    juce::StringArray rates;
+    for (int i = firstRate; i < ModuleOptions::rateNames().size(); ++i)
+        rates.add (ModuleOptions::rateNames()[i]);
+    dlg.addComboBox ("rate", rates, s.rate - firstRate, "Rate");
+}
+
+void Canvas::readRateControl (const InlineDialog& dlg, ModuleSettings& s, int firstRate)
+{
+    s.rate = dlg.getComboBoxSelectedIndex ("rate") + firstRate;
+}
+
+void Canvas::addRepeatControl (InlineDialog& dlg, const ModuleSettings& s)
+{
+    dlg.addComboBox ("repeat", ModuleOptions::repeatNames(), s.repeat, "Repeat");
+}
+
+void Canvas::readRepeatControl (const InlineDialog& dlg, ModuleSettings& s)
+{
+    s.repeat = dlg.getComboBoxSelectedIndex ("repeat");
+}
+
+void Canvas::addModeControl (InlineDialog& dlg, const ModuleSettings& s, int modeCount)
+{
+    // `modeCount` trims the tail of the shared mode list (the Scale generator
+    // offers Up/Down only).
+    juce::StringArray modes;
+    for (int i = 0; i < modeCount && i < ModuleOptions::modeNames().size(); ++i)
+        modes.add (ModuleOptions::modeNames()[i]);
+    dlg.addComboBox ("mode", modes, juce::jlimit (0, modeCount - 1, s.mode), "Mode");
+}
+
+void Canvas::readModeControl (const InlineDialog& dlg, ModuleSettings& s)
+{
+    s.mode = dlg.getComboBoxSelectedIndex ("mode");
+}
+
+void Canvas::addOctavesControl (InlineDialog& dlg, const ModuleSettings& s)
+{
+    dlg.addComboBox ("octaves", { "1", "2", "3", "4" }, s.octaves - 1, "Octaves");
+}
+
+void Canvas::readOctavesControl (const InlineDialog& dlg, ModuleSettings& s)
+{
+    s.octaves = dlg.getComboBoxSelectedIndex ("octaves") + 1;
+}
+
 void Canvas::addNodeComponent (const ModuleInstance& instance)
 {
     auto node = std::make_unique<ModuleComponent> (instance.id, instance.type);
@@ -64,8 +138,12 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
 
     if (instance.type == ModuleType::MidiIn || instance.type == ModuleType::Output)
         node->setSublabel (channelSublabel (instance.type, instance.channel));
-    else if (instance.type == ModuleType::Random || instance.type == ModuleType::ScaleGen)
-        node->setSublabel (rateSublabel (instance.gen));
+    else if (instance.type == ModuleType::Random || instance.type == ModuleType::ScaleGen
+             || instance.type == ModuleType::Arp || instance.type == ModuleType::Lfo
+             || instance.type == ModuleType::Delay)
+        node->setSublabel (rateSublabel (instance.settings));
+    else if (instance.type == ModuleType::Shift)
+        node->setSublabel (shiftSublabel (instance.settings));
 
     node->onSelected = [this] (ModuleComponent& n) { selectNode (&n); };
 
@@ -81,6 +159,11 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
             openChannelDialog (n);
             return;
         }
+        if (n.moduleType() == ModuleType::Arp)
+        {
+            openArpDialog (n);
+            return;
+        }
         if (n.moduleType() == ModuleType::Random)
         {
             openRandomDialog (n);
@@ -89,6 +172,21 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
         if (n.moduleType() == ModuleType::ScaleGen)
         {
             openScaleGenDialog (n);
+            return;
+        }
+        if (n.moduleType() == ModuleType::Lfo)
+        {
+            openLfoDialog (n);
+            return;
+        }
+        if (n.moduleType() == ModuleType::Shift)
+        {
+            openShiftDialog (n);
+            return;
+        }
+        if (n.moduleType() == ModuleType::Delay)
+        {
+            openDelayDialog (n);
             return;
         }
 
@@ -150,22 +248,17 @@ void Canvas::openChannelDialog (ModuleComponent& node)
     };
 }
 
-void Canvas::openRandomDialog (ModuleComponent& node)
+void Canvas::openArpDialog (ModuleComponent& node)
 {
     const int  id = node.moduleId();
-    const auto s  = proc.getModuleGenSettings (id);
+    const auto s  = proc.getModuleSettings (id);
 
-    juce::StringArray noteNames;
-    for (int n = 0; n <= 127; ++n)
-        noteNames.add (GeneratorOptions::midiNoteName (n));
-
-    auto* dlg = owner.showInlineDialog ("Random settings");
-    // Root/scale combo index 0 = Global = override -1, so index = override + 1.
-    dlg->addComboBox ("root",  choicesWithGlobal (ParamIDs::root),  s.rootOverride + 1,  "Root");
-    dlg->addComboBox ("scale", choicesWithGlobal (ParamIDs::scale), s.scaleOverride + 1, "Scale");
-    dlg->addComboBox ("rate",  GeneratorOptions::rateNames(), s.rate, "Rate");
-    dlg->addComboBox ("from",  noteNames, s.rangeFrom, "Range from");
-    dlg->addComboBox ("to",    noteNames, s.rangeTo,   "Range to");
+    auto* dlg = owner.showInlineDialog ("Arp settings");
+    addModeControl (*dlg, s, ModuleOptions::modeNames().size());
+    addRateControl (*dlg, s);
+    addOctavesControl (*dlg, s);
+    dlg->addComboBox ("gate", ModuleOptions::gateNames(), s.gate, "Gate");
+    addRepeatControl (*dlg, s);
     dlg->addButton ("OK", 1);
     dlg->addButton ("Cancel", 0);
 
@@ -175,16 +268,54 @@ void Canvas::openRandomDialog (ModuleComponent& node)
     {
         if (result == 1)
         {
-            auto ns = proc.getModuleGenSettings (id);
-            ns.rootOverride  = d->getComboBoxSelectedIndex ("root") - 1;
-            ns.scaleOverride = d->getComboBoxSelectedIndex ("scale") - 1;
-            ns.rate          = d->getComboBoxSelectedIndex ("rate");
-            ns.rangeFrom     = d->getComboBoxSelectedIndex ("from");
-            ns.rangeTo       = d->getComboBoxSelectedIndex ("to");
+            auto ns = proc.getModuleSettings (id);
+            readModeControl (*d, ns);
+            readRateControl (*d, ns);
+            readOctavesControl (*d, ns);
+            ns.gate = d->getComboBoxSelectedIndex ("gate");
+            readRepeatControl (*d, ns);
+            proc.setModuleSettings (id, ns);
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (rateSublabel (ns));
+        }
+        d->getParentComponent()->removeChildComponent (d);
+        delete d;
+    };
+}
+
+void Canvas::openRandomDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    juce::StringArray noteNames;
+    for (int n = 0; n <= 127; ++n)
+        noteNames.add (ModuleOptions::midiNoteName (n));
+
+    auto* dlg = owner.showInlineDialog ("Random settings");
+    addRootScaleControls (*dlg, s);
+    addRateControl (*dlg, s);
+    dlg->addComboBox ("from", noteNames, s.rangeFrom, "Range from");
+    dlg->addComboBox ("to",   noteNames, s.rangeTo,   "Range to");
+    dlg->addButton ("OK", 1);
+    dlg->addButton ("Cancel", 0);
+
+    // Captures the id, not the node — the node can be deleted or rebuilt while
+    // the dialog is up (host state restore), so it is re-looked-up on OK.
+    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    {
+        if (result == 1)
+        {
+            auto ns = proc.getModuleSettings (id);
+            readRootScaleControls (*d, ns);
+            readRateControl (*d, ns);
+            ns.rangeFrom = d->getComboBoxSelectedIndex ("from");
+            ns.rangeTo   = d->getComboBoxSelectedIndex ("to");
             // A backwards range is a slip, not an intent — normalise it.
             if (ns.rangeFrom > ns.rangeTo)
                 std::swap (ns.rangeFrom, ns.rangeTo);
-            proc.setModuleGenSettings (id, ns);
+            proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (rateSublabel (ns));
@@ -197,23 +328,16 @@ void Canvas::openRandomDialog (ModuleComponent& node)
 void Canvas::openScaleGenDialog (ModuleComponent& node)
 {
     const int  id = node.moduleId();
-    const auto s  = proc.getModuleGenSettings (id);
-
-    // The Scale generator's rate list starts at 1/16 — no 1/32 — so its combo
-    // index is the shared rate index minus kScaleRateFirst.
-    juce::StringArray scaleRates;
-    for (int i = GeneratorOptions::kScaleRateFirst; i < GeneratorOptions::rateNames().size(); ++i)
-        scaleRates.add (GeneratorOptions::rateNames()[i]);
+    const auto s  = proc.getModuleSettings (id);
 
     auto* dlg = owner.showInlineDialog ("Scale settings");
-    dlg->addComboBox ("root",    choicesWithGlobal (ParamIDs::root),  s.rootOverride + 1,  "Root");
-    dlg->addComboBox ("scale",   choicesWithGlobal (ParamIDs::scale), s.scaleOverride + 1, "Scale");
-    dlg->addComboBox ("mode",    { "Up", "Down" }, s.down ? 1 : 0, "Mode");
-    dlg->addComboBox ("octaves", { "1", "2", "3", "4" }, s.octaves - 1, "Octaves");
-    dlg->addComboBox ("endOn",   { "Root (octave)", "7th (last scale note)" },
+    addRootScaleControls (*dlg, s);
+    addModeControl (*dlg, s, ModuleOptions::kScaleModeCount);
+    addOctavesControl (*dlg, s);
+    dlg->addComboBox ("endOn", { "Root (octave)", "7th (last scale note)" },
                       s.endOnRoot ? 0 : 1, "End on");
-    dlg->addComboBox ("rate",    scaleRates, s.rate - GeneratorOptions::kScaleRateFirst, "Rate");
-    dlg->addComboBox ("repeat",  GeneratorOptions::repeatNames(), s.repeat, "Repeat every");
+    addRateControl (*dlg, s, ModuleOptions::kScaleRateFirst);
+    addRepeatControl (*dlg, s);
     dlg->addButton ("OK", 1);
     dlg->addButton ("Cancel", 0);
 
@@ -221,15 +345,145 @@ void Canvas::openScaleGenDialog (ModuleComponent& node)
     {
         if (result == 1)
         {
-            auto ns = proc.getModuleGenSettings (id);
-            ns.rootOverride  = d->getComboBoxSelectedIndex ("root") - 1;
-            ns.scaleOverride = d->getComboBoxSelectedIndex ("scale") - 1;
-            ns.down          = d->getComboBoxSelectedIndex ("mode") == 1;
-            ns.octaves       = d->getComboBoxSelectedIndex ("octaves") + 1;
-            ns.endOnRoot     = d->getComboBoxSelectedIndex ("endOn") == 0;
-            ns.rate          = d->getComboBoxSelectedIndex ("rate") + GeneratorOptions::kScaleRateFirst;
-            ns.repeat        = d->getComboBoxSelectedIndex ("repeat");
-            proc.setModuleGenSettings (id, ns);
+            auto ns = proc.getModuleSettings (id);
+            readRootScaleControls (*d, ns);
+            readModeControl (*d, ns);
+            readOctavesControl (*d, ns);
+            ns.endOnRoot = d->getComboBoxSelectedIndex ("endOn") == 0;
+            readRateControl (*d, ns, ModuleOptions::kScaleRateFirst);
+            readRepeatControl (*d, ns);
+            proc.setModuleSettings (id, ns);
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (rateSublabel (ns));
+        }
+        d->getParentComponent()->removeChildComponent (d);
+        delete d;
+    };
+}
+
+void Canvas::openLfoDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    auto* dlg = owner.showInlineDialog ("LFO settings");
+    addRootScaleControls (*dlg, s);
+    dlg->addComboBox ("shape", ModuleOptions::lfoShapeNames(), s.lfoShape, "Shape");
+    dlg->addComboBox ("cycle", ModuleOptions::lfoCycleNames(), s.lfoCycle, "Cycle length");
+    dlg->addComboBox ("depthOct",   { "0", "1", "2", "3", "4" },
+                      s.lfoDepthOct, "Depth (octaves)");
+    dlg->addComboBox ("depthSteps", { "0", "1", "2", "3", "4", "5", "6" },
+                      s.lfoDepthSteps, "Depth (scale steps)");
+    addRateControl (*dlg, s);
+    dlg->addComboBox ("phase", ModuleOptions::lfoPhaseNames(), s.lfoPhase,
+                      "Phase (degrees)");
+    dlg->addButton ("OK", 1);
+    dlg->addButton ("Cancel", 0);
+
+    // Captures the id, not the node — the node can be deleted or rebuilt while
+    // the dialog is up (host state restore), so it is re-looked-up on OK.
+    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    {
+        if (result == 1)
+        {
+            auto ns = proc.getModuleSettings (id);
+            readRootScaleControls (*d, ns);
+            ns.lfoShape      = d->getComboBoxSelectedIndex ("shape");
+            ns.lfoCycle      = d->getComboBoxSelectedIndex ("cycle");
+            ns.lfoDepthOct   = d->getComboBoxSelectedIndex ("depthOct");
+            ns.lfoDepthSteps = d->getComboBoxSelectedIndex ("depthSteps");
+            readRateControl (*d, ns);
+            ns.lfoPhase      = d->getComboBoxSelectedIndex ("phase");
+            proc.setModuleSettings (id, ns);
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (rateSublabel (ns));
+        }
+        d->getParentComponent()->removeChildComponent (d);
+        delete d;
+    };
+}
+
+void Canvas::openShiftDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    // Shift's scale list adds "Off" (work chromatically) after "Global", so
+    // the combo index maps to the override as: 0 = Global (-1), 1 = Off (-2),
+    // 2.. = the scale list.
+    auto scales = choicesWithGlobal (ParamIDs::scale);
+    scales.insert (1, "Off");
+    const int scaleIndex = s.scaleOverride == ModuleOptions::kScaleGlobal ? 0
+                         : s.scaleOverride == ModuleOptions::kScaleOff    ? 1
+                                                                          : s.scaleOverride + 2;
+
+    juce::StringArray amounts;
+    for (int a = -ModuleOptions::kShiftRange; a <= ModuleOptions::kShiftRange; ++a)
+        amounts.add (a > 0 ? "+" + juce::String (a) : juce::String (a));
+
+    auto* dlg = owner.showInlineDialog ("Shift settings",
+                                        "With a scale, the amount shifts in scale steps; "
+                                        "with scale Off, in semitones.");
+    dlg->addComboBox ("amount", amounts, s.shiftAmount + ModuleOptions::kShiftRange,
+                      "Amount");
+    dlg->addComboBox ("scale", scales, scaleIndex, "Scale");
+    dlg->addButton ("OK", 1);
+    dlg->addButton ("Cancel", 0);
+
+    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    {
+        if (result == 1)
+        {
+            auto ns = proc.getModuleSettings (id);
+            ns.shiftAmount = d->getComboBoxSelectedIndex ("amount") - ModuleOptions::kShiftRange;
+            const int idx = d->getComboBoxSelectedIndex ("scale");
+            ns.scaleOverride = idx == 0 ? ModuleOptions::kScaleGlobal
+                             : idx == 1 ? ModuleOptions::kScaleOff
+                                        : idx - 2;
+            proc.setModuleSettings (id, ns);
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (shiftSublabel (ns));
+        }
+        d->getParentComponent()->removeChildComponent (d);
+        delete d;
+    };
+}
+
+void Canvas::openDelayDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    juce::StringArray shifts;
+    for (int a = -ModuleOptions::kDelayShiftRange; a <= ModuleOptions::kDelayShiftRange; ++a)
+        shifts.add (a > 0 ? "+" + juce::String (a) : juce::String (a));
+
+    auto* dlg = owner.showInlineDialog ("Delay settings",
+                                        "Feedback sets how quickly the repeats fade; "
+                                        "a shift moves each repeat by that many semitones.");
+    addRateControl (*dlg, s);
+    dlg->addComboBox ("feedback", ModuleOptions::feedbackNames(), s.delayFeedback,
+                      "Feedback");
+    dlg->addComboBox ("shift", shifts, s.delayShift + ModuleOptions::kDelayShiftRange,
+                      "Shift (semitones)");
+    dlg->addButton ("OK", 1);
+    dlg->addButton ("Cancel", 0);
+
+    // Captures the id, not the node — the node can be deleted or rebuilt while
+    // the dialog is up (host state restore), so it is re-looked-up on OK.
+    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    {
+        if (result == 1)
+        {
+            auto ns = proc.getModuleSettings (id);
+            readRateControl (*d, ns);
+            ns.delayFeedback = d->getComboBoxSelectedIndex ("feedback");
+            ns.delayShift    = d->getComboBoxSelectedIndex ("shift")
+                                 - ModuleOptions::kDelayShiftRange;
+            proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (rateSublabel (ns));
