@@ -391,22 +391,9 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             m.settings.octaves       = (int)  node.getProperty ("octaves", def.octaves);
             m.settings.endOnRoot     = (bool) node.getProperty ("endOnRoot", def.endOnRoot);
             m.settings.gate          = (int)  node.getProperty ("gate", def.gate);
-
-            if (node.hasProperty ("down") && ! node.hasProperty ("mode"))
-            {
-                // Pre-shared-settings save: mode was a "down" bool and the
-                // repeat list had no Endless entry at index 0 — shift it.
-                m.settings.mode   = ((bool) node.getProperty ("down"))
-                                        ? ModuleOptions::kModeDown : ModuleOptions::kModeUp;
-                m.settings.repeat = juce::jlimit (0, ModuleOptions::repeatNames().size() - 1,
-                                                  (int) node.getProperty ("repeat", 2) + 1);
-            }
-            else
-            {
-                m.settings.mode   = (int) node.getProperty ("mode", def.mode);
-                m.settings.repeat = (int) node.getProperty ("repeat",
-                                        isScaleGen ? ModuleOptions::kRepeatOneBar : def.repeat);
-            }
+            m.settings.mode          = (int)  node.getProperty ("mode", def.mode);
+            m.settings.repeat        = (int)  node.getProperty ("repeat",
+                                          isScaleGen ? ModuleOptions::kRepeatOneBar : def.repeat);
 
             moduleList.push_back (m);
         }
