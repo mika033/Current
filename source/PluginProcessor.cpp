@@ -376,10 +376,11 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             m.y       = (float) node.getProperty ("y");
             m.channel = (int) node.getProperty ("channel", defaultChannelFor (m.type));
 
-            // Missing properties (older saves, other types) keep the struct's
-            // defaults via the fallback argument. Per-type defaults (Scale's
-            // rate/repeat) are restated so an untouched module reloads as it
-            // was dropped.
+            // Each type saves only the fields it uses, so the rest fall back
+            // to the struct's defaults. Per-type defaults (Scale's rate and
+            // repeat) are restated so an untouched module reloads as it was
+            // dropped. This is not a backward-compat path — we're pre-release
+            // (see CLAUDE.md): old in-development saves just load defaults.
             ModuleSettings def;
             const bool isScaleGen = m.type == ModuleType::ScaleGen;
             m.settings.rootOverride  = (int)  node.getProperty ("root",  def.rootOverride);
