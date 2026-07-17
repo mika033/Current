@@ -11,9 +11,10 @@
  *  repaints from CurrentTheme::active() every frame, so theme swaps land for
  *  free.
  *
- *  In Phase 2 this backs the empty "settings placeholder" a module opens on
- *  double-click; the message/text-field plumbing is carried over from Little Arp
- *  Monster so later phases can grow real settings dialogs on the same base.
+ *  Backs every module-settings dialog; the message/text-field plumbing is
+ *  carried over from Little Arp Monster, and the combo rows can be added and
+ *  removed after showing (see addComboBox / removeComboBox), which is what
+ *  dynamic dialogs like the Progression's step list build on.
  *
  *  Usage:
  *      auto* d = editor.showInlineDialog("Arp settings");
@@ -40,17 +41,33 @@ public:
 
     /** Add a labeled drop-down with one entry per item. The label sits above
      *  the combo, like addTextEditor. `selectedIndex` is 0-based into `items`;
-     *  read the choice back with getComboBoxSelectedIndex. */
+     *  read the choice back with getComboBoxSelectedIndex. `sameRow` packs the
+     *  combo onto the previous combo's row (the row splits its width evenly)
+     *  instead of starting a new one — for tightly coupled pairs like the
+     *  Progression's degree + octave. Works after the dialog is shown, too:
+     *  the panel re-lays itself out, which is what lets dialogs grow and
+     *  shrink rows dynamically. */
     void addComboBox (const juce::String& name,
                       const juce::StringArray& items,
                       int selectedIndex,
-                      const juce::String& label);
+                      const juce::String& label,
+                      bool sameRow = false);
     int getComboBoxSelectedIndex (const juce::String& name) const;
+
+    /** Remove a combo added with addComboBox (no-op for unknown names). The
+     *  panel re-lays itself out when shown — the dynamic counterpart of adding
+     *  post-show. */
+    void removeComboBox (const juce::String& name);
 
     /** Add an action button. `returnValue` is what gets passed to onResult when
      *  the button is clicked. By convention the first button added is the
      *  affirmative (Return key triggers it). */
     void addButton (const juce::String& text, int returnValue);
+
+    /** Add a button that does NOT close the dialog: `onClick` runs and the
+     *  dialog stays up. Laid out bottom-left, away from the action buttons.
+     *  For in-dialog editing actions (the Progression's add/remove step). */
+    void addUtilityButton (const juce::String& text, std::function<void()> onClick);
 
     /** Fired when the user clicks a button, hits Esc / Return, or clicks outside
      *  the panel. The caller owns disposal: remove + delete the dialog inside
@@ -81,6 +98,8 @@ private:
         juce::String                    name;
         std::unique_ptr<juce::Label>    labelComp;
         std::unique_ptr<juce::ComboBox> combo;
+        bool                            sameRow = false;   // packs onto the
+                                                           // previous combo's row
     };
     juce::OwnedArray<ComboEntry> combos;
 
@@ -90,6 +109,10 @@ private:
         std::unique_ptr<juce::TextButton> button;
     };
     juce::OwnedArray<ButtonEntry> buttons;
+    juce::OwnedArray<ButtonEntry> utilityButtons;   // non-closing, bottom-left
+
+    // Combo rows, with sameRow entries folded into their predecessor's row.
+    int comboRowCount() const;
 
     juce::Rectangle<int> panelBounds;
 

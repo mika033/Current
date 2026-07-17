@@ -4,14 +4,14 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 
-// The bar above the canvas. Phase 2 carries the global settings only — root,
-// scale, quantize — plus a Theme switch. The Edit and Load/Save menus described
-// in the requirements are deferred (Phase 2 has no Load/Save), so they aren't
-// shown yet.
+// The bar above the canvas. Phase 2 carries the global settings only — root
+// and scale — plus a Theme switch. (Quantizing lives in the Quantize / Scale
+// modules now; the old global Quantize toggle is gone.) The Edit and
+// Load/Save menus described in the requirements are deferred (Phase 2 has no
+// Load/Save), so they aren't shown yet.
 //
-// The combos / toggle are bound straight to the processor's APVTS, so the global
-// settings are real parameters that persist and (later) automate — even though
-// no module consumes them yet in Phase 2.
+// The combos are bound straight to the processor's APVTS, so the global
+// settings are real parameters that persist and (later) automate.
 class MenuBar : public juce::Component
 {
 public:
@@ -23,8 +23,7 @@ public:
     void resized() override;
 
 private:
-    using ComboAttachment  = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
-    using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
+    using ComboAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
     juce::AudioProcessorValueTreeState& state;
 
@@ -32,13 +31,11 @@ private:
 
     juce::Label    rootLabel, scaleLabel;
     juce::ComboBox rootCombo, scaleCombo;
-    juce::ToggleButton quantizeToggle { "Quantize" };
 
     juce::Label    themeLabel;
     juce::ComboBox themeCombo;
 
-    std::unique_ptr<ComboAttachment>  rootAtt, scaleAtt, themeAtt;
-    std::unique_ptr<ButtonAttachment> quantizeAtt;
+    std::unique_ptr<ComboAttachment> rootAtt, scaleAtt, themeAtt;
 
     std::function<void()> themeChanged;
 
