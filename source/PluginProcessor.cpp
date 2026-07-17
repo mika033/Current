@@ -91,18 +91,24 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.inChannelMask   = engInChannelMask.load();
     cfg.outChannelMask  = engOutChannelMask.load();
 
+    cfg.arpMode     = engArpMode.load();
+    cfg.arpStepQn   = ModuleOptions::rateQuarterNotes (engArpRate.load());
+    cfg.arpOctaves  = engArpOctaves.load();
+    cfg.arpGateFrac = ModuleOptions::gateFraction (engArpGate.load());
+    cfg.arpRepeatQn = ModuleOptions::repeatQuarterNotes (engArpRepeat.load());
+
     cfg.randomRoot   = engRandomRoot.load();
     cfg.randomScale  = engRandomScale.load();
-    cfg.randomStepQn = GeneratorOptions::rateQuarterNotes (engRandomRate.load());
+    cfg.randomStepQn = ModuleOptions::rateQuarterNotes (engRandomRate.load());
     cfg.randomFrom   = engRandomFrom.load();
     cfg.randomTo     = engRandomTo.load();
 
     cfg.scaleRoot      = engScaleRoot.load();
     cfg.scaleScale     = engScaleScale.load();
-    cfg.scaleStepQn    = GeneratorOptions::rateQuarterNotes (engScaleRate.load());
-    cfg.scaleRepeatQn  = GeneratorOptions::repeatQuarterNotes (engScaleRepeat.load());
+    cfg.scaleStepQn    = ModuleOptions::rateQuarterNotes (engScaleRate.load());
+    cfg.scaleRepeatQn  = ModuleOptions::repeatQuarterNotes (engScaleRepeat.load());
     cfg.scaleOctaves   = engScaleOctaves.load();
-    cfg.scaleDown      = engScaleDown.load();
+    cfg.scaleMode      = engScaleMode.load();
     cfg.scaleEndOnRoot = engScaleEndOnRoot.load();
 
     const int  root          = (int) (rootParam     != nullptr ? rootParam->load()  : 0.0f);
@@ -134,30 +140,40 @@ void CurrentAudioProcessor::refreshEngineConfig()
     {
         switch (m.type)
         {
-            case ModuleType::Arp:      arp   = true; break;
-            case ModuleType::Random:
+            case ModuleType::Arp:
                 // First instance's settings win — the implicit chain runs one
-                // Random at most until wiring lands. Same below for Scale.
+                // Arp at most until wiring lands. Same below for Random/Scale.
+                if (! arp)
+                {
+                    engArpMode.store (m.settings.mode);
+                    engArpRate.store (m.settings.rate);
+                    engArpOctaves.store (m.settings.octaves);
+                    engArpGate.store (m.settings.gate);
+                    engArpRepeat.store (m.settings.repeat);
+                }
+                arp = true;
+                break;
+            case ModuleType::Random:
                 if (! rnd)
                 {
-                    engRandomRoot.store (m.gen.rootOverride);
-                    engRandomScale.store (m.gen.scaleOverride);
-                    engRandomRate.store (m.gen.rate);
-                    engRandomFrom.store (m.gen.rangeFrom);
-                    engRandomTo.store (m.gen.rangeTo);
+                    engRandomRoot.store (m.settings.rootOverride);
+                    engRandomScale.store (m.settings.scaleOverride);
+                    engRandomRate.store (m.settings.rate);
+                    engRandomFrom.store (m.settings.rangeFrom);
+                    engRandomTo.store (m.settings.rangeTo);
                 }
                 rnd = true;
                 break;
             case ModuleType::ScaleGen:
                 if (! scaleGen)
                 {
-                    engScaleRoot.store (m.gen.rootOverride);
-                    engScaleScale.store (m.gen.scaleOverride);
-                    engScaleRate.store (m.gen.rate);
-                    engScaleRepeat.store (m.gen.repeat);
-                    engScaleOctaves.store (m.gen.octaves);
-                    engScaleDown.store (m.gen.down);
-                    engScaleEndOnRoot.store (m.gen.endOnRoot);
+                    engScaleRoot.store (m.settings.rootOverride);
+                    engScaleScale.store (m.settings.scaleOverride);
+                    engScaleRate.store (m.settings.rate);
+                    engScaleRepeat.store (m.settings.repeat);
+                    engScaleOctaves.store (m.settings.octaves);
+                    engScaleMode.store (m.settings.mode);
+                    engScaleEndOnRoot.store (m.settings.endOnRoot);
                 }
                 scaleGen = true;
                 break;
@@ -205,14 +221,16 @@ int CurrentAudioProcessor::addModule (ModuleType type, float x, float y)
         // octave 3 (e.g. C1..C3 = MIDI 24..48), taken from the global root at
         // drop time since the module's own root starts on Global.
         const int root = (int) (rootParam != nullptr ? rootParam->load() : 0.0f);
-        m.gen.rangeFrom = juce::jlimit (0, 127, 24 + root);
-        m.gen.rangeTo   = juce::jlimit (0, 127, 48 + root);
+        m.settings.rangeFrom = juce::jlimit (0, 127, 24 + root);
+        m.settings.rangeTo   = juce::jlimit (0, 127, 48 + root);
     }
     else if (type == ModuleType::ScaleGen)
     {
         // 1/8 steps + 1-bar repeat: the default one-octave pattern capped with
-        // the octave root is 8 notes, which fills the bar exactly.
-        m.gen.rate = GeneratorOptions::kRate1_8;
+        // the octave root is 8 notes, which fills the bar exactly. (Repeat is
+        // Endless everywhere else — this default lineup is the exception.)
+        m.settings.rate   = ModuleOptions::kRate1_8;
+        m.settings.repeat = ModuleOptions::kRepeatOneBar;
     }
 
     moduleList.push_back (m);
@@ -254,24 +272,24 @@ int CurrentAudioProcessor::getModuleChannel (int id) const
     return 0;
 }
 
-void CurrentAudioProcessor::setModuleGenSettings (int id, const GeneratorSettings& settings)
+void CurrentAudioProcessor::setModuleSettings (int id, const ModuleSettings& settings)
 {
     for (auto& m : moduleList)
     {
         if (m.id == id)
         {
-            m.gen = settings;
+            m.settings = settings;
             refreshEngineConfig();
             return;
         }
     }
 }
 
-GeneratorSettings CurrentAudioProcessor::getModuleGenSettings (int id) const
+ModuleSettings CurrentAudioProcessor::getModuleSettings (int id) const
 {
     for (const auto& m : moduleList)
         if (m.id == id)
-            return m.gen;
+            return m.settings;
     return {};
 }
 
@@ -302,25 +320,30 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         // Only the I/O modules have a channel setting worth persisting.
         if (m.type == ModuleType::MidiIn || m.type == ModuleType::Output)
             node.setProperty ("channel", m.channel, nullptr);
-        // The generator settings, only where the type actually uses them.
+        // The shared module settings, only where the type actually uses them.
         if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen)
         {
-            node.setProperty ("root",  m.gen.rootOverride, nullptr);
-            node.setProperty ("scale", m.gen.scaleOverride, nullptr);
-            node.setProperty ("rate",  m.gen.rate, nullptr);
+            node.setProperty ("root",  m.settings.rootOverride, nullptr);
+            node.setProperty ("scale", m.settings.scaleOverride, nullptr);
+        }
+        if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen
+            || m.type == ModuleType::Arp)
+            node.setProperty ("rate", m.settings.rate, nullptr);
+        if (m.type == ModuleType::ScaleGen || m.type == ModuleType::Arp)
+        {
+            node.setProperty ("mode",    m.settings.mode, nullptr);
+            node.setProperty ("octaves", m.settings.octaves, nullptr);
+            node.setProperty ("repeat",  m.settings.repeat, nullptr);
         }
         if (m.type == ModuleType::Random)
         {
-            node.setProperty ("from", m.gen.rangeFrom, nullptr);
-            node.setProperty ("to",   m.gen.rangeTo, nullptr);
+            node.setProperty ("from", m.settings.rangeFrom, nullptr);
+            node.setProperty ("to",   m.settings.rangeTo, nullptr);
         }
         if (m.type == ModuleType::ScaleGen)
-        {
-            node.setProperty ("octaves",   m.gen.octaves, nullptr);
-            node.setProperty ("down",      m.gen.down, nullptr);
-            node.setProperty ("endOnRoot", m.gen.endOnRoot, nullptr);
-            node.setProperty ("repeat",    m.gen.repeat, nullptr);
-        }
+            node.setProperty ("endOnRoot", m.settings.endOnRoot, nullptr);
+        if (m.type == ModuleType::Arp)
+            node.setProperty ("gate", m.settings.gate, nullptr);
         canvas.appendChild (node, nullptr);
     }
     state.appendChild (canvas, nullptr);
@@ -354,19 +377,36 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             m.channel = (int) node.getProperty ("channel", defaultChannelFor (m.type));
 
             // Missing properties (older saves, other types) keep the struct's
-            // defaults via the fallback argument.
-            GeneratorSettings def;
-            m.gen.rootOverride  = (int)  node.getProperty ("root",  def.rootOverride);
-            m.gen.scaleOverride = (int)  node.getProperty ("scale", def.scaleOverride);
-            m.gen.rate          = (int)  node.getProperty ("rate",
-                                      m.type == ModuleType::ScaleGen ? GeneratorOptions::kRate1_8
-                                                                     : def.rate);
-            m.gen.rangeFrom     = (int)  node.getProperty ("from", def.rangeFrom);
-            m.gen.rangeTo       = (int)  node.getProperty ("to",   def.rangeTo);
-            m.gen.octaves       = (int)  node.getProperty ("octaves", def.octaves);
-            m.gen.down          = (bool) node.getProperty ("down", def.down);
-            m.gen.endOnRoot     = (bool) node.getProperty ("endOnRoot", def.endOnRoot);
-            m.gen.repeat        = (int)  node.getProperty ("repeat", def.repeat);
+            // defaults via the fallback argument. Per-type defaults (Scale's
+            // rate/repeat) are restated so an untouched module reloads as it
+            // was dropped.
+            ModuleSettings def;
+            const bool isScaleGen = m.type == ModuleType::ScaleGen;
+            m.settings.rootOverride  = (int)  node.getProperty ("root",  def.rootOverride);
+            m.settings.scaleOverride = (int)  node.getProperty ("scale", def.scaleOverride);
+            m.settings.rate          = (int)  node.getProperty ("rate",
+                                          isScaleGen ? ModuleOptions::kRate1_8 : def.rate);
+            m.settings.rangeFrom     = (int)  node.getProperty ("from", def.rangeFrom);
+            m.settings.rangeTo       = (int)  node.getProperty ("to",   def.rangeTo);
+            m.settings.octaves       = (int)  node.getProperty ("octaves", def.octaves);
+            m.settings.endOnRoot     = (bool) node.getProperty ("endOnRoot", def.endOnRoot);
+            m.settings.gate          = (int)  node.getProperty ("gate", def.gate);
+
+            if (node.hasProperty ("down") && ! node.hasProperty ("mode"))
+            {
+                // Pre-shared-settings save: mode was a "down" bool and the
+                // repeat list had no Endless entry at index 0 — shift it.
+                m.settings.mode   = ((bool) node.getProperty ("down"))
+                                        ? ModuleOptions::kModeDown : ModuleOptions::kModeUp;
+                m.settings.repeat = juce::jlimit (0, ModuleOptions::repeatNames().size() - 1,
+                                                  (int) node.getProperty ("repeat", 2) + 1);
+            }
+            else
+            {
+                m.settings.mode   = (int) node.getProperty ("mode", def.mode);
+                m.settings.repeat = (int) node.getProperty ("repeat",
+                                        isScaleGen ? ModuleOptions::kRepeatOneBar : def.repeat);
+            }
 
             moduleList.push_back (m);
         }

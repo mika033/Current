@@ -8,6 +8,7 @@
 #include "PluginProcessor.h"   // ModuleInstance + processor model
 
 class CurrentAudioProcessorEditor;
+class InlineDialog;
 
 // The central drop surface. Modules dragged from the palette land here and can
 // be moved around; double-clicking one opens its (empty) settings placeholder.
@@ -46,13 +47,31 @@ private:
     void selectNode (ModuleComponent* node);
     void deleteSelected();
 
-    // The per-module settings dialogs (I/O channel, Random / Scale generator
+    // The per-module settings dialogs (I/O channel; Arp / Random / Scale
     // settings) and the node sublabels that mirror the choices.
     void openChannelDialog (ModuleComponent& node);
+    void openArpDialog (ModuleComponent& node);
     void openRandomDialog (ModuleComponent& node);
     void openScaleGenDialog (ModuleComponent& node);
     static juce::String channelSublabel (ModuleType type, int channel);
-    static juce::String rateSublabel (const GeneratorSettings& gen);
+    static juce::String rateSublabel (const ModuleSettings& settings);
+
+    // Shared dialog controls, one add/read pair per shared setting (see
+    // modules.md "Shared settings"). Every dialog builds its combos through
+    // these so a setting looks and reads identically in every module.
+    // `firstRate` narrows the rate list's start (the Scale generator has no
+    // 1/32); `modeCount` narrows the mode list (the Scale generator offers
+    // Up/Down only).
+    void addRootScaleControls (InlineDialog&, const ModuleSettings&);
+    static void readRootScaleControls (const InlineDialog&, ModuleSettings&);
+    static void addRateControl (InlineDialog&, const ModuleSettings&, int firstRate = 0);
+    static void readRateControl (const InlineDialog&, ModuleSettings&, int firstRate = 0);
+    static void addRepeatControl (InlineDialog&, const ModuleSettings&);
+    static void readRepeatControl (const InlineDialog&, ModuleSettings&);
+    static void addModeControl (InlineDialog&, const ModuleSettings&, int modeCount);
+    static void readModeControl (const InlineDialog&, ModuleSettings&);
+    static void addOctavesControl (InlineDialog&, const ModuleSettings&);
+    static void readOctavesControl (const InlineDialog&, ModuleSettings&);
 
     // "Global" followed by the choices of a global APVTS parameter — the
     // dialogs' root/scale lists, sourced from the parameter so they can't

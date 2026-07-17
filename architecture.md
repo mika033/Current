@@ -11,12 +11,13 @@ phases. File references are relative to the repo root; headers live in
 A JUCE MIDI-effect plugin (VST3 + Standalone, Linux build only so far). The
 editor shows a menu bar (global root / scale / quantize + theme switch), a
 canvas that modules can be dragged onto from a palette of seven (generators
-Arp, Random, and Scale, modulators Quantize and Shift, I/O modules MIDI In and
-Output), and an engine that actually runs those modules — but as a fixed
+Random and Scale, modulators Arp, Quantize, and Shift, I/O modules MIDI In
+and Output), and an engine that actually runs those modules — but as a fixed
 implicit chain, because there is no port wiring yet. The I/O modules carry a
-per-module MIDI channel and the Random / Scale generators carry full settings
-(root/scale override, rate, and their type-specific fields), all edited
-through real double-click dialogs; Arp, Quantize, and Shift still run
+per-module MIDI channel and the Random / Scale generators and the Arp carry
+full settings (drawn from the shared settings pool — root/scale override,
+rate, repeat, mode, octaves, gate — plus their type-specific fields), all
+edited through real double-click dialogs; Quantize and Shift still run
 baked-in defaults behind a settings placeholder.
 
 ## Component map
@@ -91,7 +92,7 @@ reads a lock-free snapshot.
   types are present as `std::atomic<bool>` flags, two atomic 16-bit channel
   masks carrying the I/O modules' settings (input filter, output stamp —
   semantics documented on `Engine::Config`), and a set of atomic ints/bools
-  carrying the first Random / Scale module's generator settings (the implicit
+  carrying the first Arp / Random / Scale module's settings (the implicit
   chain runs one of each; extra copies share the first one's settings).
 - `processBlock` reads those atomics plus the raw parameter values (root,
   scale, quantize — themselves atomics via APVTS) and hands the `Engine` a
@@ -117,16 +118,19 @@ semantics) is at the top of `Engine.h`. Summary:
   across modules; "All" = everything). With none placed, the implicit input
   accepts all channels. Filtered events are dropped before they reach anything
   — including the Arp's held-note tracking.
-- Generators fire only while the host transport is playing, each on its own
-  step clock (they have independent rates now), gate of half its step. Arp
-  cycles ascending through currently held host notes on a fixed 1/16 grid (and
-  swallows those notes, since they are its input); Random draws uniformly from
-  its scale within its note range at its rate; Scale walks its scale from the
-  root at octave 3 across its octave span, up or down, restarting every repeat
-  interval (a step counter from transport start — longer patterns truncate,
-  shorter ones rest). Root/scale overrides of -1 fall back to the globals, so
-  the shared option tables live in `GeneratorSettings.h` (GUI-free), used by
-  the engine config, the processor, and the canvas dialogs alike.
+- The stepped modules (Arp, Random, Scale) fire only while the host transport
+  is playing, each on its own step clock. Arp walks the currently held host
+  notes per its mode (Up / Down / Up-Down / Random) across its octave span at
+  its rate and gate, swallowing those notes since they are its input; Random
+  draws uniformly from its scale within its note range at its rate; Scale
+  walks its scale from the root at octave 3 across its octave span, up or
+  down. Arp and Scale reset their pattern every repeat interval (a step
+  counter from transport start — longer patterns truncate, shorter ones
+  rest); a repeat of Endless publishes as 0 qn, meaning no window (the Arp
+  walk never resets, the Scale pattern loops back-to-back). Root/scale
+  overrides of -1 fall back to the globals. The shared option tables and the
+  per-module settings blob live in `ModuleSettings.h` (GUI-free), used by the
+  engine config, the processor, and the canvas dialogs alike.
 - Modulators apply as pure pitch mapping (`mapPitch`): Quantize snaps to the
   global root/scale (also applied when the global quantize toggle is on), then
   Shift transposes +12.
@@ -162,13 +166,16 @@ pick the new module up from the catalogue without further changes. All three
 kinds are in the palette: generators square, modulators circle, I/O triangles
 (MIDI In points right, Output left, toward their single port). Per-module
 settings live on `ModuleInstance`: the I/O modules' MIDI channel and the
-Random / Scale generators' `GeneratorSettings` blob, each edited via a real
-settings dialog in `Canvas` (`openChannelDialog`, `openRandomDialog`,
-`openScaleGenDialog`), reflected in a node sublabel (channel or rate), and
-persisted with the canvas state. The dialogs' root/scale lists are sourced
-from the APVTS choice parameters ("Global" prepended), so they can't drift
-from the menu bar. Settings for Arp, Quantize, and Shift are still a later
-phase.
+shared `ModuleSettings` blob (used by Arp, Random, and Scale), each edited
+via a real settings dialog in `Canvas` (`openChannelDialog`, `openArpDialog`,
+`openRandomDialog`, `openScaleGenDialog`), reflected in a node sublabel
+(channel or rate), and persisted with the canvas state. The dialogs build
+their combos through `Canvas`'s shared add/read helper pairs (root+scale,
+rate, repeat, mode, octaves) so a shared setting is the identical control in
+every module — modules.md's "Shared settings" section is the product-level
+rule. The root/scale lists are sourced from the APVTS choice parameters
+("Global" prepended), so they can't drift from the menu bar. Settings for
+Quantize and Shift are still a later phase.
 
 ## Theming
 

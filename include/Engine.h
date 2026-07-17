@@ -6,20 +6,25 @@
 #include <vector>
 
 // The MIDI engine. There is no user wiring yet, so the modules run as a fixed
-// implicit chain; the I/O modules and the Random/Scale generators carry real,
-// user-editable settings, the rest still run baked-in defaults. Signal flow,
-// per block:
+// implicit chain; the I/O modules, the Random/Scale generators, and the Arp
+// carry real, user-editable settings, the rest still run baked-in defaults.
+// Signal flow, per block:
 //
 //   host MIDI -> MIDI In (channel filter)
-//     -> generators add notes   (Arp, Random, Scale)
-//     -> modulators transform    (Quantize, then Shift)
+//     -> stepped modules add notes  (Arp, Random, Scale)
+//     -> modulators transform       (Quantize, then Shift)
 //     -> Output (channel stamp) -> host
 //
-// Generator behaviour (each on its own step clock, gate = half its step,
-// velocity 100; a root/scale override of -1 means "use the global value"):
-//   - Arp:      arpeggiates currently-held host notes, ascending, on a fixed
-//               1/16 grid. Consumes the host notes (they are the arp's input,
-//               so they don't also pass straight through).
+// Stepped-module behaviour (each on its own step clock, gate = a fraction of
+// its step — fixed at half for Random/Scale, the Arp's is user-set; velocity
+// 100; a root/scale override of -1 means "use the global value"; a repeat
+// window of <= 0 qn means Endless — the pattern never resets):
+//   - Arp:      a modulator that re-times its input: arpeggiates currently-held
+//               host notes on its step grid, walking them per its mode (Up,
+//               Down, Up-Down, Random) across `arpOctaves` octaves. Consumes
+//               the host notes (they are the arp's input, so they don't also
+//               pass straight through). Every `arpRepeatQn` quarter notes the
+//               walk resets to the pattern start (Endless by default).
 //   - Random:   one random note per step, drawn uniformly from the pitches of
 //               its (root, scale) that lie inside its inclusive note range.
 //   - Scale:    walks its (root, scale) stepwise from the root at octave 3
@@ -30,7 +35,8 @@
 //               restarts every `scaleRepeatQn` quarter notes counted from
 //               transport start (repeat choices assume 4/4): a pattern longer
 //               than the window is cut off, a shorter one rests until the
-//               window restarts.
+//               window restarts. With repeat Endless it loops back-to-back —
+//               the pattern restarts right after its last note.
 //
 // Fixed defaults (deliberately not user-editable yet):
 //   - Quantize: snaps every note to the global root + scale.
@@ -46,8 +52,8 @@
 //               Outputs duplicate the stream, one copy per channel (the
 //               implicit chain's fan-out).
 //
-// Generators require the host transport to be playing; on stop, every note the
-// engine generated is released (note-off) so nothing hangs — matching the
+// Stepped modules require the host transport to be playing; on stop, every note
+// the engine generated is released (note-off) so nothing hangs — matching the
 // requirements' transport-boundary rule. Host notes that passed through are
 // remembered with the exact pitch/channel they were emitted at (activePass), so
 // their note-offs always match the note-ons even if a module setting changed
@@ -71,22 +77,30 @@ public:
         bool hasMidiIn   = false;
         bool hasOutput   = false;
 
+        // Arp settings. Until wiring lands the implicit chain runs one Arp at
+        // most; extra copies on the canvas share the first one's settings (the
+        // same one-instance rule applies to Random and Scale below).
+        int    arpMode     = 0;      // ModuleOptions::kModeUp/Down/UpDown/Random
+        double arpStepQn   = 0.25;   // step length in quarter notes (1/16)
+        int    arpOctaves  = 1;
+        double arpGateFrac = 0.5;    // note length as a fraction of the step
+        double arpRepeatQn = 0.0;    // <= 0 = Endless (walk never resets)
+
         // Random generator settings. Root/scale of -1 = use the global value.
-        // Until wiring lands the implicit chain runs one Random at most; extra
-        // copies on the canvas share the first one's settings.
         int    randomRoot   = -1;
         int    randomScale  = -1;
         double randomStepQn = 0.25;   // step length in quarter notes (1/16)
         int    randomFrom   = 24;     // inclusive MIDI note range
         int    randomTo     = 48;
 
-        // Scale generator settings (same one-instance rule as Random).
+        // Scale generator settings.
         int    scaleRoot      = -1;
         int    scaleScale     = -1;
         double scaleStepQn    = 0.5;    // step length in quarter notes (1/8)
-        double scaleRepeatQn  = 4.0;    // pattern restarts every this many qn
+        double scaleRepeatQn  = 4.0;    // pattern restarts every this many qn;
+                                        // <= 0 = Endless (loops back-to-back)
         int    scaleOctaves   = 1;
-        bool   scaleDown      = false;
+        int    scaleMode      = 0;      // kModeUp or kModeDown (Up/Down only)
         bool   scaleEndOnRoot = true;
 
         // Bit (ch - 1) set = channel ch participates. inChannelMask is all-ones
@@ -142,13 +156,16 @@ private:
     struct PassNote { int inNote; int inChannel; int outNote; int outChannel; };
     std::vector<PassNote> activePass;
 
-    // Per-generator step clocks (samples until the next step lands), all reset
-    // on transport start so every generator's first step fires at sample 0.
-    // The rates differ per generator now, so they can't share one counter.
+    // Per-module step clocks (samples until the next step lands), all reset
+    // on transport start so every stepped module's first step fires at sample
+    // 0. The rates differ per module now, so they can't share one counter.
     double arpSamplesToNext    = 0.0;
     double randomSamplesToNext = 0.0;
     double scaleSamplesToNext  = 0.0;
-    int    arpIndex   = 0;
+    int    arpIndex   = 0;   // position in the arp walk; advances only when a
+                             // note fires, resets at each repeat-window start
+    int    arpStep    = 0;   // arp grid steps since transport start — locates
+                             // the repeat-window boundaries
     int    scaleStep  = 0;   // steps since transport start; % steps-per-repeat
                              // gives the position inside the repeat window
     bool   wasPlaying = false;

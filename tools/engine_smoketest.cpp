@@ -9,6 +9,7 @@
 
 #include "Engine.h"
 #include "ScaleTables.h"
+#include "ModuleSettings.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <cstdlib>
 #include <iostream>
@@ -153,6 +154,74 @@ int main()
 
         check (ons > 0,     "Arp emitted notes from the held chord");
         check (ons == offs, "Arp: every note-on balanced by a note-off after stop");
+    }
+
+    // --- 5b. Arp settings: mode, octaves, repeat window, full gate ----------
+    {
+        // Collect the first `count` arp pitches for a held C-E-G triad under
+        // the given settings.
+        auto arpPitches = [&] (int mode, int octaves, double repeatQn, double gateFrac,
+                               size_t count, int& onsOut, int& offsOut)
+        {
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasArp      = true;
+            cfg.arpMode     = mode;
+            cfg.arpOctaves  = octaves;
+            cfg.arpRepeatQn = repeatQn;
+            cfg.arpGateFrac = gateFrac;
+            cfg.arpStepQn   = 0.25;   // 1/16
+
+            std::vector<int> pitches;
+            int ons = 0, offs = 0;
+            {
+                juce::MidiBuffer midi;
+                midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+                midi.addEvent (juce::MidiMessage::noteOn (1, 64, (juce::uint8) 100), 0);
+                midi.addEvent (juce::MidiMessage::noteOn (1, 67, (juce::uint8) 100), 0);
+                e.process (midi, block, playing (true), 0, 0, false, cfg);
+                tally (midi, ons, offs);
+                for (const auto meta : midi)
+                    if (meta.getMessage().isNoteOn())
+                        pitches.push_back (meta.getMessage().getNoteNumber());
+            }
+            for (int i = 0; i < 2000 && pitches.size() < count; ++i)
+            {
+                juce::MidiBuffer midi;
+                e.process (midi, block, playing (true), 0, 0, false, cfg);
+                tally (midi, ons, offs);
+                for (const auto meta : midi)
+                    if (meta.getMessage().isNoteOn())
+                        pitches.push_back (meta.getMessage().getNoteNumber());
+            }
+            { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, false, cfg); tally (midi, ons, offs); }
+            onsOut = ons; offsOut = offs;
+            return pitches;
+        };
+
+        int ons = 0, offs = 0;
+        check (arpPitches (ModuleOptions::kModeUp, 1, 0.0, 0.5, 6, ons, offs)
+                   == std::vector<int> { 60, 64, 67, 60, 64, 67 },
+               "Arp Up cycles the held triad ascending");
+        check (arpPitches (ModuleOptions::kModeDown, 1, 0.0, 0.5, 6, ons, offs)
+                   == std::vector<int> { 67, 64, 60, 67, 64, 60 },
+               "Arp Down cycles the held triad descending");
+        check (arpPitches (ModuleOptions::kModeUpDown, 1, 0.0, 0.5, 8, ons, offs)
+                   == std::vector<int> { 60, 64, 67, 64, 60, 64, 67, 64 },
+               "Arp Up-Down bounces without doubling the endpoints");
+        check (arpPitches (ModuleOptions::kModeUp, 2, 0.0, 0.5, 7, ons, offs)
+                   == std::vector<int> { 60, 64, 67, 72, 76, 79, 60 },
+               "Arp octaves=2 extends the walk an octave up");
+        // Repeat 1/2 = 8 sixteenth steps: the walk restarts mid-cycle at the
+        // window boundary (after 60 64 67 60 64 67 60 64 comes 60 again).
+        check (arpPitches (ModuleOptions::kModeUp, 1, 2.0, 0.5, 11, ons, offs)
+                   == std::vector<int> { 60, 64, 67, 60, 64, 67, 60, 64,
+                                         60, 64, 67 },
+               "Arp repeat 1/2 resets the walk every 8 steps");
+        // Full gate: the note-off is capped one sample short of the step, so
+        // everything still balances.
+        arpPitches (ModuleOptions::kModeUp, 1, 0.0, 1.0, 8, ons, offs);
+        check (ons > 0 && ons == offs, "Arp 100% gate: balanced after stop");
     }
 
     // --- 6. MIDI In: channel filter drops non-matching input ----------------
@@ -375,7 +444,7 @@ int main()
             cfg.scaleStepQn    = 1.0;
             cfg.scaleRepeatQn  = 16.0;   // 4 bars = 16 steps
             cfg.scaleOctaves   = 1;
-            cfg.scaleDown      = down;
+            cfg.scaleMode      = down ? ModuleOptions::kModeDown : ModuleOptions::kModeUp;
             cfg.scaleEndOnRoot = endOnRoot;
 
             std::vector<int> pitches;
@@ -400,6 +469,30 @@ int main()
         check (firstPitches (true, true, 8)
                    == std::vector<int> { 60, 59, 57, 55, 53, 52, 50, 48 },
                "Scale gen down plays the same notes reversed");
+    }
+    {
+        // Endless repeat: the 8-note pattern loops back-to-back, no rests and
+        // no truncation.
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasScaleGen    = true;
+        cfg.scaleStepQn    = 1.0;
+        cfg.scaleRepeatQn  = 0.0;   // Endless
+        cfg.scaleOctaves   = 1;
+        cfg.scaleEndOnRoot = true;
+
+        std::vector<int> pitches;
+        for (int i = 0; i < 2000 && pitches.size() < 10; ++i)
+        {
+            juce::MidiBuffer midi;
+            e.process (midi, block, playing (true), 0, 0, false, cfg);
+            for (const auto meta : midi)
+                if (meta.getMessage().isNoteOn())
+                    pitches.push_back (meta.getMessage().getNoteNumber());
+        }
+        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, false, cfg); }
+        check (pitches == std::vector<int> { 48, 50, 52, 53, 55, 57, 59, 60, 48, 50 },
+               "Scale gen Endless loops the pattern back-to-back");
     }
 
     // --- 14. ScaleTables spot checks -----------------------------------------

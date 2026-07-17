@@ -31,33 +31,60 @@ the global values by default; a module may override them locally or ignore
 them. Whether a module is deterministic or probabilistic is decided per
 module — there is no global switch.
 
-Generators share a set of common settings, applied where they make sense for
-the specific module: a scale override (root plus scale type), a rate locked to
-host tempo (e.g. 1/16), and an active-from/to bar range that limits the
-generator to part of the arrangement.
-
 Stateful time modules (Delay, Retrograde) follow shared transport rules: on
 stop, everything stops and buffered material is discarded, with note-offs sent
 so nothing hangs; on loop wrap, the buffer spills into the next pass; after a
 playhead jump the buffer simply empties as normal.
 
+## Shared settings
+
+Some settings recur across many modules. Each shared setting is one control —
+the same UI element and the same underlying code everywhere it appears — so
+the user meets an identical, recognisable element in every module that has
+it. The list will grow as modules gain settings; today it is:
+
+- **Root and scale** — where a module's notes live. Both default to Global,
+  borrowed live from the menu bar (so a module left on Global tracks later
+  menu-bar changes), or can be overridden locally: root C to B, the same
+  scale list as the menu bar. Used by Random and Scale; planned for Quantize
+  (its local override).
+- **Rate** — the step grid a module works on, as a note length (1/32 to 1/1)
+  locked to host tempo: the grid a generator emits its MIDI on, or the grid a
+  modulator re-times passing MIDI to. Used by Arp, Random, and Scale.
+- **Repeat** — when a module's pattern is reset and replayed from the start,
+  counted from transport start: 1/4, 1/2, or 1 to 4 bars (assuming 4/4), or
+  Endless — the normal default — meaning the pattern just runs on until the
+  transport stops. Example: a Scale generator at rate 1/8 with repeat 1/2
+  generates only the first four scale notes, then repeats them. Used by Arp
+  (default Endless) and Scale (default 1 bar).
+- **Gate** — how long each emitted note sounds, as a share of its step (25%
+  to 100%, default 50%). Exposed by Arp so far; Random and Scale still run
+  the fixed 50% default and will grow the control as it proves useful.
+- **Mode** (Up, Down, …) and **Octaves** — pattern direction and octave span,
+  shared by the modules that walk a pattern (Arp, Scale; Scale offers Up and
+  Down only).
+
+Also planned as a shared setting: an active-from/to bar range that limits a
+module to part of the arrangement (not yet implemented anywhere).
+
 ## Implemented modules
 
-The first four generator/modulator modules shipped with the Phase 2 canvas
-skeleton running fixed default settings; the two I/O modules followed with the
-first real setting (their channel dialog), and the Random and Scale generators
-now carry full settings dialogs of their own. Arp, Quantize, and Shift still
-run fixed defaults — double-clicking them opens a placeholder. Until port
-wiring lands everything runs as one fixed chain: host MIDI enters through MIDI
-In (or an implicit all-channels input if none is placed), feeds the
+The first modules shipped with the Phase 2 canvas skeleton running fixed
+default settings; the two I/O modules followed with the first real setting
+(their channel dialog), the Random and Scale generators gained full settings
+dialogs, and the Arp — reclassified as a modulator, since it transforms the
+notes flowing into it — now carries one too. Quantize and Shift still run
+fixed defaults — double-clicking them opens a placeholder. Until port wiring
+lands everything runs as one fixed chain: host MIDI enters through MIDI In
+(or an implicit all-channels input if none is placed), feeds the Arp and the
 generators, results pass through Quantize and then Shift, and exit through
 Output (or an implicit channel-preserving output). A consequence of the fixed
-chain: placing several copies of the same generator doesn't layer them — extra
+chain: placing several copies of the same module doesn't layer them — extra
 copies share the first one's settings until wiring lands.
 
-Each implemented module's entry ends with a "User settings" line listing what
-the user can change today, so the gap between current and planned settings is
-always explicit.
+Each implemented module's entry ends with a "User settings" bullet list of
+what the user can change today, so the gap between current and planned
+settings is always explicit.
 
 ### MIDI In (I/O)
 
@@ -69,7 +96,9 @@ several MIDI Ins listens to the union of their channels. With no MIDI In on
 the canvas, the plugin behaves as if an all-channels MIDI In were present, so
 nothing is required to get sound flowing.
 
-User settings: Channel — All (default) or 1 to 16.
+User settings:
+
+- Channel — All (default) or 1 to 16.
 
 ### Output (I/O)
 
@@ -81,23 +110,9 @@ channel. With no Output on the canvas, events keep whatever channel they
 already had. Notes always release on the channel they started on, even if the
 channel setting is changed while they sound — nothing hangs.
 
-User settings: Channel — 1 to 16 (default 1).
+User settings:
 
-### Arp (generator)
-
-The Arp turns notes you hold into a running arpeggio. Hold a chord — from your
-keyboard or a clip — and while the transport is playing, the Arp steps through
-the held notes one at a time. The held notes themselves are consumed: they are
-the arpeggio's raw material and do not sound directly. When the transport
-stops, so does the Arp, and anything sounding is released cleanly. When you
-stop holding notes (or the transport is stopped), your playing passes through
-unchanged, so live playing stays audible.
-
-Current fixed behaviour: ascending order, 1/16-note rate, gate length of half
-a step, velocity 100. Planned settings are the usual arp controls — direction,
-octave range, rate, gate — plus the common generator settings.
-
-User settings: none yet.
+- Channel — 1 to 16 (default 1).
 
 ### Random (generator)
 
@@ -115,9 +130,12 @@ root). If the range boundaries end up reversed the module swaps them, and if
 the range contains no scale note at all it snaps to the nearest one rather
 than fall silent. The node shows its rate as a sublabel.
 
-User settings: Root — Global (default) or C to B. Scale — Global (default) or
-any scale from the global list. Rate — 1/32 to 1/1 (default 1/16). Range from
-/ to — any MIDI note (default root octave 1 to root octave 3).
+User settings:
+
+- Root — Global (default) or C to B.
+- Scale — Global (default) or any scale from the global list.
+- Rate — 1/32 to 1/1 (default 1/16).
+- Range from / to — any MIDI note (default root octave 1 to root octave 3).
 
 ### Scale (generator)
 
@@ -133,14 +151,48 @@ common seven-note case). Root and scale each default to Global, like Random.
 The rate sets the step length; Repeat sets when the pattern restarts, counted
 from transport start (1/4 to 4 bars, assuming 4/4). A pattern longer than the
 repeat window is cut off mid-run; a shorter one rests until the window comes
-round. The defaults line up deliberately: 1/8 steps, one octave, End on Root,
-repeat every bar — an eight-note run filling exactly one bar. Gate is half a
-step, velocity 100, and the node shows its rate as a sublabel.
+round. On Endless there is no window: the pattern loops back-to-back,
+restarting right after its last note. The defaults line up deliberately: 1/8
+steps, one octave, End on Root, repeat every bar — an eight-note run filling
+exactly one bar (Repeat's usual default is Endless; this module is the
+deliberate exception). Gate is half a step, velocity 100, and the node shows
+its rate as a sublabel.
 
-User settings: Root — Global (default) or C to B. Scale — Global (default) or
-any scale from the global list. Mode — Up (default) or Down. Octaves — 1
-(default) to 4. End on — Root (octave, default) or 7th. Rate — 1/16 to 1/1
-(default 1/8). Repeat — 1/4, 1/2, 1 bar (default), 2, 3, or 4 bars.
+User settings:
+
+- Root — Global (default) or C to B.
+- Scale — Global (default) or any scale from the global list.
+- Mode — Up (default) or Down.
+- Octaves — 1 (default) to 4.
+- End on — Root (octave, default) or 7th.
+- Rate — 1/16 to 1/1 (default 1/8).
+- Repeat — Endless, 1/4, 1/2, 1 bar (default), 2, 3, or 4 bars.
+
+### Arp (modulator)
+
+The Arp re-times what flows into it, turning held notes into a running
+arpeggio. Hold a chord — from your keyboard or a clip — and while the
+transport is playing, the Arp steps through the held notes one at a time on
+its rate grid. The held notes themselves are consumed: they are the
+arpeggio's raw material and do not sound directly. Mode sets the walk — Up,
+Down, Up-Down (turning points not doubled), or Random — and Octaves extends
+it across up to four octaves, repeating the held pattern an octave higher
+each pass. Gate sets how long each note sounds as a share of its step.
+Repeat, normally Endless, resets the walk to its start at every window
+boundary, snapping the arpeggio back into phrase-length phrases.
+
+When the transport stops, so does the Arp, and anything sounding is released
+cleanly. When you stop holding notes (or the transport is stopped), your
+playing passes through unchanged, so live playing stays audible. Velocity is
+fixed at 100 for now, and the node shows its rate as a sublabel.
+
+User settings:
+
+- Mode — Up (default), Down, Up-Down, or Random.
+- Rate — 1/32 to 1/1 (default 1/16).
+- Octaves — 1 (default) to 4.
+- Gate — 25%, 50% (default), 75%, or 100% of the step.
+- Repeat — Endless (default), 1/4, 1/2, 1 bar, 2, 3, or 4 bars.
 
 ### Quantize (modulator)
 
@@ -154,8 +206,10 @@ a local root/scale override. Note that the global Quantize toggle in the menu
 bar applies the same snapping graph-wide; the module exists so quantization
 can be placed at a specific point in the flow.
 
-User settings: none yet (the global root, scale, and quantize toggle in the
-menu bar apply, but nothing is settable on the module itself).
+User settings:
+
+- None yet (the global root, scale, and quantize toggle in the menu bar
+  apply, but nothing is settable on the module itself).
 
 ### Shift (modulator)
 
@@ -165,7 +219,9 @@ of semitones. Note-ons and note-offs shift together, so nothing ever hangs.
 Current fixed behaviour: +12 semitones (one octave up). Planned settings: the
 shift amount.
 
-User settings: none yet.
+User settings:
+
+- None yet.
 
 ## Planned — speced
 

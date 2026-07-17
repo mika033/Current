@@ -1,5 +1,6 @@
 #include "Engine.h"
 #include "ScaleTables.h"
+#include "ModuleSettings.h"   // ModuleOptions::kMode* — the shared mode indices
 #include <algorithm>
 #include <cmath>
 
@@ -42,6 +43,7 @@ void Engine::reset()
     randomSamplesToNext = 0.0;
     scaleSamplesToNext = 0.0;
     arpIndex = 0;
+    arpStep = 0;
     scaleStep = 0;
     wasPlaying = false;
 }
@@ -104,14 +106,15 @@ void Engine::process (juce::MidiBuffer& midi,
 
     const double samplesPerQn = juce::jmax (1.0, (60.0 / bpm) * sr);
 
-    // Transport start: align every generator's step clock so its first step
-    // fires at sample 0, and rewind the Scale pattern to its beginning.
+    // Transport start: align every stepped module's clock so its first step
+    // fires at sample 0, and rewind the Arp/Scale patterns to their beginning.
     if (isPlaying && ! wasPlaying)
     {
         arpSamplesToNext = 0.0;
         randomSamplesToNext = 0.0;
         scaleSamplesToNext = 0.0;
         arpIndex = 0;
+        arpStep = 0;
         scaleStep = 0;
     }
 
@@ -192,7 +195,7 @@ void Engine::process (juce::MidiBuffer& midi,
         }
     }
 
-    // --- Generators: each fires on its own step grid -------------------------
+    // --- Stepped modules: each fires on its own step grid --------------------
     if (isPlaying)
     {
         // Map through the modulator chain and emit on the Output channel(s),
@@ -207,12 +210,15 @@ void Engine::process (juce::MidiBuffer& midi,
             });
         };
 
-        // Walk one generator's step clock across this block, firing `step` at
-        // each grid point and carrying the remainder into the next block.
-        auto runSteps = [&] (double& samplesToNext, double stepQn, auto&& step)
+        // Walk one module's step clock across this block, firing `step` at
+        // each grid point and carrying the remainder into the next block. The
+        // gate is capped one sample short of the step so even a 100% gate's
+        // note-off can't collide with the next same-pitch note-on.
+        auto runSteps = [&] (double& samplesToNext, double stepQn, double gateFrac, auto&& step)
         {
             const double stepSamples = juce::jmax (1.0, samplesPerQn * stepQn);
-            const int    gateSamples = juce::jmax (1, (int) (stepSamples * 0.5));
+            const int    gateSamples = juce::jlimit (1, juce::jmax (1, (int) stepSamples - 1),
+                                                     (int) (stepSamples * gateFrac));
             double sPos = samplesToNext;
             while (sPos < (double) numSamples)
             {
@@ -222,18 +228,62 @@ void Engine::process (juce::MidiBuffer& midi,
             samplesToNext = sPos - (double) numSamples;
         };
 
+        // How many steps fit in a repeat window; 0 = Endless (no window).
+        auto stepsPerWindow = [] (double repeatQn, double stepQn)
+        {
+            return repeatQn > 0.0
+                ? juce::jmax (1, (int) std::llround (repeatQn / juce::jmax (0.001, stepQn)))
+                : 0;
+        };
+
         if (cfg.hasArp)
         {
-            std::vector<int> heldList;
-            for (int n = 0; n < 128; ++n)
-                if (held[(size_t) n])
-                    heldList.push_back (n);   // ascending
+            // The walk sequence: held notes ascending, repeated per octave of
+            // the span (the classic arp octave extension).
+            const int octs = juce::jlimit (1, 4, cfg.arpOctaves);
+            std::vector<int> seq;
+            for (int o = 0; o < octs; ++o)
+                for (int n = 0; n < 128; ++n)
+                    if (held[(size_t) n])
+                        seq.push_back (juce::jmin (127, n + o * 12));
 
-            runSteps (arpSamplesToNext, 0.25, [&] (int s, int gate)
+            const int window = stepsPerWindow (cfg.arpRepeatQn, cfg.arpStepQn);
+
+            runSteps (arpSamplesToNext, cfg.arpStepQn, cfg.arpGateFrac, [&] (int s, int gate)
             {
-                if (heldList.empty())
+                // Window boundaries are counted on the grid from transport
+                // start (arpStep), independent of when notes are held; the walk
+                // position itself (arpIndex) only advances when a note fires.
+                if (window > 0 && arpStep % window == 0)
+                    arpIndex = 0;
+                ++arpStep;
+
+                if (seq.empty())
                     return;
-                const int raw = heldList[(size_t) (arpIndex % (int) heldList.size())];
+
+                const int n = (int) seq.size();
+                int raw = seq.front();
+                switch (cfg.arpMode)
+                {
+                    case ModuleOptions::kModeDown:
+                        raw = seq[(size_t) (n - 1 - (arpIndex % n))];
+                        break;
+                    case ModuleOptions::kModeUpDown:
+                    {
+                        // Classic up-down: endpoints aren't doubled, so the
+                        // cycle is 2n-2 steps (n > 1).
+                        const int cycle = n > 1 ? 2 * n - 2 : 1;
+                        const int i = arpIndex % cycle;
+                        raw = seq[(size_t) (i < n ? i : 2 * (n - 1) - i)];
+                        break;
+                    }
+                    case ModuleOptions::kModeRandom:
+                        raw = seq[(size_t) rng.nextInt (n)];
+                        break;
+                    default:   // kModeUp
+                        raw = seq[(size_t) (arpIndex % n)];
+                        break;
+                }
                 ++arpIndex;
                 emitGenerated (raw, s, gate);
             });
@@ -256,7 +306,7 @@ void Engine::process (juce::MidiBuffer& midi,
             if (candidates.empty())
                 candidates.push_back (ScaleTables::snapToScale ((lo + hi) / 2, rRoot, rScale));
 
-            runSteps (randomSamplesToNext, cfg.randomStepQn, [&] (int s, int gate)
+            runSteps (randomSamplesToNext, cfg.randomStepQn, 0.5, [&] (int s, int gate)
             {
                 emitGenerated (candidates[(size_t) rng.nextInt ((int) candidates.size())], s, gate);
             });
@@ -278,13 +328,15 @@ void Engine::process (juce::MidiBuffer& midi,
                     pattern.push_back (juce::jlimit (0, 127, base + o * 12 + iv));
             if (cfg.scaleEndOnRoot)
                 pattern.push_back (juce::jlimit (0, 127, base + octs * 12));
-            if (cfg.scaleDown)
+            if (cfg.scaleMode == ModuleOptions::kModeDown)
                 std::reverse (pattern.begin(), pattern.end());
 
-            const int stepsPerRepeat = juce::jmax (1,
-                (int) std::llround (cfg.scaleRepeatQn / juce::jmax (0.001, cfg.scaleStepQn)));
+            // Endless (window 0) loops the pattern back-to-back: the window is
+            // simply the pattern's own length.
+            const int window = stepsPerWindow (cfg.scaleRepeatQn, cfg.scaleStepQn);
+            const int stepsPerRepeat = window > 0 ? window : (int) pattern.size();
 
-            runSteps (scaleSamplesToNext, cfg.scaleStepQn, [&] (int s, int gate)
+            runSteps (scaleSamplesToNext, cfg.scaleStepQn, 0.5, [&] (int s, int gate)
             {
                 // Position inside the repeat window; steps past the pattern's
                 // end are rests until the window wraps.

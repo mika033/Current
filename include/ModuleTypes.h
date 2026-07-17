@@ -18,10 +18,11 @@ enum class ModuleKind
 enum class ModuleType
 {
     // Generators
-    Arp,
     Random,
     ScaleGen,   // the "Scale" module — suffixed to avoid reading as a scale type
-    // Modulators
+    // Modulators (Arp transforms held input notes into an arpeggio, so it is a
+    // modulator, not a generator)
+    Arp,
     Quantize,
     Shift,
     // I/O
@@ -34,8 +35,8 @@ enum class ModuleType
 // sources, Output is the one sink, modulators have both.
 inline bool moduleHasInputPort (ModuleType t)
 {
-    return t == ModuleType::Quantize || t == ModuleType::Shift
-        || t == ModuleType::Output;
+    return t == ModuleType::Arp || t == ModuleType::Quantize
+        || t == ModuleType::Shift || t == ModuleType::Output;
 }
 
 inline bool moduleHasOutputPort (ModuleType t)
@@ -66,9 +67,9 @@ struct ModuleDescriptor
 inline const std::array<ModuleDescriptor, 7>& moduleCatalogue()
 {
     static const std::array<ModuleDescriptor, 7> kCatalogue = {{
-        { ModuleType::Arp,      ModuleKind::Generator, "Arp"      },
         { ModuleType::Random,   ModuleKind::Generator, "Random"   },
         { ModuleType::ScaleGen, ModuleKind::Generator, "Scale"    },
+        { ModuleType::Arp,      ModuleKind::Modulator, "Arp"      },
         { ModuleType::Quantize, ModuleKind::Modulator, "Quantize" },
         { ModuleType::Shift,    ModuleKind::Modulator, "Shift"    },
         { ModuleType::MidiIn,   ModuleKind::IO,        "MIDI In"  },
