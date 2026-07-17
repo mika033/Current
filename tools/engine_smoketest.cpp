@@ -1,8 +1,9 @@
-// Headless smoke test for the Phase 2 Engine. Exercises the fixed-default
-// module behaviours and, above all, asserts the safety property that matters
-// for a MIDI effect: every note-on the engine emits is balanced by a note-off,
-// so nothing hangs — across pass-through, modulators, generators, and a
-// transport stop. Built only when CURRENT_BUILD_TESTS=ON.
+// Headless smoke test for the Engine. Exercises the module behaviours —
+// defaults and user settings (rates, ranges, modes, repeat windows, gates) —
+// and, above all, asserts the safety property that matters for a MIDI effect:
+// every note-on the engine emits is balanced by a note-off, so nothing hangs —
+// across pass-through, modulators, stepped modules, and a transport stop.
+// Built only when CURRENT_BUILD_TESTS=ON.
 //
 // Not a unit-test framework — just asserts + a pass/fail summary, so it can run
 // in CI without extra deps.
