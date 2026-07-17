@@ -551,6 +551,148 @@ void Engine::process (juce::MidiBuffer& midi,
                                s, gate);
             });
         }
+
+        if (cfg.hasChord)
+        {
+            // Build the chord: the (root, scale) stacked per chordType on the
+            // chosen degree, from the shared generator centre (root at octave
+            // 3), then the lowest tones raised an octave per the inversion.
+            const int cRoot  = cfg.chordRoot  >= 0 ? cfg.chordRoot  : root;
+            const int cScale = cfg.chordScale >= 0 ? cfg.chordScale : scaleIndex;
+            const int base   = 48 + juce::jlimit (0, 11, cRoot);
+            const int chordBase = ScaleTables::stepInScale (base, cRoot, cScale,
+                                                            juce::jlimit (0, 6, cfg.chordDegree));
+
+            std::vector<int> tones;
+            for (int off : ModuleOptions::chordTypeDegrees (cfg.chordType))
+                tones.push_back (ScaleTables::stepInScale (chordBase, cRoot, cScale, off));
+            const int inv = juce::jlimit (0, (int) tones.size() - 1, cfg.chordInversion);
+            for (int i = 0; i < inv; ++i)
+                tones[(size_t) i] = juce::jmin (127, tones[(size_t) i] + 12);
+
+            // A chord starts every period and sounds for length; runSteps caps
+            // the gate one sample short of the period, so length >= period is
+            // seamless legato. Emission goes through the normal generated path
+            // (modulator chain, Quantize, Delay), one note per chord tone.
+            const double periodQn = juce::jmax (0.001, cfg.chordPeriodQn);
+            const double gateFrac = juce::jlimit (0.0, 1.0, cfg.chordLengthQn / periodQn);
+            runSteps (periodQn, gateFrac, [&] (juce::int64, int s, int gate)
+            {
+                for (int p : tones)
+                    emitGenerated (p, s, gate);
+            });
+        }
+
+        if (cfg.hasDrone)
+        {
+            const int dRoot  = cfg.droneRoot  >= 0 ? cfg.droneRoot  : root;
+            const int dScale = cfg.droneScale >= 0 ? cfg.droneScale : scaleIndex;
+            const int base   = juce::jlimit (0, 127,
+                                             48 + juce::jlimit (0, 11, dRoot)
+                                             + 12 * juce::jlimit (-ModuleOptions::kDroneOctaveRange,
+                                                                  ModuleOptions::kDroneOctaveRange,
+                                                                  cfg.droneOctave));
+            std::vector<int> raw { base };
+            switch (cfg.droneVoicing)
+            {
+                case ModuleOptions::kVoicingRootFifth:
+                    // A perfect fifth snapped into the scale, so e.g. Locrian
+                    // holds its diminished fifth instead of leaving the scale.
+                    raw.push_back (ScaleTables::snapToScale (juce::jmin (127, base + 7),
+                                                             dRoot, dScale));
+                    break;
+                case ModuleOptions::kVoicingRootOctave:
+                    raw.push_back (juce::jmin (127, base + 12));
+                    break;
+                case ModuleOptions::kVoicingTriad:
+                    raw.push_back (ScaleTables::stepInScale (base, dRoot, dScale, 2));
+                    raw.push_back (ScaleTables::stepInScale (base, dRoot, dScale, 4));
+                    break;
+                default:   // kVoicingRoot
+                    break;
+            }
+
+            // The pitches the drone should be sounding if it (re)started at
+            // block sample `s`, mapped through the modulator chain. Mapping
+            // can collapse two voicing tones onto one pitch — deduplicated so
+            // a note-off can't be double-booked.
+            auto mappedTones = [&] (int s)
+            {
+                std::vector<int> out;
+                for (int r : raw)
+                {
+                    const int p = mapPitch (r, root, scaleIndex, progIndexAt (s), cfg);
+                    if (std::find (out.begin(), out.end(), p) == out.end())
+                        out.push_back (p);
+                }
+                return out;
+            };
+
+            // Release every held drone note at block sample `s`. Returns the
+            // longest remaining hold time so a re-trigger can carry it over.
+            auto releaseDrone = [&] (int s)
+            {
+                int remaining = 0;
+                for (auto it = activeGen.begin(); it != activeGen.end();)
+                {
+                    if (it->drone)
+                    {
+                        remaining = juce::jmax (remaining, it->samplesLeft);
+                        midi.addEvent (juce::MidiMessage::noteOff (it->channel, it->note), s);
+                        it = activeGen.erase (it);
+                    }
+                    else
+                        ++it;
+                }
+                return remaining;
+            };
+
+            auto startDrone = [&] (int s, int holdSamples)
+            {
+                for (int p : mappedTones (s))
+                    forEachOutChannel (cfg.outChannelMask, 1, [&] (int ch)
+                    {
+                        midi.addEvent (juce::MidiMessage::noteOn (ch, p, (juce::uint8) 100), s);
+                        activeGen.push_back ({ p, ch, s + holdSamples, true });
+                    });
+            };
+
+            // Re-trigger on harmony change: if what the drone is holding no
+            // longer matches what it should hold — a root/scale/voicing edit,
+            // an Output channel change, or an upstream Progression step — the
+            // old notes are released and the new ones start immediately,
+            // keeping the remainder of the hold. A drone resting between
+            // holds has nothing to re-trigger; the change simply shapes the
+            // next period's notes.
+            {
+                std::vector<std::pair<int, int>> want;   // (pitch, channel)
+                for (int p : mappedTones (0))
+                    forEachOutChannel (cfg.outChannelMask, 1,
+                                       [&] (int ch) { want.emplace_back (p, ch); });
+                std::sort (want.begin(), want.end());
+
+                std::vector<std::pair<int, int>> have;
+                for (const auto& a : activeGen)
+                    if (a.drone)
+                        have.emplace_back (a.note, a.channel);
+                std::sort (have.begin(), have.end());
+
+                if (! have.empty() && want != have)
+                    startDrone (0, releaseDrone (0));
+            }
+
+            // Period boundaries: a fresh hold starts, releasing first — in
+            // linear playback the gate ended a sample earlier anyway, but a
+            // host loop wrap can land a boundary mid-hold. The drone
+            // deliberately bypasses Quantize and the Delay (see Engine.h).
+            const double periodQn = juce::jmax (0.001, cfg.dronePeriodQn);
+            const double gateFrac = juce::jlimit (0.0, 1.0, cfg.droneLengthQn / periodQn);
+            runSteps (periodQn, gateFrac, [&] (juce::int64, int s, int gate)
+            {
+                releaseDrone (s);
+                startDrone (s, gate);
+            });
+        }
     }
 
     // --- Quantize: sound the deferred notes whose grid point lands this block --

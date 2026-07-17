@@ -137,22 +137,26 @@ namespace ModuleOptions
     constexpr int kLfoRandom   = 5;
 
     // Bar lengths (assuming 4/4, like the repeat table above). Shared by the
-    // LFO's cycle length and the Progression's rate — both are "how long one
-    // musical unit lasts" choices, so they present the same list.
+    // LFO's cycle length, the Progression's rate, and the Chord/Drone
+    // Length + Repeat pair — all are "how long one musical unit lasts"
+    // choices, so they present the same list. 16 bars exists mainly for the
+    // Drone's long holds but every user of the list gets it.
     inline const juce::StringArray& barLengthNames()
     {
         static const juce::StringArray names { "1/4 bar", "1/2 bar", "1 bar",
-                                               "2 bars", "4 bars", "8 bars" };
+                                               "2 bars", "4 bars", "8 bars",
+                                               "16 bars" };
         return names;
     }
 
     inline double barLengthQuarterNotes (int index)
     {
-        static const double qn[] = { 1.0, 2.0, 4.0, 8.0, 16.0, 32.0 };
-        return qn[(size_t) juce::jlimit (0, 5, index)];
+        static const double qn[] = { 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0 };
+        return qn[(size_t) juce::jlimit (0, 6, index)];
     }
 
-    constexpr int kBarsOneBar = 2;
+    constexpr int kBarsOneBar   = 2;
+    constexpr int kBarsFourBars = 4;
 
     // Progression: scale degrees a step can sit on. Fixed at the seven-degree
     // vocabulary of the common scales; on shorter scales (Pentatonic) the
@@ -204,6 +208,55 @@ namespace ModuleOptions
         return 0.25 * juce::jlimit (0, 3, index);
     }
 
+    // Chord types as stacks of scale degrees on the chord's root degree, so a
+    // chord stays diatonic to its (root, scale) whatever degree it sits on
+    // (in C major, "7th" on V is G-B-D-F). Sus chords replace the third with
+    // the neighbouring degree; "5th" is the two-note power chord.
+    inline const juce::StringArray& chordTypeNames()
+    {
+        static const juce::StringArray names { "Triad", "7th", "Sus2", "Sus4",
+                                               "5th", "6th" };
+        return names;
+    }
+
+    inline const std::vector<int>& chordTypeDegrees (int index)
+    {
+        static const std::vector<std::vector<int>> kTones = {
+            { 0, 2, 4 },      // Triad
+            { 0, 2, 4, 6 },   // 7th
+            { 0, 1, 4 },      // Sus2
+            { 0, 3, 4 },      // Sus4
+            { 0, 4 },         // 5th
+            { 0, 2, 4, 5 }    // 6th
+        };
+        return kTones[(size_t) juce::jlimit (0, (int) kTones.size() - 1, index)];
+    }
+
+    // Chord inversions: how many of the lowest chord tones move up an octave.
+    inline const juce::StringArray& chordInversionNames()
+    {
+        static const juce::StringArray names { "Root", "1st", "2nd" };
+        return names;
+    }
+
+    // Drone voicings. The 5th is the pitch a perfect fifth up snapped into the
+    // scale (so e.g. Locrian holds its diminished fifth); the triad stacks
+    // scale degrees like the Chord generator.
+    inline const juce::StringArray& droneVoicingNames()
+    {
+        static const juce::StringArray names { "Root", "Root+5th", "Root+Octave",
+                                               "Triad" };
+        return names;
+    }
+
+    constexpr int kVoicingRoot       = 0;
+    constexpr int kVoicingRootFifth  = 1;
+    constexpr int kVoicingRootOctave = 2;
+    constexpr int kVoicingTriad      = 3;
+
+    // Drone octave offset around the shared generator centre (root at octave 3).
+    constexpr int kDroneOctaveRange = 2;
+
     // Note name for a MIDI pitch. Octave convention: C3 = MIDI 48 (the one
     // modules.md and the requirements use), so octave = note/12 - 1.
     inline juce::String midiNoteName (int note)
@@ -234,7 +287,9 @@ struct ProgressionStep
 // fields; Quantize uses rate (its timing grid) and swing; the Scale modulator
 // uses root/scale only; Progression uses root/scale plus its prog* fields;
 // Shift uses scaleOverride (with the extra Off sentinel) and shiftAmount;
-// Delay uses rate (its delay time) plus its delay* fields.
+// Delay uses rate (its delay time) plus its delay* fields; Chord uses
+// root/scale plus its chord* fields; Drone uses root/scale plus its drone*
+// fields; Chord and Drone share holdLength/holdRepeat.
 // Other module types ignore the whole struct. Root/scale
 // overrides of -1 mean "follow the global menu-bar setting" — the engine
 // resolves them per block, so a module left on Global tracks later menu-bar
@@ -297,4 +352,23 @@ struct ModuleSettings
     // note before it, so a non-zero shift climbs (or falls) across the chain.
     int delayFeedback = ModuleOptions::kFeedbackHalf;   // index into feedbackNames()
     int delayShift    = 0;   // -kDelayShiftRange..+kDelayShiftRange semitones
+
+    // Chord only: the chord to emit, as a scale degree of its (root, scale)
+    // plus a diatonic stacking and an inversion.
+    int chordDegree    = 0;   // 0..6 = I..VII
+    int chordType      = 0;   // index into chordTypeNames()
+    int chordInversion = 0;   // index into chordInversionNames()
+
+    // Drone only: which pitches it holds and which octave the root sits in
+    // (offset from the shared generator centre, root at octave 3).
+    int droneVoicing = ModuleOptions::kVoicingRoot;
+    int droneOctave  = 0;   // -kDroneOctaveRange..+kDroneOctaveRange
+
+    // Chord and Drone: Repeat is how often a new chord/note starts (a bar
+    // length, counted from the song's bar 0) and Length is how long it sounds
+    // inside that window — the rest of the window is silent. Length >= Repeat
+    // plays legato back-to-back. Both indices into barLengthNames(); the
+    // Drone's drop-time default raises both to 4 bars.
+    int holdLength = ModuleOptions::kBarsOneBar;
+    int holdRepeat = ModuleOptions::kBarsOneBar;
 };

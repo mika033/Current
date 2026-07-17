@@ -71,6 +71,13 @@ it. The list will grow as modules gain settings; today it is:
 - **Mode** (Up, Down, …) and **Octaves** — pattern direction and octave span,
   shared by the modules that walk a pattern (Arp, Scale; Scale offers Up and
   Down only).
+- **Length and Repeat (bar-based)** — the pacing pair of the slow generators
+  (Chord, Drone). Repeat is how often a new chord/note starts, Length how
+  long it sounds inside that window; both use the shared bar-length list
+  (1/4 bar to 16 bars — the same list as the LFO's cycle length and the
+  Progression's rate), and both windows are anchored to the song's bar 0.
+  Length equal to or above Repeat plays legato back-to-back; a Length below
+  Repeat leaves silence between hits.
 
 Also planned as a shared setting: an active-from/to bar range that limits a
 module to part of the arrangement (not yet implemented anywhere).
@@ -86,7 +93,8 @@ notes flowing into it — now carries one too. Shift gained its settings
 the Delay — the first stateful time modulator — followed. The latest batch
 reworked Quantize into a timing quantizer (rate + swing; the old global
 Quantize checkbox is gone) and added the Scale and Progression modulators, so
-every module in the palette now has real settings. Until port wiring lands
+every module in the palette now has real settings. The slow generators —
+Chord and Drone — arrived next, complete with settings. Until port wiring lands
 everything runs as one fixed chain: host MIDI enters through MIDI In (or an
 implicit all-channels input if none is placed), feeds the Arp and the
 generators, results pass through the Scale modulator, then Progression, then
@@ -187,7 +195,7 @@ User settings:
 The LFO turns a classic low-frequency oscillator into melody: its value is
 sampled on a note grid and mapped to pitch, so instead of a control signal
 you get a stream of notes tracing the shape. The cycle length sets how long
-one full sweep of the shape takes, in bars (1/4 bar to 8 bars, default 1
+one full sweep of the shape takes, in bars (1/4 bar to 16 bars, default 1
 bar), anchored to the song's bar 0. The rate sets how many notes are output —
 one per step, 1/32 to 1/1 (default 1/16). Depth sets how far the pitch
 swings around the centre note (the root at octave 3, so C3 for a C root),
@@ -208,11 +216,67 @@ User settings:
 - Root — Global (default) or C to B.
 - Scale — Global (default) or any scale from the global list.
 - Shape — Sine (default), Triangle, Saw Up, Saw Down, Square, or Random.
-- Cycle length — 1/4 bar to 8 bars (default 1 bar).
+- Cycle length — 1/4 bar to 16 bars (default 1 bar).
 - Depth (octaves) — 0 to 4 (default 1).
 - Depth (scale steps) — 0 to 6 (default 0).
 - Rate — 1/32 to 1/1 (default 1/16).
 - Phase — 0 (default), 90, 180, or 270 degrees.
+
+### Chord (generator)
+
+The Chord emits whole chords instead of single notes: a stack of scale
+degrees built on a chosen degree of its root and scale, so every voicing
+stays diatonic wherever it sits (in C major, a 7th on V is G–B–D–F). Degree
+picks where the chord is built (I–VII, default I); Type picks the stack —
+Triad (default), 7th, Sus2, Sus4, 5th (the two-note power chord), or 6th;
+Inversion (Root, 1st, 2nd) lifts that many of the lowest tones an octave.
+The chord is voiced from the shared generator centre, the root at octave 3.
+
+Pacing uses the bar-based Length/Repeat pair (see Shared settings): a new
+chord starts every Repeat and sounds for Length, both defaulting to 1 bar —
+back-to-back chords out of the box. Chord tones run through the modulator
+chain like any generated notes, so a Progression walks the chord through its
+steps, and Quantize and the Delay treat the tones as ordinary notes. To hear
+chord changes, pair a Chord with a Progression: the Chord supplies the
+voicing, the Progression the harmonic movement.
+
+User settings:
+
+- Root — Global (default) or C to B.
+- Scale — Global (default) or any scale from the global list.
+- Degree — I (default) to VII; the scale degree the chord is built on.
+- Type — Triad (default), 7th, Sus2, Sus4, 5th, or 6th.
+- Inversion — Root (default), 1st, or 2nd.
+- Length — 1/4 bar to 16 bars (default 1 bar); how long the chord sounds.
+- Repeat — 1/4 bar to 16 bars (default 1 bar); how often a new chord starts.
+
+### Drone (generator)
+
+The Drone holds long sustained pitches under everything else. Voicing picks
+what it holds — Root (default), Root+5th (the perfect fifth snapped into the
+scale, so e.g. Locrian holds its diminished fifth), Root+Octave, or Triad
+(scale degrees, like the Chord) — and Octave moves the whole voicing up to
+two octaves either way from the root-at-octave-3 centre.
+
+Its defining behaviour is the immediate re-trigger: whenever the pitches it
+should be holding change mid-hold — the root or scale is edited, the voicing
+changes, or an upstream Progression steps to a new degree — the old notes
+are released and the new ones start at once, keeping the remainder of the
+hold time, instead of waiting for the next window. Pacing is the bar-based
+Length/Repeat pair, both defaulting to 4 bars (drones move slower than
+chords). The Drone's pitches pass through the pitch modulators (Scale,
+Progression, Shift) but deliberately bypass Quantize (its starts already sit
+on bar boundaries, and a re-trigger must not be deferred) and the Delay
+(echoing a held pad produces blips, not echoes).
+
+User settings:
+
+- Root — Global (default) or C to B.
+- Scale — Global (default) or any scale from the global list.
+- Voicing — Root (default), Root+5th, Root+Octave, or Triad.
+- Octave — -2 to +2 (default 0), around the root at octave 3.
+- Length — 1/4 bar to 16 bars (default 4 bars); how long the hold sounds.
+- Repeat — 1/4 bar to 16 bars (default 4 bars); how often a new hold starts.
 
 ### Arp (modulator)
 
@@ -292,7 +356,7 @@ to +2); degree movement is diatonic (in scale members of its root/scale, so
 the result stays in key), the octave offset is plain ±12s. Degree I with
 octave 0 — the default step — passes notes untouched.
 
-Rate sets how long one step lasts (1/4 bar to 8 bars, default 1 bar), anchored
+Rate sets how long one step lasts (1/4 bar to 16 bars, default 1 bar), anchored
 to the song's bar 0; the list loops when it runs out. Add step / Remove in
 the settings dialog grow and shrink the list (1 to 8 steps), which is how the
 progression's length is set. Root and scale default to Global. While the
@@ -305,7 +369,7 @@ User settings:
 
 - Root — Global (default) or C to B.
 - Scale — Global (default) or any scale from the global list.
-- Rate — 1/4 bar to 8 bars (default 1 bar); the length of one step.
+- Rate — 1/4 bar to 16 bars (default 1 bar); the length of one step.
 - Steps — 1 to 8 steps (default one step, I); per step a degree I–VII
   (default I) and an octave −2 to +2 (default 0).
 
@@ -366,14 +430,6 @@ open details, where any, are flagged.
 - **Step Sequencer** — the user draws a fixed melodic pattern in a mini piano
   roll and the module plays it in a loop. The grid UI should follow the shared
   `design/grid-interaction.md` conventions.
-- **Chord** — emits triads, 7ths, or other voicings instead of single notes.
-  The core (pick a chord type, emit it on the generator grid from the current
-  root) is codable now. Progression-walking needs no feature of its own any
-  more: feed the Chord generator through the Progression modulator.
-- **Drone** — holds sustained notes indefinitely, re-triggering whenever the
-  global root or scale changes. Which pitches it holds (root only, root plus
-  fifth, a full chord) is its main setting; default to the root.
-
 ### Modulators — pitch
 
 - **Harmonizer** — turns single notes into chords, with one selectable chord

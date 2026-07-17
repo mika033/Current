@@ -124,6 +124,7 @@ private:
     Engine engine;
     std::atomic<bool> engHasArp { false }, engHasRandom { false },
                       engHasScaleGen { false }, engHasLfo { false },
+                      engHasChord { false }, engHasDrone { false },
                       engHasQuantize { false }, engHasScaleMod { false },
                       engHasProgression { false }, engHasShift { false },
                       engHasDelay { false },
@@ -156,6 +157,16 @@ private:
                      engLfoShape { ModuleOptions::kLfoSine },
                      engLfoDepthOct { 1 }, engLfoDepthSteps { 0 },
                      engLfoPhase { 0 };
+    std::atomic<int> engChordRoot { -1 }, engChordScale { -1 },
+                     engChordDegree { 0 }, engChordType { 0 },
+                     engChordInversion { 0 },
+                     engChordLength { ModuleOptions::kBarsOneBar },
+                     engChordRepeat { ModuleOptions::kBarsOneBar };
+    std::atomic<int> engDroneRoot { -1 }, engDroneScale { -1 },
+                     engDroneVoicing { ModuleOptions::kVoicingRoot },
+                     engDroneOctave { 0 },
+                     engDroneLength { ModuleOptions::kBarsFourBars },
+                     engDroneRepeat { ModuleOptions::kBarsFourBars };
     std::atomic<int> engQuantRate { ModuleOptions::kRate1_16 },
                      engQuantSwing { ModuleOptions::kSwingOff };
     std::atomic<int> engScaleModRoot { -1 }, engScaleModScale { -1 };

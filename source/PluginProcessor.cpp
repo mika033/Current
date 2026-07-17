@@ -129,6 +129,8 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.hasRandom       = engHasRandom.load();
     cfg.hasScaleGen     = engHasScaleGen.load();
     cfg.hasLfo          = engHasLfo.load();
+    cfg.hasChord        = engHasChord.load();
+    cfg.hasDrone        = engHasDrone.load();
     cfg.hasQuantize     = engHasQuantize.load();
     cfg.hasScaleMod     = engHasScaleMod.load();
     cfg.hasProgression  = engHasProgression.load();
@@ -167,6 +169,21 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.lfoDepthOct   = engLfoDepthOct.load();
     cfg.lfoDepthSteps = engLfoDepthSteps.load();
     cfg.lfoPhase      = ModuleOptions::lfoPhaseFraction (engLfoPhase.load());
+
+    cfg.chordRoot      = engChordRoot.load();
+    cfg.chordScale     = engChordScale.load();
+    cfg.chordDegree    = engChordDegree.load();
+    cfg.chordType      = engChordType.load();
+    cfg.chordInversion = engChordInversion.load();
+    cfg.chordLengthQn  = ModuleOptions::barLengthQuarterNotes (engChordLength.load());
+    cfg.chordPeriodQn  = ModuleOptions::barLengthQuarterNotes (engChordRepeat.load());
+
+    cfg.droneRoot     = engDroneRoot.load();
+    cfg.droneScale    = engDroneScale.load();
+    cfg.droneVoicing  = engDroneVoicing.load();
+    cfg.droneOctave   = engDroneOctave.load();
+    cfg.droneLengthQn = ModuleOptions::barLengthQuarterNotes (engDroneLength.load());
+    cfg.dronePeriodQn = ModuleOptions::barLengthQuarterNotes (engDroneRepeat.load());
 
     cfg.quantStepQn = ModuleOptions::rateQuarterNotes (engQuantRate.load());
     cfg.quantSwing  = ModuleOptions::swingFraction (engQuantSwing.load());
@@ -243,6 +260,7 @@ juce::AudioProcessorEditor* CurrentAudioProcessor::createEditor()
 void CurrentAudioProcessor::refreshEngineConfig()
 {
     bool arp = false, rnd = false, scaleGen = false, lfo = false;
+    bool chord = false, drone = false;
     bool quant = false, scaleMod = false, progression = false;
     bool shift = false, delay = false;
     bool midiIn = false, output = false;
@@ -302,6 +320,31 @@ void CurrentAudioProcessor::refreshEngineConfig()
                     engLfoPhase.store (m.settings.lfoPhase);
                 }
                 lfo = true;
+                break;
+            case ModuleType::Chord:
+                if (! chord)
+                {
+                    engChordRoot.store (m.settings.rootOverride);
+                    engChordScale.store (m.settings.scaleOverride);
+                    engChordDegree.store (m.settings.chordDegree);
+                    engChordType.store (m.settings.chordType);
+                    engChordInversion.store (m.settings.chordInversion);
+                    engChordLength.store (m.settings.holdLength);
+                    engChordRepeat.store (m.settings.holdRepeat);
+                }
+                chord = true;
+                break;
+            case ModuleType::Drone:
+                if (! drone)
+                {
+                    engDroneRoot.store (m.settings.rootOverride);
+                    engDroneScale.store (m.settings.scaleOverride);
+                    engDroneVoicing.store (m.settings.droneVoicing);
+                    engDroneOctave.store (m.settings.droneOctave);
+                    engDroneLength.store (m.settings.holdLength);
+                    engDroneRepeat.store (m.settings.holdRepeat);
+                }
+                drone = true;
                 break;
             case ModuleType::Quantize:
                 if (! quant)
@@ -370,6 +413,8 @@ void CurrentAudioProcessor::refreshEngineConfig()
     engHasRandom.store (rnd);
     engHasScaleGen.store (scaleGen);
     engHasLfo.store (lfo);
+    engHasChord.store (chord);
+    engHasDrone.store (drone);
     engHasQuantize.store (quant);
     engHasScaleMod.store (scaleMod);
     engHasProgression.store (progression);
@@ -414,6 +459,13 @@ int CurrentAudioProcessor::addModule (ModuleType type, float x, float y)
         // 1/8 echoes: the shared rate default of 1/16 is generator-paced and
         // too fast to read as an echo.
         m.settings.rate = ModuleOptions::kRate1_8;
+    }
+    else if (type == ModuleType::Drone)
+    {
+        // Drones move slower than chords: 4-bar holds back to back (the
+        // shared holdLength/holdRepeat default of 1 bar is chord-paced).
+        m.settings.holdLength = ModuleOptions::kBarsFourBars;
+        m.settings.holdRepeat = ModuleOptions::kBarsFourBars;
     }
 
     moduleList.push_back (m);
@@ -506,7 +558,8 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         // The shared module settings, only where the type actually uses them.
         if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen
             || m.type == ModuleType::Lfo || m.type == ModuleType::ScaleMod
-            || m.type == ModuleType::Progression)
+            || m.type == ModuleType::Progression || m.type == ModuleType::Chord
+            || m.type == ModuleType::Drone)
         {
             node.setProperty ("root",  m.settings.rootOverride, nullptr);
             node.setProperty ("scale", m.settings.scaleOverride, nullptr);
@@ -556,6 +609,22 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
             node.setProperty ("feedback",   m.settings.delayFeedback, nullptr);
             node.setProperty ("delayShift", m.settings.delayShift, nullptr);
         }
+        if (m.type == ModuleType::Chord)
+        {
+            node.setProperty ("degree",    m.settings.chordDegree, nullptr);
+            node.setProperty ("chordType", m.settings.chordType, nullptr);
+            node.setProperty ("inversion", m.settings.chordInversion, nullptr);
+        }
+        if (m.type == ModuleType::Drone)
+        {
+            node.setProperty ("voicing",     m.settings.droneVoicing, nullptr);
+            node.setProperty ("droneOctave", m.settings.droneOctave, nullptr);
+        }
+        if (m.type == ModuleType::Chord || m.type == ModuleType::Drone)
+        {
+            node.setProperty ("holdLength", m.settings.holdLength, nullptr);
+            node.setProperty ("holdRepeat", m.settings.holdRepeat, nullptr);
+        }
         canvas.appendChild (node, nullptr);
     }
     state.appendChild (canvas, nullptr);
@@ -597,6 +666,7 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             ModuleSettings def;
             const bool isScaleGen = m.type == ModuleType::ScaleGen;
             const bool isDelay    = m.type == ModuleType::Delay;
+            const bool isDrone    = m.type == ModuleType::Drone;
             m.settings.rootOverride  = (int)  node.getProperty ("root",  def.rootOverride);
             m.settings.scaleOverride = (int)  node.getProperty ("scale", def.scaleOverride);
             m.settings.rate          = (int)  node.getProperty ("rate",
@@ -623,6 +693,15 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             m.settings.lfoPhase      = (int)  node.getProperty ("lfoPhase", def.lfoPhase);
             m.settings.delayFeedback = (int)  node.getProperty ("feedback", def.delayFeedback);
             m.settings.delayShift    = (int)  node.getProperty ("delayShift", def.delayShift);
+            m.settings.chordDegree    = (int) node.getProperty ("degree", def.chordDegree);
+            m.settings.chordType      = (int) node.getProperty ("chordType", def.chordType);
+            m.settings.chordInversion = (int) node.getProperty ("inversion", def.chordInversion);
+            m.settings.droneVoicing   = (int) node.getProperty ("voicing", def.droneVoicing);
+            m.settings.droneOctave    = (int) node.getProperty ("droneOctave", def.droneOctave);
+            m.settings.holdLength     = (int) node.getProperty ("holdLength",
+                                          isDrone ? ModuleOptions::kBarsFourBars : def.holdLength);
+            m.settings.holdRepeat     = (int) node.getProperty ("holdRepeat",
+                                          isDrone ? ModuleOptions::kBarsFourBars : def.holdRepeat);
 
             moduleList.push_back (m);
         }

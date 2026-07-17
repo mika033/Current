@@ -47,6 +47,23 @@
 //               ± its depth (whole octaves + extra scale steps, both counted
 //               in scale degrees). The Random shape redraws a value per note
 //               instead of tracking the cycle.
+//   - Chord:    emits one diatonic chord — its (root, scale) stacked per
+//               `chordType` on `chordDegree`, inverted per `chordInversion` —
+//               on a long grid: a new chord starts every `chordPeriodQn`
+//               (anchored to the song's bar 0) and sounds for
+//               `chordLengthQn`; the rest of the period is silent. Length >=
+//               period plays legato back-to-back (the gate is capped one
+//               sample short of the period, like every stepped gate).
+//   - Drone:    holds its voicing (root / root+5th / root+octave / triad, the
+//               root at octave 3 + `droneOctave`) on the same period/length
+//               model as the Chord, but re-triggers immediately whenever the
+//               pitches it should be holding change mid-hold — a root/scale
+//               edit, a voicing edit, or an upstream Progression step — with
+//               the remainder of the hold time carried over. Because a drone
+//               is continuous material rather than an event stream, it
+//               deliberately bypasses Quantize (nothing to re-time; its
+//               starts sit on bar boundaries already) and the Delay (echoing
+//               a held pad adds blips, not echoes).
 //
 // Modulators:
 //   - Quantize: re-times notes, not pitches: while the transport is playing,
@@ -126,6 +143,8 @@ public:
         bool hasRandom      = false;
         bool hasScaleGen    = false;
         bool hasLfo         = false;
+        bool hasChord       = false;
+        bool hasDrone       = false;
         bool hasQuantize    = false;
         bool hasScaleMod    = false;
         bool hasProgression = false;
@@ -170,6 +189,24 @@ public:
         int    lfoDepthSteps = 0;      //   ... plus extra scale steps
         double lfoPhase      = 0.0;    // start phase as a cycle fraction (0..1)
 
+        // Chord generator settings. Period = how often a new chord starts,
+        // length = how long it sounds within the period (both bar lengths).
+        int    chordRoot      = -1;
+        int    chordScale     = -1;
+        int    chordDegree    = 0;     // 0..6 = I..VII
+        int    chordType      = 0;     // index into ModuleOptions::chordTypeNames()
+        int    chordInversion = 0;     // lowest N tones up an octave
+        double chordLengthQn  = 4.0;   // 1 bar
+        double chordPeriodQn  = 4.0;
+
+        // Drone generator settings, same period/length model as the Chord.
+        int    droneVoicing  = 0;      // ModuleOptions::kVoicing*
+        int    droneRoot     = -1;
+        int    droneScale    = -1;
+        int    droneOctave   = 0;      // offset from the root-at-octave-3 centre
+        double droneLengthQn = 16.0;   // 4 bars
+        double dronePeriodQn = 16.0;
+
         // Quantize settings: the timing grid and the swing amount (0..1, the
         // fraction of a step pair redistributed to the even step).
         double quantStepQn = 0.25;   // grid in quarter notes (1/16)
@@ -207,8 +244,8 @@ public:
 
         bool anyModule() const
         {
-            return hasArp || hasRandom || hasScaleGen || hasLfo || hasQuantize
-                || hasScaleMod || hasProgression
+            return hasArp || hasRandom || hasScaleGen || hasLfo || hasChord
+                || hasDrone || hasQuantize || hasScaleMod || hasProgression
                 || hasShift || hasDelay || hasMidiIn || hasOutput;
         }
     };
@@ -243,8 +280,11 @@ private:
 
     // Notes the engine generated that still need a note-off, with the remaining
     // sample count until release. Pitch/channel stored here are the already-
-    // mapped (output) values, so the off matches the on.
-    struct ActiveNote { int note; int channel; int samplesLeft; };
+    // mapped (output) values, so the off matches the on. `drone` marks the
+    // Drone's held notes so it can find and re-trigger them mid-hold when its
+    // harmony changes; everything else (gate countdown, transport-stop flush)
+    // treats them like any generated note.
+    struct ActiveNote { int note; int channel; int samplesLeft; bool drone = false; };
     std::vector<ActiveNote> activeGen;
 
     // Host notes that passed through, remembered as (incoming -> emitted) so the

@@ -10,17 +10,18 @@ phases. File references are relative to the repo root; headers live in
 
 A JUCE MIDI-effect plugin (VST3 + Standalone, Linux build only so far). The
 editor shows a menu bar (global root / scale + theme switch), a canvas that
-modules can be dragged onto from a palette of eleven (generators Random,
-Scale, and LFO, modulators Arp, Quantize, Scale, Progression, Shift, and
-Delay, I/O modules MIDI In and Output), and an engine that actually runs
+modules can be dragged onto from a palette of thirteen (generators Random,
+Scale, LFO, Chord, and Drone, modulators Arp, Quantize, Scale, Progression,
+Shift, and Delay, I/O modules MIDI In and Output), and an engine that actually runs
 those modules — but as a fixed implicit chain, because there is no port
 wiring yet. The I/O modules carry a per-module MIDI channel; every other
 module carries full settings (drawn from the shared settings pool —
 root/scale override, rate, repeat, mode, octaves, gate, plus their
 type-specific fields such as the LFO's shape/cycle/depth/phase, Quantize's
 swing, the Progression's step list, Shift's amount + chromatic-or-degrees
-scale, and the Delay's feedback + per-echo shift), all edited through real
-double-click dialogs.
+scale, the Delay's feedback + per-echo shift, the Chord's
+degree/type/inversion, and the Drone's voicing/octave), all edited through
+real double-click dialogs.
 
 ## Component map
 
@@ -154,9 +155,9 @@ semantics) is at the top of `Engine.h`. Summary:
   across modules; "All" = everything). With none placed, the implicit input
   accepts all channels. Filtered events are dropped before they reach anything
   — including the Arp's held-note tracking.
-- The stepped modules (Arp, Random, Scale, LFO) fire only while the transport
-  is playing, each on its own step grid anchored to the song's bar 0 (see
-  Transport and clocks). Arp walks the currently
+- The stepped modules (Arp, Random, Scale, LFO, Chord, Drone) fire only while
+  the transport is playing, each on its own step grid anchored to the song's
+  bar 0 (see Transport and clocks). Arp walks the currently
   held host notes per its mode (Up / Down / Up-Down / Random) across its
   octave span at its rate and gate, swallowing those notes since they are its
   input; Random draws uniformly from its scale within its note range at its
@@ -164,7 +165,12 @@ semantics) is at the top of `Engine.h`. Summary:
   span, up or down; the LFO evaluates its shape at the current position
   inside its bar-length cycle (plus the start-phase offset) and maps the
   bipolar value to scale degrees around the root at octave 3, swinging ± its
-  depth (octaves + scale steps). Arp and Scale reset their pattern every
+  depth (octaves + scale steps); the Chord emits its diatonic stack (degree +
+  type + inversion on its root/scale) on a bar-based period/length grid; the
+  Drone holds its voicing on the same period/length model, re-triggering
+  immediately when the mapped pitch set changes mid-hold (drone-flagged
+  entries in `activeGen`) — it bypasses Quantize and the Delay by design (see
+  `Engine.h`). Arp and Scale reset their pattern every
   repeat interval (windows counted on the grid from the song's bar 0 — longer
   patterns truncate, shorter ones rest); a repeat of Endless publishes as 0 qn,
   meaning no window (the Arp walk never resets, the Scale pattern loops
@@ -237,11 +243,12 @@ shared `ModuleSettings` blob (used by every other type), each edited via a
 real settings dialog in `Canvas` (`openChannelDialog`, `openArpDialog`,
 `openRandomDialog`, `openScaleGenDialog`, `openLfoDialog`,
 `openQuantizeDialog`, `openScaleModDialog`, `openProgressionDialog`,
-`openShiftDialog`, `openDelayDialog`), reflected in a node sublabel (channel,
-rate, Shift's signed amount, the Scale modulator's scale, or the
-Progression's degrees), and persisted with the canvas state. The dialogs
+`openShiftDialog`, `openDelayDialog`, `openChordDialog`, `openDroneDialog`),
+reflected in a node sublabel (channel, rate, Shift's signed amount, the
+Scale modulator's scale, the Progression's degrees, the Chord's degree +
+type, or the Drone's voicing), and persisted with the canvas state. The dialogs
 build their combos through `Canvas`'s shared add/read helper pairs
-(root+scale, rate, repeat, mode, octaves) so a shared setting is the
+(root+scale, rate, repeat, mode, octaves, hold length+repeat) so a shared setting is the
 identical control in every module — modules.md's "Shared settings" section is
 the product-level rule. The root/scale lists are sourced from the APVTS
 choice parameters ("Global" prepended), so they can't drift from the menu

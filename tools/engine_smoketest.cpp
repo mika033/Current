@@ -812,6 +812,116 @@ int main()
         }
     }
 
+    // --- 14b. Chord generator: diatonic stack, inversion, legato repeat ------
+    {
+        // Collect the first `count` note-ons for a chord with the given
+        // degree/type/inversion at a 1-bar length and period (legato).
+        auto chordOns = [&] (int degree, int type, int inversion, size_t count)
+        {
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasChord       = true;
+            cfg.chordDegree    = degree;
+            cfg.chordType      = type;
+            cfg.chordInversion = inversion;
+            cfg.chordLengthQn  = 4.0;
+            cfg.chordPeriodQn  = 4.0;
+
+            std::vector<int> pitches;
+            int ons = 0, offs = 0;
+            for (int i = 0; i < 400 && pitches.size() < count; ++i)
+            {
+                juce::MidiBuffer midi;
+                e.process (midi, block, playing (true), 0, 0, cfg);
+                tally (midi, ons, offs);
+                for (const auto meta : midi)
+                    if (meta.getMessage().isNoteOn())
+                        pitches.push_back (meta.getMessage().getNoteNumber());
+            }
+            { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
+            check (ons == offs, "Chord: balanced after stop");
+            return pitches;
+        };
+
+        // I triad in C major from the C3 centre, repeating each bar.
+        check (chordOns (0, 0, 0, 6) == std::vector<int> { 48, 52, 55, 48, 52, 55 },
+               "Chord I triad in C major = C3 E3 G3, repeating legato");
+        // V 7th stays diatonic: G B D F.
+        check (chordOns (4, 1, 0, 4) == std::vector<int> { 55, 59, 62, 65 },
+               "Chord V 7th in C major = G B D F");
+        // 1st inversion lifts the lowest tone an octave (emitted in stack order).
+        check (chordOns (0, 0, 1, 3) == std::vector<int> { 60, 52, 55 },
+               "Chord 1st inversion lifts the root an octave");
+        // The 5th (power chord) is a two-note stack.
+        check (chordOns (0, 4, 0, 2) == std::vector<int> { 48, 55 },
+               "Chord 5th emits the two-note power chord");
+    }
+
+    // --- 14c. Drone: holds its voicing, re-triggers on harmony change --------
+    {
+        // Root voicing holds one note; a mid-hold root change must release it
+        // and start the new pitch immediately (not wait for the next period).
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasDrone      = true;
+        cfg.droneVoicing  = ModuleOptions::kVoicingRoot;
+        cfg.droneLengthQn = 16.0;   // 4 bars
+        cfg.dronePeriodQn = 16.0;
+
+        std::vector<std::pair<int, bool>> events;   // (pitch, isOn)
+        auto run = [&] (bool isPlaying)
+        {
+            juce::MidiBuffer midi;
+            e.process (midi, block, playing (isPlaying), 0, 0, cfg);
+            for (const auto meta : midi)
+                if (meta.getMessage().isNoteOn() || meta.getMessage().isNoteOff())
+                    events.push_back ({ meta.getMessage().getNoteNumber(),
+                                        meta.getMessage().isNoteOn() });
+        };
+
+        run (true);
+        check (events == std::vector<std::pair<int, bool>> { { 48, true } },
+               "Drone starts holding its root (C3) at transport start");
+
+        for (int i = 0; i < 10; ++i) run (true);
+        check (events.size() == 1, "Drone keeps holding steadily mid-period");
+
+        cfg.droneRoot = 2;   // user edits the root to D mid-hold
+        run (true);
+        check (events == std::vector<std::pair<int, bool>> {
+                   { 48, true }, { 48, false }, { 50, true } },
+               "Drone re-triggers immediately when the root changes");
+
+        run (false);
+        check (events.size() == 4 && events[3] == std::pair<int, bool> (50, false),
+               "Drone: transport stop releases the held note");
+    }
+    {
+        // Voicing spot checks: triad stacks scale degrees, Root+5th holds the
+        // snapped perfect fifth.
+        auto droneOns = [&] (int voicing)
+        {
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasDrone     = true;
+            cfg.droneVoicing = voicing;
+            std::vector<int> pitches;
+            juce::MidiBuffer midi;
+            e.process (midi, block, playing (true), 0, 0, cfg);
+            for (const auto meta : midi)
+                if (meta.getMessage().isNoteOn())
+                    pitches.push_back (meta.getMessage().getNoteNumber());
+            { juce::MidiBuffer m2; e.process (m2, block, playing (false), 0, 0, cfg); }
+            return pitches;
+        };
+        check (droneOns (ModuleOptions::kVoicingTriad) == std::vector<int> { 48, 52, 55 },
+               "Drone triad voicing holds C3 E3 G3 in C major");
+        check (droneOns (ModuleOptions::kVoicingRootFifth) == std::vector<int> { 48, 55 },
+               "Drone Root+5th holds the perfect fifth in C major");
+        check (droneOns (ModuleOptions::kVoicingRootOctave) == std::vector<int> { 48, 60 },
+               "Drone Root+Octave holds C3 and C4");
+    }
+
     // --- 15. Delay: echo decay, per-echo shift, chain termination ------------
     {
         // One host note (on + off), then empty blocks until the echo chain has

@@ -59,11 +59,15 @@ private:
     void openProgressionDialog (ModuleComponent& node);
     void openShiftDialog (ModuleComponent& node);
     void openDelayDialog (ModuleComponent& node);
+    void openChordDialog (ModuleComponent& node);
+    void openDroneDialog (ModuleComponent& node);
     static juce::String channelSublabel (ModuleType type, int channel);
     static juce::String rateSublabel (const ModuleSettings& settings);
     static juce::String shiftSublabel (const ModuleSettings& settings);
     juce::String scaleModSublabel (const ModuleSettings& settings) const;
     static juce::String progressionSublabel (const ModuleSettings& settings);
+    static juce::String chordSublabel (const ModuleSettings& settings);
+    static juce::String droneSublabel (const ModuleSettings& settings);
 
     // Shared dialog controls, one add/read pair per shared setting (see
     // modules.md "Shared settings"). Every dialog builds its combos through
@@ -81,6 +85,8 @@ private:
     static void readModeControl (const InlineDialog&, ModuleSettings&);
     static void addOctavesControl (InlineDialog&, const ModuleSettings&);
     static void readOctavesControl (const InlineDialog&, ModuleSettings&);
+    static void addHoldControls (InlineDialog&, const ModuleSettings&);
+    static void readHoldControls (const InlineDialog&, ModuleSettings&);
 
     // "Global" followed by the choices of a global APVTS parameter — the
     // dialogs' root/scale lists, sourced from the parameter so they can't

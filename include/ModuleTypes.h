@@ -21,6 +21,8 @@ enum class ModuleType
     Random,
     ScaleGen,   // the "Scale" module — suffixed to avoid reading as a scale type
     Lfo,
+    Chord,
+    Drone,
     // Modulators (Arp transforms held input notes into an arpeggio, so it is a
     // modulator, not a generator)
     Arp,
@@ -73,12 +75,14 @@ struct ModuleDescriptor
 // modulator shares its display name with the Scale generator on purpose (the
 // user asked for a "scale modulator"); shape and colour keep them apart, and
 // their persistence ids differ ("Scale" vs "ScaleMod").
-inline const std::array<ModuleDescriptor, 11>& moduleCatalogue()
+inline const std::array<ModuleDescriptor, 13>& moduleCatalogue()
 {
-    static const std::array<ModuleDescriptor, 11> kCatalogue = {{
+    static const std::array<ModuleDescriptor, 13> kCatalogue = {{
         { ModuleType::Random,      ModuleKind::Generator, "Random"      },
         { ModuleType::ScaleGen,    ModuleKind::Generator, "Scale"       },
         { ModuleType::Lfo,         ModuleKind::Generator, "LFO"         },
+        { ModuleType::Chord,       ModuleKind::Generator, "Chord"       },
+        { ModuleType::Drone,       ModuleKind::Generator, "Drone"       },
         { ModuleType::Arp,         ModuleKind::Modulator, "Arp"         },
         { ModuleType::Quantize,    ModuleKind::Modulator, "Quantize"    },
         { ModuleType::ScaleMod,    ModuleKind::Modulator, "Scale"       },
@@ -109,6 +113,8 @@ inline juce::String moduleTypeToString (ModuleType type)
         case ModuleType::Random:   return "Random";
         case ModuleType::ScaleGen: return "Scale";
         case ModuleType::Lfo:      return "LFO";
+        case ModuleType::Chord:    return "Chord";
+        case ModuleType::Drone:    return "Drone";
         case ModuleType::Quantize:    return "Quantize";
         case ModuleType::ScaleMod:    return "ScaleMod";
         case ModuleType::Progression: return "Progression";
@@ -125,6 +131,8 @@ inline ModuleType moduleTypeFromString (const juce::String& s)
     if (s == "Random")   return ModuleType::Random;
     if (s == "Scale")    return ModuleType::ScaleGen;
     if (s == "LFO")      return ModuleType::Lfo;
+    if (s == "Chord")    return ModuleType::Chord;
+    if (s == "Drone")    return ModuleType::Drone;
     if (s == "Quantize") return ModuleType::Quantize;
     if (s == "ScaleMod") return ModuleType::ScaleMod;
     if (s == "Progression") return ModuleType::Progression;

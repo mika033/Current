@@ -75,6 +75,22 @@ juce::String Canvas::progressionSublabel (const ModuleSettings& settings)
     return parts.joinIntoString ("-");
 }
 
+juce::String Canvas::chordSublabel (const ModuleSettings& settings)
+{
+    // The chord itself, e.g. "V 7th" — degree and stacking at a glance.
+    return ModuleOptions::degreeNames()[juce::jlimit (
+               0, ModuleOptions::degreeNames().size() - 1, settings.chordDegree)]
+         + " "
+         + ModuleOptions::chordTypeNames()[juce::jlimit (
+               0, ModuleOptions::chordTypeNames().size() - 1, settings.chordType)];
+}
+
+juce::String Canvas::droneSublabel (const ModuleSettings& settings)
+{
+    return ModuleOptions::droneVoicingNames()[juce::jlimit (
+        0, ModuleOptions::droneVoicingNames().size() - 1, settings.droneVoicing)];
+}
+
 juce::StringArray Canvas::choicesWithGlobal (const char* paramID) const
 {
     juce::StringArray items { "Global" };
@@ -150,6 +166,22 @@ void Canvas::readOctavesControl (const InlineDialog& dlg, ModuleSettings& s)
     s.octaves = dlg.getComboBoxSelectedIndex ("octaves") + 1;
 }
 
+void Canvas::addHoldControls (InlineDialog& dlg, const ModuleSettings& s)
+{
+    // The Chord/Drone pacing pair: Repeat is how often a new chord/note
+    // starts, Length is how long it sounds inside that window (both bar
+    // lengths — deliberately not the shared note-length rate; these modules
+    // move in bars). Length >= Repeat plays legato back-to-back.
+    dlg.addComboBox ("holdLength", ModuleOptions::barLengthNames(), s.holdLength, "Length");
+    dlg.addComboBox ("holdRepeat", ModuleOptions::barLengthNames(), s.holdRepeat, "Repeat");
+}
+
+void Canvas::readHoldControls (const InlineDialog& dlg, ModuleSettings& s)
+{
+    s.holdLength = dlg.getComboBoxSelectedIndex ("holdLength");
+    s.holdRepeat = dlg.getComboBoxSelectedIndex ("holdRepeat");
+}
+
 void Canvas::addNodeComponent (const ModuleInstance& instance)
 {
     auto node = std::make_unique<ModuleComponent> (instance.id, instance.type);
@@ -163,6 +195,10 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
         node->setSublabel (rateSublabel (instance.settings));
     else if (instance.type == ModuleType::Shift)
         node->setSublabel (shiftSublabel (instance.settings));
+    else if (instance.type == ModuleType::Chord)
+        node->setSublabel (chordSublabel (instance.settings));
+    else if (instance.type == ModuleType::Drone)
+        node->setSublabel (droneSublabel (instance.settings));
     else if (instance.type == ModuleType::ScaleMod)
         node->setSublabel (scaleModSublabel (instance.settings));
     else if (instance.type == ModuleType::Progression)
@@ -225,6 +261,16 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
         if (n.moduleType() == ModuleType::Delay)
         {
             openDelayDialog (n);
+            return;
+        }
+        if (n.moduleType() == ModuleType::Chord)
+        {
+            openChordDialog (n);
+            return;
+        }
+        if (n.moduleType() == ModuleType::Drone)
+        {
+            openDroneDialog (n);
             return;
         }
 
@@ -657,6 +703,88 @@ void Canvas::openDelayDialog (ModuleComponent& node)
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (rateSublabel (ns));
+        }
+        d->getParentComponent()->removeChildComponent (d);
+        delete d;
+    };
+}
+
+void Canvas::openChordDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    auto* dlg = owner.showInlineDialog ("Chord settings",
+                                        "A chord built on the scale degree, restarting "
+                                        "every Repeat and sounding for Length.");
+    addRootScaleControls (*dlg, s);
+    dlg->addComboBox ("degree", ModuleOptions::degreeNames(), s.chordDegree, "Degree");
+    dlg->addComboBox ("type", ModuleOptions::chordTypeNames(), s.chordType, "Type");
+    dlg->addComboBox ("inversion", ModuleOptions::chordInversionNames(),
+                      s.chordInversion, "Inversion");
+    addHoldControls (*dlg, s);
+    dlg->addButton ("OK", 1);
+    dlg->addButton ("Cancel", 0);
+
+    // Captures the id, not the node — the node can be deleted or rebuilt while
+    // the dialog is up (host state restore), so it is re-looked-up on OK.
+    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    {
+        if (result == 1)
+        {
+            auto ns = proc.getModuleSettings (id);
+            readRootScaleControls (*d, ns);
+            ns.chordDegree    = d->getComboBoxSelectedIndex ("degree");
+            ns.chordType      = d->getComboBoxSelectedIndex ("type");
+            ns.chordInversion = d->getComboBoxSelectedIndex ("inversion");
+            readHoldControls (*d, ns);
+            proc.setModuleSettings (id, ns);
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (chordSublabel (ns));
+        }
+        d->getParentComponent()->removeChildComponent (d);
+        delete d;
+    };
+}
+
+void Canvas::openDroneDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    juce::StringArray octaves;
+    for (int o = -ModuleOptions::kDroneOctaveRange; o <= ModuleOptions::kDroneOctaveRange; ++o)
+        octaves.add (o > 0 ? "+" + juce::String (o) : juce::String (o));
+
+    auto* dlg = owner.showInlineDialog ("Drone settings",
+                                        "Holds its voicing for Length, restarting every "
+                                        "Repeat — and immediately when the harmony changes.");
+    addRootScaleControls (*dlg, s);
+    dlg->addComboBox ("voicing", ModuleOptions::droneVoicingNames(),
+                      s.droneVoicing, "Voicing");
+    dlg->addComboBox ("octave", octaves,
+                      s.droneOctave + ModuleOptions::kDroneOctaveRange, "Octave");
+    addHoldControls (*dlg, s);
+    dlg->addButton ("OK", 1);
+    dlg->addButton ("Cancel", 0);
+
+    // Captures the id, not the node — the node can be deleted or rebuilt while
+    // the dialog is up (host state restore), so it is re-looked-up on OK.
+    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    {
+        if (result == 1)
+        {
+            auto ns = proc.getModuleSettings (id);
+            readRootScaleControls (*d, ns);
+            ns.droneVoicing = d->getComboBoxSelectedIndex ("voicing");
+            ns.droneOctave  = d->getComboBoxSelectedIndex ("octave")
+                                - ModuleOptions::kDroneOctaveRange;
+            readHoldControls (*d, ns);
+            proc.setModuleSettings (id, ns);
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (droneSublabel (ns));
         }
         d->getParentComponent()->removeChildComponent (d);
         delete d;
