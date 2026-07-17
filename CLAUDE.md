@@ -81,7 +81,10 @@ Note on phase numbering: the requirements were renumbered after the first coding
 ## Build instructions
 
 - Linux: `./build_and_run_linux.sh` builds the VST3 + Standalone into `build-linux/`, installs the VST3 into `~/.vst3`, and launches the Standalone. Pass `--no-run` to build only (e.g. headless/CI — there's no display to open a window on). First configure fetches JUCE 8.0.12 via FetchContent, so it takes a few minutes; later builds are incremental.
-- Linux dev deps (Ubuntu): `libasound2-dev`, `libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libxcomposite-dev libxrender-dev`, `libgl1-mesa-dev`, `libfreetype-dev libfontconfig1-dev`.
+- Linux build packages (Ubuntu/Debian). Every remote session should install these before the first build — fresh containers have the compiler and CMake but are missing the X11/GL/audio dev libraries, and the configure step then dies deep inside JUCE's juceaide build with a missing header like `X11/extensions/Xrandr.h`. Run `sudo apt-get update` first (stale package indexes cause 404s on install), then:
+  `sudo apt-get install -y build-essential cmake ninja-build libasound2-dev libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libxcomposite-dev libxrender-dev libgl1-mesa-dev libfreetype-dev libfontconfig1-dev`
+- If a configure attempt failed on missing packages, delete `build-linux/` before retrying — the half-configured CMake cache makes later builds fail with a confusing `ninja: error: loading 'build.ninja'`.
+- Headless UI screenshots (no display in the container): additionally `sudo apt-get install -y xvfb xdotool imagemagick`, then start `Xvfb :99`, launch the Standalone with `DISPLAY=:99`, drive it with `xdotool` (mousemove/mousedown/mouseup for drags, `click --repeat 2` for the settings dialogs), capture with `import -window root out.png`. The palette/canvas coordinates can be computed from `MainView.h` layout constants plus the window position from `xdotool getwindowgeometry`.
 - Engine smoke test: configure with `-DCURRENT_BUILD_TESTS=ON`, build, run `current_engine_test`. Run it after any engine change.
 - macOS/Windows scripts (`build_and_run_mac.sh`, etc.) are not yet ported from Little Arp Monster; only Linux exists so far.
 
