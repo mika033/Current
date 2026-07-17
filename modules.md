@@ -59,7 +59,8 @@ it. The list will grow as modules gain settings; today it is:
   bar length, shared with the LFO's cycle length — because progressions move
   in bars, not subdivisions.)
 - **Repeat** — when a module's pattern is reset and replayed from the start,
-  counted from transport start: 1/4, 1/2, or 1 to 4 bars (assuming 4/4), or
+  counted from the song's bar 0 (so the pattern sits identically on every
+  host loop pass): 1/4, 1/2, or 1 to 4 bars (assuming 4/4), or
   Endless — the normal default — meaning the pattern just runs on until the
   transport stops. Example: a Scale generator at rate 1/8 with repeat 1/2
   generates only the first four scale notes, then repeats them. Used by Arp
@@ -162,7 +163,7 @@ pentatonic that is its 5th degree; the option keeps the "7th" name from the
 common seven-note case). Root and scale each default to Global, like Random.
 
 The rate sets the step length; Repeat sets when the pattern restarts, counted
-from transport start (1/4 to 4 bars, assuming 4/4). A pattern longer than the
+from the song's bar 0 (1/4 to 4 bars, assuming 4/4). A pattern longer than the
 repeat window is cut off mid-run; a shorter one rests until the window comes
 round. On Endless there is no window: the pattern loops back-to-back,
 restarting right after its last note. The defaults line up deliberately: 1/8
@@ -187,7 +188,7 @@ The LFO turns a classic low-frequency oscillator into melody: its value is
 sampled on a note grid and mapped to pitch, so instead of a control signal
 you get a stream of notes tracing the shape. The cycle length sets how long
 one full sweep of the shape takes, in bars (1/4 bar to 8 bars, default 1
-bar), counted from transport start. The rate sets how many notes are output —
+bar), anchored to the song's bar 0. The rate sets how many notes are output —
 one per step, 1/32 to 1/1 (default 1/16). Depth sets how far the pitch
 swings around the centre note (the root at octave 3, so C3 for a C root),
 given as whole octaves (0–4, default 1) plus extra scale steps (0–6, default
@@ -291,8 +292,8 @@ to +2); degree movement is diatonic (in scale members of its root/scale, so
 the result stays in key), the octave offset is plain ±12s. Degree I with
 octave 0 — the default step — passes notes untouched.
 
-Rate sets how long one step lasts (1/4 bar to 8 bars, default 1 bar), counted
-from transport start; the list loops when it runs out. Add step / Remove in
+Rate sets how long one step lasts (1/4 bar to 8 bars, default 1 bar), anchored
+to the song's bar 0; the list loops when it runs out. Add step / Remove in
 the settings dialog grow and shrink the list (1 to 8 steps), which is how the
 progression's length is set. Root and scale default to Global. While the
 transport is stopped the first step applies, so auditioning matches how

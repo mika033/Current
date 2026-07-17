@@ -31,7 +31,7 @@ retrofit are already right:
 The findings below are mostly about what Phase 3 will collide with, plus a
 handful of engine corner cases and doc drift.
 
-## 1. The engine never reads the host's song position
+## 1. The engine never reads the host's song position (FIXED July 2026)
 
 **The single most important finding.** `Engine::process` reads only
 `isPlaying` and BPM from the playhead; it never looks at `ppqPosition`. All
@@ -65,7 +65,7 @@ should be decided at the start of Phase 3, before the catalogue grows.
 Recommendation: anchor to host position. (Decided: this will be fixed soon —
 see "Fix preparation for findings 1 and 2" below.)
 
-## 2. The Standalone build is musically inert
+## 2. The Standalone build is musically inert (FIXED July 2026)
 
 The requirements call out that rate is host-synced "except in Standalone mode
 (no host to sync to) — handled the same way Little Arp Monster (LAM) solves
