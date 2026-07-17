@@ -74,6 +74,18 @@ public:
 
     juce::AudioProcessorValueTreeState& apvts() { return parameters; }
 
+    // --- Internal transport (Standalone / playhead-less hosts) --------------
+    // The Standalone's playhead reports isPlaying == false forever (there is
+    // no host transport), which would leave every stepped module silent; the
+    // menu bar shows a Play toggle and a Tempo stepper instead, wired to
+    // these (the LAM approach). processBlock synthesizes a playhead position
+    // from them, so the engine never knows the difference.
+    bool isStandalone() const { return wrapperType == wrapperType_Standalone; }
+    void setStandalonePlay (bool on)   { standalonePlay.store (on, std::memory_order_release); }
+    bool getStandalonePlay() const     { return standalonePlay.load (std::memory_order_acquire); }
+    void   setInternalBpm (double bpm) { internalBpm.store (bpm, std::memory_order_relaxed); }
+    double getInternalBpm() const      { return internalBpm.load (std::memory_order_relaxed); }
+
     // --- Canvas model (message thread only) ---------------------------------
     const std::vector<ModuleInstance>& modules() const { return moduleList; }
     int  addModule (ModuleType type, float x, float y);   // returns new id
@@ -162,6 +174,16 @@ private:
     // Cached parameter pointers (set in the ctor, read every block).
     std::atomic<float>* rootParam  = nullptr;
     std::atomic<float>* scaleParam = nullptr;
+
+    // Internal-transport state (see the accessors above). The atomics are the
+    // UI -> audio handoff for the menu bar's Play/Tempo controls; internalQn
+    // and prevInternalPlay are audio-thread-only. Tempo is a runtime
+    // preference, not patch content, so it is not an APVTS parameter and
+    // resets to 120 each launch.
+    std::atomic<bool>   standalonePlay { false };
+    std::atomic<double> internalBpm { 120.0 };
+    double internalQn = 0.0;        // synthesized song position, quarter notes
+    bool   prevInternalPlay = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CurrentAudioProcessor)
 };

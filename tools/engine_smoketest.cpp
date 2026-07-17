@@ -29,11 +29,24 @@ namespace
         }
     }
 
+    // A position without a ppq value: the engine falls back to counting from
+    // transport start, which is what most tests below rely on (their expected
+    // samples are all relative to the moment play was pressed).
     juce::Optional<juce::AudioPlayHead::PositionInfo> playing (bool isPlaying, double bpm = 120.0)
     {
         juce::AudioPlayHead::PositionInfo pi;
         pi.setBpm (bpm);
         pi.setIsPlaying (isPlaying);
+        return juce::Optional<juce::AudioPlayHead::PositionInfo> (pi);
+    }
+
+    // A full host position with a ppq value, for the anchoring tests.
+    juce::Optional<juce::AudioPlayHead::PositionInfo> playingAt (double ppq, double bpm = 120.0)
+    {
+        juce::AudioPlayHead::PositionInfo pi;
+        pi.setBpm (bpm);
+        pi.setIsPlaying (true);
+        pi.setPpqPosition (ppq);
         return juce::Optional<juce::AudioPlayHead::PositionInfo> (pi);
     }
 
@@ -899,7 +912,103 @@ int main()
                "Delay: transport stop discards the buffered echo");
     }
 
-    // --- 16. ScaleTables spot checks -----------------------------------------
+    // --- 16. Host-position anchoring: mid-bar start and loop wrap ------------
+    {
+        // Play pressed mid-bar (host ppq starts at 2.5): the first step must
+        // land on the song's next grid point — beat 3, half a beat = 11025
+        // samples into playback — not at sample 0. And the pattern joins
+        // mid-window: with a Scale gen at 1/4 steps and a 1-bar repeat
+        // (window C D E F), beat 3 is the window's 4th step, F (53).
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasScaleGen    = true;
+        cfg.scaleStepQn    = 1.0;
+        cfg.scaleRepeatQn  = 4.0;
+        cfg.scaleOctaves   = 1;
+        cfg.scaleEndOnRoot = true;
+
+        const double qnPerBlock = (double) block / 22050.0;
+        double qn = 2.5;
+        int firstOnAbs = -1, firstPitch = -1, blockStart = 0;
+        for (int i = 0; i < 200 && firstOnAbs < 0; ++i)
+        {
+            juce::MidiBuffer midi;
+            e.process (midi, block, playingAt (qn), 0, 0, cfg);
+            for (const auto meta : midi)
+                if (meta.getMessage().isNoteOn())
+                {
+                    firstOnAbs = blockStart + meta.samplePosition;
+                    firstPitch = meta.getMessage().getNoteNumber();
+                    break;
+                }
+            blockStart += block;
+            qn += qnPerBlock;
+        }
+        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); }
+        check (firstOnAbs == 11025,
+               "mid-bar start: first step lands on the song's next grid point");
+        check (firstPitch == 53,
+               "mid-bar start: pattern joins the repeat window mid-way (F)");
+    }
+    {
+        // Host loop wrap: the ppq jumps back and the pattern position must
+        // follow. The "host" loops the first half of bar 0 (ppq 0..2) over a
+        // Scale gen with a 1-bar window (C D E F): only C and D may ever
+        // sound, alternating — freewheeling counters would drift onto E/F.
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasScaleGen    = true;
+        cfg.scaleStepQn    = 1.0;
+        cfg.scaleRepeatQn  = 4.0;
+        cfg.scaleOctaves   = 1;
+        cfg.scaleEndOnRoot = true;
+
+        const double qnPerBlock = (double) block / 22050.0;
+        double qn = 0.0;
+        std::vector<int> pitches;
+        for (int i = 0; i < 800 && pitches.size() < 6; ++i)
+        {
+            if (qn + qnPerBlock > 2.0)
+                qn = 0.0;   // the wrap
+            juce::MidiBuffer midi;
+            e.process (midi, block, playingAt (qn), 0, 0, cfg);
+            for (const auto meta : midi)
+                if (meta.getMessage().isNoteOn())
+                    pitches.push_back (meta.getMessage().getNoteNumber());
+            qn += qnPerBlock;
+        }
+        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); }
+        check (pitches == std::vector<int> { 48, 50, 48, 50, 48, 50 },
+               "loop wrap: pattern position follows the host ppq back");
+    }
+    {
+        // The processor-level fallback contract (finding 2): a synthesized
+        // position with isPlaying true and an accumulating ppq drives the
+        // generators exactly like a host transport. (A null position still
+        // produces nothing — that is the processor's cue to synthesize.)
+        Engine e; e.prepare (sr);
+        Engine::Config cfg; cfg.hasRandom = true;
+        int ons = 0, offs = 0;
+        double qn = 0.0;
+        for (int i = 0; i < 100; ++i)
+        {
+            juce::MidiBuffer midi;
+            e.process (midi, block, playingAt (qn), 0, 0, cfg);
+            tally (midi, ons, offs);
+            qn += (double) block / 22050.0;
+        }
+        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
+        check (ons > 0 && ons == offs,
+               "synthesized internal-transport position drives the generators");
+
+        juce::MidiBuffer midi;
+        juce::Optional<juce::AudioPlayHead::PositionInfo> nullPos;
+        e.process (midi, block, nullPos, 0, 0, cfg);
+        int nOns = 0, nOffs = 0; tally (midi, nOns, nOffs);
+        check (nOns == 0, "a null position (no playhead) generates nothing");
+    }
+
+    // --- 17. ScaleTables spot checks -----------------------------------------
     {
         check (ScaleTables::isInScale (60, 0, 0), "C is in C major");
         check (! ScaleTables::isInScale (61, 0, 0), "C# is not in C major");

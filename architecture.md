@@ -37,8 +37,10 @@ double-click dialogs.
 - `MainView` (MainView.h/.cpp) — pure layout: `MenuBar` top, `Canvas` middle,
   `PaletteBar` bottom.
 - `MenuBar` (MenuBar.h/.cpp) — global-settings combos (root, scale), bound to
-  the APVTS via attachments, plus the Theme combo. Edit and Load/Save menus
-  are deferred phases.
+  the APVTS via attachments, plus the Theme combo. In the Standalone it also
+  carries the internal transport's Play toggle and Tempo stepper (see
+  Transport and clocks below); plugin wrappers never show them. Edit and
+  Load/Save menus are deferred phases.
 - `Canvas` (Canvas.h/.cpp) — the drop surface and the bridge between on-screen
   nodes and the processor's module model.
 - `ModuleComponent` (ModuleComponent.h/.cpp) — one draggable node. Square for
@@ -113,6 +115,35 @@ snapshot that is swapped in atomically (build on message thread, publish via
 atomic pointer / RCU-style), not per-field atomics. That is the single biggest
 known seam in the design.
 
+## Transport and clocks
+
+Every grid the engine plays on — the stepped modules' step clocks, the
+Arp/Scale repeat windows, the LFO cycle, the Progression playhead, Quantize's
+swung boundaries — is re-derived each block from the host's ppq position (the
+LAM master-clock model): a boundary fires when it falls inside the block's
+half-open `[blockStart, blockEnd)` quarter-note range. There are no
+freewheeling counters, so pressing play mid-bar lands the first step on the
+song's next real grid point, host loop wraps put the pattern exactly where the
+song is, and tempo automation cannot accumulate drift. Floor/ceil/mod are the
+mathematical versions, so a negative position (host pre-roll) stays on the
+same grid.
+
+Hosts that give the engine nothing to sync to get an internal transport,
+synthesized in `processBlock` before the engine runs, so the engine keeps a
+single code path:
+
+- The Standalone's playhead reports `isPlaying == false` forever (there is no
+  host transport), so the menu bar's Play toggle and Tempo stepper drive a
+  processor-owned position instead: ppq accumulates across blocks and rewinds
+  to 0 on every Play press, so playback always starts at the top of bar 1.
+  Tempo is a runtime preference (not patch content, not an APVTS parameter)
+  and resets to 120 each launch.
+- A plugin host with no playhead at all free-runs the same way with
+  `isPlaying` always true.
+- A host playhead that merely lacks a ppq value keeps its own
+  `isPlaying`/BPM; the engine falls back to counting quarter notes from
+  transport start for that host (`Engine::fallbackQn`).
+
 ## The engine: fixed implicit chain
 
 There is no user wiring yet, so `Engine::process` hard-codes the signal flow;
@@ -123,8 +154,9 @@ semantics) is at the top of `Engine.h`. Summary:
   across modules; "All" = everything). With none placed, the implicit input
   accepts all channels. Filtered events are dropped before they reach anything
   — including the Arp's held-note tracking.
-- The stepped modules (Arp, Random, Scale, LFO) fire only while the host
-  transport is playing, each on its own step clock. Arp walks the currently
+- The stepped modules (Arp, Random, Scale, LFO) fire only while the transport
+  is playing, each on its own step grid anchored to the song's bar 0 (see
+  Transport and clocks). Arp walks the currently
   held host notes per its mode (Up / Down / Up-Down / Random) across its
   octave span at its rate and gate, swallowing those notes since they are its
   input; Random draws uniformly from its scale within its note range at its
@@ -133,8 +165,8 @@ semantics) is at the top of `Engine.h`. Summary:
   inside its bar-length cycle (plus the start-phase offset) and maps the
   bipolar value to scale degrees around the root at octave 3, swinging ± its
   depth (octaves + scale steps). Arp and Scale reset their pattern every
-  repeat interval (a step counter from transport start — longer patterns
-  truncate, shorter ones rest); a repeat of Endless publishes as 0 qn,
+  repeat interval (windows counted on the grid from the song's bar 0 — longer
+  patterns truncate, shorter ones rest); a repeat of Endless publishes as 0 qn,
   meaning no window (the Arp walk never resets, the Scale pattern loops
   back-to-back). Root/scale overrides of -1 fall back to the globals. The
   shared option tables and the per-module settings blob live in
@@ -156,9 +188,10 @@ semantics) is at the top of `Engine.h`. Summary:
   gate; host-held notes register in `activePass` when they finally sound, and
   a host note-off that beats its own deferred note-on converts the entry to a
   fixed duration instead. The queue is discarded on transport stop; when
-  stopped, Quantize passes everything through (no grid). Its grid clock keeps
-  ticking from transport start even with no Quantize placed, so a module
-  dropped mid-play joins the song's grid.
+  stopped, Quantize passes everything through (no grid). The grid (and the
+  swing parity) is derived from the song position, so a module dropped
+  mid-play joins the song's grid — and the shuffle sits on the song's bars,
+  not on wherever play was pressed.
 - The Delay is the exception to pure mapping — it is the first stateful time
   modulator. Every emitted note-on (pass-through and generated) books an echo
   in `pendingEchoes` (velocity × feedback, pitch + per-echo shift, one delay

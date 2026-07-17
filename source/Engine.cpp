@@ -30,6 +30,15 @@ namespace
     // Echoes quieter than this aren't scheduled — the velocity decay is what
     // terminates the Delay's feedback chain.
     constexpr int kMinEchoVelocity = 5;
+
+    // Mathematical mod for grid indices: a negative position (host pre-roll /
+    // count-in) must wrap into the pattern, not mirror around zero as C's %
+    // would.
+    int wrapIndex (juce::int64 i, int n)
+    {
+        const juce::int64 m = i % (juce::int64) n;
+        return (int) (m < 0 ? m + n : m);
+    }
 }
 
 void Engine::prepare (double sampleRate)
@@ -45,17 +54,7 @@ void Engine::reset()
     activePass.clear();
     pendingEchoes.clear();
     pendingQuant.clear();
-    arpSamplesToNext = 0.0;
-    randomSamplesToNext = 0.0;
-    scaleSamplesToNext = 0.0;
-    lfoSamplesToNext = 0.0;
-    arpIndex = 0;
-    arpStep = 0;
-    scaleStep = 0;
-    lfoStep = 0;
-    quantSamplesToNext = 0.0;
-    quantStep = 0;
-    progQn = 0.0;
+    fallbackQn = 0.0;
     wasPlaying = false;
 }
 
@@ -137,32 +136,35 @@ void Engine::process (juce::MidiBuffer& midi,
 
     bool isPlaying = false;
     double bpm = 120.0;
+    juce::Optional<double> hostPpq;
     if (pos.hasValue())
     {
         isPlaying = pos->getIsPlaying();
         if (auto b = pos->getBpm())
             if (*b > 0.0)
                 bpm = *b;
+        hostPpq = pos->getPpqPosition();
     }
 
     const double samplesPerQn = juce::jmax (1.0, (60.0 / bpm) * sr);
 
-    // Transport start: align every stepped module's clock so its first step
-    // fires at sample 0, and rewind the Arp/Scale patterns to their beginning.
-    if (isPlaying && ! wasPlaying)
-    {
-        arpSamplesToNext = 0.0;
-        randomSamplesToNext = 0.0;
-        scaleSamplesToNext = 0.0;
-        lfoSamplesToNext = 0.0;
-        arpIndex = 0;
-        arpStep = 0;
-        scaleStep = 0;
-        lfoStep = 0;
-        quantSamplesToNext = 0.0;
-        quantStep = 0;
-        progQn = 0.0;
-    }
+    // Transport start: nothing to rewind — every grid below is derived from
+    // the song position — but the ppq fallback re-anchors to zero so a host
+    // that reports no ppq still counts its grids from the moment play was
+    // pressed.
+    if (isPlaying && ! wasPlaying && ! hostPpq.hasValue())
+        fallbackQn = 0.0;
+
+    // The block's song position in quarter notes, owning the half-open range
+    // [blockStartQn, blockEndQn): a grid boundary exactly on the block start
+    // fires here, one exactly on the end fires next block — so a host loop
+    // wrap landing on a boundary can neither double-fire nor skip it. All
+    // grids are re-derived from this each block (the LAM master-clock model);
+    // there are no counters to drift across loop wraps or tempo changes.
+    const double blockStartQn = hostPpq.hasValue() ? *hostPpq : fallbackQn;
+    const double blockEndQn   = blockStartQn + (double) numSamples / samplesPerQn;
+    if (isPlaying)
+        fallbackQn = blockEndQn;
 
     // Capture the host's incoming events, then rebuild the buffer.
     juce::MidiBuffer incoming;
@@ -206,26 +208,34 @@ void Engine::process (juce::MidiBuffer& midi,
 
     // Quantize needs the transport grid, so it only re-times while playing;
     // stopped, everything passes straight through (live playing stays live).
-    const bool   quantActive      = cfg.hasQuantize && isPlaying;
-    const double quantStepSamples = juce::jmax (1.0, samplesPerQn * cfg.quantStepQn);
-    const double quantSwingOff    = juce::jlimit (0.0, 1.0, cfg.quantSwing)
-                                        * 0.5 * quantStepSamples;
+    const bool   quantActive  = cfg.hasQuantize && isPlaying;
+    const double quantStepQn  = juce::jmax (0.001, cfg.quantStepQn);
+    const double quantSwingQn = juce::jlimit (0.0, 1.0, cfg.quantSwing)
+                                    * 0.5 * quantStepQn;
 
-    // The next swung grid point at or after block sample `s`. Straight
-    // boundary `quantStep` sits at quantSamplesToNext; swing pushes odd
-    // boundaries late by swing/2 of a step (pair-based model — even
-    // boundaries, the pair starts, stay put). The scan starts one boundary
-    // back because a swung odd point can still be ahead of `s` when its
-    // straight position has already passed.
+    // The next swung grid point at or after block sample `s`, as a
+    // block-relative sample (possibly past this block's end). Boundary index
+    // j counts from the song's bar 0; swing pushes odd boundaries late by
+    // swing/2 of a step (pair-based model — even boundaries, the pair
+    // starts, stay put), so the parity — and with it the shuffle — is fixed
+    // to the song's bars, not to when play was pressed. The scan starts one
+    // boundary back because a swung odd point can still be ahead of `s` when
+    // its straight position has already passed.
     auto quantTarget = [&] (int s) -> int
     {
-        for (int j = juce::jmax (0, quantStep - 1); ; ++j)
+        // Half a sample of tolerance: `s` is itself rounded to a whole
+        // sample, so a note sitting exactly on a boundary can read as a hair
+        // past it — without the allowance it would be deferred a full step.
+        const double atQn = blockStartQn + ((double) s - 0.5) / samplesPerQn;
+        for (auto j = (juce::int64) std::floor (atQn / quantStepQn) - 1; ; ++j)
         {
-            const double straight = quantSamplesToNext
-                                  + (double) (j - quantStep) * quantStepSamples;
-            const double swung = straight + ((j & 1) != 0 ? quantSwingOff : 0.0);
-            if (swung >= (double) s)
-                return (int) std::llround (swung);
+            // (j & 1) is 1 for negative odd values too, so pre-roll
+            // boundaries keep the same parity rule.
+            const double swungQn = (double) j * quantStepQn
+                                 + ((j & 1) != 0 ? quantSwingQn : 0.0);
+            if (swungQn >= atQn)
+                return juce::jmax (s, (int) std::llround ((swungQn - blockStartQn)
+                                                              * samplesPerQn));
         }
     };
 
@@ -237,9 +247,9 @@ void Engine::process (juce::MidiBuffer& midi,
     {
         if (! isPlaying || cfg.progStepCount <= 0 || cfg.progRateQn <= 0.0)
             return 0;
-        const double qn = progQn + (double) s / samplesPerQn;
-        return (int) ((juce::int64) std::floor (qn / cfg.progRateQn)
-                          % (juce::int64) cfg.progStepCount);
+        const double qn = blockStartQn + (double) s / samplesPerQn;
+        return wrapIndex ((juce::int64) std::floor (qn / cfg.progRateQn),
+                          cfg.progStepCount);
     };
 
     // --- Host events: input filter, held tracking, pass-through -------------
@@ -349,22 +359,29 @@ void Engine::process (juce::MidiBuffer& midi,
             });
         };
 
-        // Walk one module's step clock across this block, firing `step` at
-        // each grid point and carrying the remainder into the next block. The
-        // gate is capped one sample short of the step so even a 100% gate's
-        // note-off can't collide with the next same-pitch note-on.
-        auto runSteps = [&] (double& samplesToNext, double stepQn, double gateFrac, auto&& step)
+        // Walk one module's grid across this block: a step fires at every
+        // boundary k * stepQn inside [blockStartQn, blockEndQn), and `step`
+        // receives the boundary's index counted from the song's bar 0 (which
+        // is what locates repeat windows and cycles) plus its block sample.
+        // The gate is capped one sample short of the step so even a 100%
+        // gate's note-off can't collide with the next same-pitch note-on.
+        auto runSteps = [&] (double stepQn, double gateFrac, auto&& step)
         {
-            const double stepSamples = juce::jmax (1.0, samplesPerQn * stepQn);
+            const double q           = juce::jmax (0.001, stepQn);
+            const double stepSamples = juce::jmax (1.0, samplesPerQn * q);
             const int    gateSamples = juce::jlimit (1, juce::jmax (1, (int) stepSamples - 1),
                                                      (int) (stepSamples * gateFrac));
-            double sPos = samplesToNext;
-            while (sPos < (double) numSamples)
+            // std::ceil, not integer truncation: a negative block start (host
+            // pre-roll) must still round up to the boundary at or after it.
+            for (auto k = (juce::int64) std::ceil (blockStartQn / q); ; ++k)
             {
-                step ((int) sPos, gateSamples);
-                sPos += stepSamples;
+                const double qn = (double) k * q;
+                if (qn >= blockEndQn)
+                    break;
+                const int s = juce::jlimit (0, numSamples - 1,
+                                            (int) std::llround ((qn - blockStartQn) * samplesPerQn));
+                step (k, s, gateSamples);
             }
-            samplesToNext = sPos - (double) numSamples;
         };
 
         // How many steps fit in a repeat window; 0 = Endless (no window).
@@ -388,42 +405,40 @@ void Engine::process (juce::MidiBuffer& midi,
 
             const int window = stepsPerWindow (cfg.arpRepeatQn, cfg.arpStepQn);
 
-            runSteps (arpSamplesToNext, cfg.arpStepQn, cfg.arpGateFrac, [&] (int s, int gate)
+            runSteps (cfg.arpStepQn, cfg.arpGateFrac, [&] (juce::int64 k, int s, int gate)
             {
-                // Window boundaries are counted on the grid from transport
-                // start (arpStep), independent of when notes are held; the walk
-                // position itself (arpIndex) only advances when a note fires.
-                if (window > 0 && arpStep % window == 0)
-                    arpIndex = 0;
-                ++arpStep;
-
                 if (seq.empty())
                     return;
+
+                // The walk position is the grid index itself (modded into the
+                // repeat window when one is set), so the phrase is a pure
+                // function of the song position: identical on every host loop
+                // pass, and re-joined mid-pattern when play starts mid-window.
+                const juce::int64 i = window > 0 ? (juce::int64) wrapIndex (k, window) : k;
 
                 const int n = (int) seq.size();
                 int raw = seq.front();
                 switch (cfg.arpMode)
                 {
                     case ModuleOptions::kModeDown:
-                        raw = seq[(size_t) (n - 1 - (arpIndex % n))];
+                        raw = seq[(size_t) (n - 1 - wrapIndex (i, n))];
                         break;
                     case ModuleOptions::kModeUpDown:
                     {
                         // Classic up-down: endpoints aren't doubled, so the
                         // cycle is 2n-2 steps (n > 1).
                         const int cycle = n > 1 ? 2 * n - 2 : 1;
-                        const int i = arpIndex % cycle;
-                        raw = seq[(size_t) (i < n ? i : 2 * (n - 1) - i)];
+                        const int j = wrapIndex (i, cycle);
+                        raw = seq[(size_t) (j < n ? j : 2 * (n - 1) - j)];
                         break;
                     }
                     case ModuleOptions::kModeRandom:
                         raw = seq[(size_t) rng.nextInt (n)];
                         break;
                     default:   // kModeUp
-                        raw = seq[(size_t) (arpIndex % n)];
+                        raw = seq[(size_t) wrapIndex (i, n)];
                         break;
                 }
-                ++arpIndex;
                 emitGenerated (raw, s, gate);
             });
         }
@@ -445,7 +460,7 @@ void Engine::process (juce::MidiBuffer& midi,
             if (candidates.empty())
                 candidates.push_back (ScaleTables::snapToScale ((lo + hi) / 2, rRoot, rScale));
 
-            runSteps (randomSamplesToNext, cfg.randomStepQn, 0.5, [&] (int s, int gate)
+            runSteps (cfg.randomStepQn, 0.5, [&] (juce::int64, int s, int gate)
             {
                 emitGenerated (candidates[(size_t) rng.nextInt ((int) candidates.size())], s, gate);
             });
@@ -475,12 +490,11 @@ void Engine::process (juce::MidiBuffer& midi,
             const int window = stepsPerWindow (cfg.scaleRepeatQn, cfg.scaleStepQn);
             const int stepsPerRepeat = window > 0 ? window : (int) pattern.size();
 
-            runSteps (scaleSamplesToNext, cfg.scaleStepQn, 0.5, [&] (int s, int gate)
+            runSteps (cfg.scaleStepQn, 0.5, [&] (juce::int64 k, int s, int gate)
             {
                 // Position inside the repeat window; steps past the pattern's
                 // end are rests until the window wraps.
-                const int idx = scaleStep % stepsPerRepeat;
-                ++scaleStep;
+                const int idx = wrapIndex (k, stepsPerRepeat);
                 if (idx < (int) pattern.size())
                     emitGenerated (pattern[(size_t) idx], s, gate);
             });
@@ -499,13 +513,14 @@ void Engine::process (juce::MidiBuffer& midi,
                                    + juce::jmax (0, cfg.lfoDepthSteps);
             const double cycleQn = juce::jmax (0.001, cfg.lfoCycleQn);
 
-            runSteps (lfoSamplesToNext, cfg.lfoStepQn, 0.5, [&] (int s, int gate)
+            runSteps (cfg.lfoStepQn, 0.5, [&] (juce::int64 k, int s, int gate)
             {
-                // Position inside the cycle, from the grid position since
-                // transport start plus the start-phase offset.
-                const double x = std::fmod ((double) lfoStep * cfg.lfoStepQn / cycleQn
-                                                + cfg.lfoPhase, 1.0);
-                ++lfoStep;
+                // Position inside the cycle, from the grid position in the
+                // song plus the start-phase offset. x - floor(x) rather than
+                // fmod so a negative (pre-roll) position still lands in
+                // [0, 1).
+                double x = (double) k * cfg.lfoStepQn / cycleQn + cfg.lfoPhase;
+                x -= std::floor (x);
 
                 double v = 0.0;   // bipolar shape value at x
                 switch (cfg.lfoShape)
@@ -619,18 +634,4 @@ void Engine::process (juce::MidiBuffer& midi,
         }
     }
 
-    // --- Advance the transport-position bookkeeping --------------------------
-    // Kept ticking whether or not the modules are placed, so a Quantize or
-    // Progression dropped mid-play joins the grid where the song actually is
-    // instead of where its own clock would have drifted to.
-    if (isPlaying)
-    {
-        while (quantSamplesToNext < (double) numSamples)
-        {
-            quantSamplesToNext += quantStepSamples;
-            ++quantStep;
-        }
-        quantSamplesToNext -= (double) numSamples;
-        progQn += (double) numSamples / samplesPerQn;
-    }
 }

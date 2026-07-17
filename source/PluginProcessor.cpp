@@ -94,6 +94,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout CurrentAudioProcessor::creat
 void CurrentAudioProcessor::prepareToPlay (double sampleRate, int)
 {
     engine.prepare (sampleRate);
+    internalQn = 0.0;
+    // Cleared so a Play toggle already on at re-init gets a fresh off->on
+    // edge (and with it the rewind to bar 1) on the first block.
+    prevInternalPlay = false;
 }
 
 void CurrentAudioProcessor::releaseResources() {}
@@ -194,6 +198,36 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     juce::Optional<juce::AudioPlayHead::PositionInfo> pos;
     if (auto* ph = getPlayHead())
         pos = ph->getPosition();
+
+    // Hosts the engine can't sync to get the internal transport instead (the
+    // LAM approach). Two cases: the Standalone — its playhead reports
+    // isPlaying == false forever, so the menu bar's Play toggle drives
+    // transport and the manual Tempo always wins over whatever BPM its
+    // playhead claims — and a plugin host with no playhead at all, which
+    // free-runs at the internal tempo. Ppq accumulates across blocks and
+    // rewinds on every off->on edge so playback always starts at the top of
+    // bar 1; the edge is detected here on the audio thread because
+    // internalQn is a bare double touched by processBlock — a UI-thread
+    // write would race. (A host playhead that merely lacks a ppq or bpm
+    // value keeps its isPlaying and is patched per-field inside the engine.)
+    if (isStandalone() || ! pos.hasValue())
+    {
+        const bool play = isStandalone() ? standalonePlay.load (std::memory_order_acquire)
+                                         : true;
+        const double bpm = internalBpm.load (std::memory_order_relaxed);
+        if (play && ! prevInternalPlay)
+            internalQn = 0.0;
+        prevInternalPlay = play;
+
+        juce::AudioPlayHead::PositionInfo pi;
+        pi.setIsPlaying (play);
+        pi.setBpm (bpm);
+        pi.setPpqPosition (internalQn);
+        if (play)
+            internalQn += (double) buffer.getNumSamples()
+                              / juce::jmax (1.0, (60.0 / bpm) * getSampleRate());
+        pos = pi;
+    }
 
     engine.process (midi, buffer.getNumSamples(), pos,
                     root, scaleIndex, cfg);

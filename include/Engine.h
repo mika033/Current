@@ -23,8 +23,10 @@
 //               host notes on its step grid, walking them per its mode (Up,
 //               Down, Up-Down, Random) across `arpOctaves` octaves. Consumes
 //               the host notes (they are the arp's input, so they don't also
-//               pass straight through). Every `arpRepeatQn` quarter notes the
-//               walk resets to the pattern start (Endless by default).
+//               pass straight through). The walk position comes from the song
+//               position itself, so the phrase is identical on every host
+//               loop pass; every `arpRepeatQn` quarter notes the walk resets
+//               to the pattern start (Endless by default).
 //   - Random:   one random note per step, drawn uniformly from the pitches of
 //               its (root, scale) that lie inside its inclusive note range.
 //   - Scale:    walks its (root, scale) stepwise from the root at octave 3
@@ -32,15 +34,15 @@
 //               (down = the same notes reversed). endOnRoot appends the octave
 //               root as a final step; otherwise the pattern ends on the
 //               scale's last degree (the 7th in a 7-note scale). The pattern
-//               restarts every `scaleRepeatQn` quarter notes counted from
-//               transport start (repeat choices assume 4/4): a pattern longer
+//               restarts every `scaleRepeatQn` quarter notes counted from the
+//               song's bar 0 (repeat choices assume 4/4): a pattern longer
 //               than the window is cut off, a shorter one rests until the
 //               window restarts. With repeat Endless it loops back-to-back —
 //               the pattern restarts right after its last note.
 //   - LFO:      a classic LFO sampled on the note grid and mapped to pitch.
 //               Each step evaluates the shape at the current position inside
-//               the cycle (cycle length in bars from transport start, plus the
-//               start-phase offset) and maps the bipolar value to a scale
+//               the cycle (cycle length in bars, anchored to the song's bar 0,
+//               plus the start-phase offset) and maps the bipolar value to a scale
 //               member around the centre note (the root at octave 3), swinging
 //               ± its depth (whole octaves + extra scale steps, both counted
 //               in scale degrees). The Random shape redraws a value per note
@@ -50,7 +52,7 @@
 //   - Quantize: re-times notes, not pitches: while the transport is playing,
 //               every note-on heading out of the chain (pass-through and
 //               generated alike) is deferred to the next point of the
-//               module's rate grid, counted from transport start. Swing
+//               module's rate grid, anchored to the song's bar 0. Swing
 //               pushes every second grid point late by swing/2 of a step —
 //               the shared pair-based model from swing-timing.md (pair
 //               starts stay on the straight grid, so a generator running at
@@ -63,7 +65,7 @@
 //   - Scale:    snaps every note's pitch to its (root, scale), each defaulting
 //               to the global (-1). In-scale pitches pass untouched.
 //   - Progression: walks its step list (scale degree I..VII + octave, one
-//               step per `progRateQn`, counted from transport start, looping)
+//               step per `progRateQn`, anchored to the song's bar 0, looping)
 //               and transposes every passing note to the current step: degree
 //               moves in scale members of its (root, scale), the octave adds
 //               chromatic ±12s. Degree I / octave 0 is a strict no-op, like
@@ -96,6 +98,12 @@
 //               Output on the canvas channels pass through unchanged; several
 //               Outputs duplicate the stream, one copy per channel (the
 //               implicit chain's fan-out).
+//
+// Every grid above is derived from the host's ppq position each block (the
+// half-open range [blockStart, blockEnd) owns its boundaries), so pressing
+// play mid-bar lands the first step on the song's next real grid point, and
+// host loop wraps and tempo changes can't put a pattern out of phase. A
+// playhead without a ppq value falls back to counting from transport start.
 //
 // Stepped modules require the host transport to be playing; on stop, every note
 // the engine generated is released (note-off) so nothing hangs — matching the
@@ -272,29 +280,16 @@ private:
     };
     std::vector<QuantNote> pendingQuant;
 
-    // Per-module step clocks (samples until the next step lands), all reset
-    // on transport start so every stepped module's first step fires at sample
-    // 0. The rates differ per module now, so they can't share one counter.
-    double arpSamplesToNext    = 0.0;
-    double randomSamplesToNext = 0.0;
-    double scaleSamplesToNext  = 0.0;
-    double lfoSamplesToNext    = 0.0;
-    int    arpIndex   = 0;   // position in the arp walk; advances only when a
-                             // note fires, resets at each repeat-window start
-    int    arpStep    = 0;   // arp grid steps since transport start — locates
-                             // the repeat-window boundaries
-    int    scaleStep  = 0;   // steps since transport start; % steps-per-repeat
-                             // gives the position inside the repeat window
-    int    lfoStep    = 0;   // steps since transport start — locates the
-                             // position inside the LFO cycle
-    // Quantize's grid bookkeeping: sample distance to the next straight grid
-    // boundary and that boundary's index since transport start (index parity
-    // decides whether swing delays it). Unlike the step clocks above these
-    // advance every block, whether or not anything fired.
-    double quantSamplesToNext = 0.0;
-    int    quantStep          = 0;
-    // Progression playhead in quarter notes since transport start.
-    double progQn     = 0.0;
+    // There are no step counters: every grid position (step clocks, repeat
+    // windows, the LFO cycle, the Progression playhead, Quantize's swung
+    // boundaries) is re-derived each block from the host's ppq position, so
+    // nothing can drift across loop wraps or tempo changes. The only clock
+    // state is this fallback for hosts whose playhead carries no ppq value:
+    // quarter notes accumulated since the transport start, making such a host
+    // behave as if the song began the moment play was pressed. (The processor
+    // synthesizes a full position for the no-playhead cases, so this is a
+    // last-resort path.)
+    double fallbackQn = 0.0;
     bool   wasPlaying = false;
 
     juce::Random rng;

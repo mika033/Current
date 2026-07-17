@@ -3,9 +3,9 @@
 #include "Theme.h"
 #include "CurrentLookAndFeel.h"
 
-MenuBar::MenuBar (juce::AudioProcessorValueTreeState& apvts,
+MenuBar::MenuBar (CurrentAudioProcessor& processor,
                   std::function<void()> onThemeChanged)
-    : state (apvts), themeChanged (std::move (onThemeChanged))
+    : state (processor.apvts()), themeChanged (std::move (onThemeChanged))
 {
     titleLabel.setText ("Current", juce::dontSendNotification);
     titleLabel.setFont (juce::Font (juce::FontOptions (18.0f, juce::Font::bold)));
@@ -20,6 +20,36 @@ MenuBar::MenuBar (juce::AudioProcessorValueTreeState& apvts,
 
     configLabel (rootLabel,  "Root");
     configLabel (scaleLabel, "Scale");
+
+    // Standalone-only internal transport (the LAM approach): no host
+    // transport exists, so Play and Tempo live here. The button text swaps
+    // Play<->Stop with the toggle state so it reads correctly even where the
+    // pressed state isn't visually obvious.
+    showTransport = processor.isStandalone();
+    if (showTransport)
+    {
+        playButton.setClickingTogglesState (true);
+        playButton.onClick = [this, &processor]()
+        {
+            const bool on = playButton.getToggleState();
+            processor.setStandalonePlay (on);
+            playButton.setButtonText (on ? "Stop" : "Play");
+        };
+        addAndMakeVisible (playButton);
+
+        configLabel (tempoLabel, "Tempo");
+        tempoSlider.setSliderStyle (juce::Slider::IncDecButtons);
+        // 20 BPM floor matches LAM's Tempo stepper (safe for anything sized
+        // from a beat length); 300 is the musically useful ceiling.
+        tempoSlider.setRange (20.0, 300.0, 1.0);
+        tempoSlider.setValue (processor.getInternalBpm(), juce::dontSendNotification);
+        tempoSlider.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 44, 24);
+        tempoSlider.onValueChange = [this, &processor]()
+        {
+            processor.setInternalBpm (tempoSlider.getValue());
+        };
+        addAndMakeVisible (tempoSlider);
+    }
 
     addAndMakeVisible (rootCombo);
     addAndMakeVisible (scaleCombo);
@@ -80,6 +110,14 @@ void MenuBar::resized()
 
     place (rootLabel,  rootCombo,  comboW);
     place (scaleLabel, scaleCombo, comboW);
+
+    if (showTransport)
+    {
+        auto playSlot = area.removeFromLeft (56).withSizeKeepingCentre (56, rowH);
+        playButton.setBounds (playSlot);
+        area.removeFromLeft (gap);
+        place (tempoLabel, tempoSlider, 104);
+    }
 
     // Theme sits at the far right.
     auto rightSlot = area.removeFromRight (labelW + 90 + gap);
