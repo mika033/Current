@@ -40,9 +40,9 @@ public:
         setColour (juce::TextButton::textColourOffId,  s.text);
         setColour (juce::TextButton::textColourOnId,   s.text);
 
-        // Slider colours cover the Tempo stepper (IncDecButtons style: the
-        // buttons draw from the TextButton colours above, the value box from
-        // these).
+        // Generic slider colours for any future slider; the menu-bar BPM
+        // setter is now a StepperControl (its buttons/label draw from the
+        // TextButton/Label colours above, its value box paints from the theme).
         setColour (juce::Slider::textBoxTextColourId,       s.text);
         setColour (juce::Slider::textBoxBackgroundColourId, s.widgetBg);
         setColour (juce::Slider::textBoxOutlineColourId,    s.widgetOutline);

@@ -7,10 +7,6 @@ MenuBar::MenuBar (CurrentAudioProcessor& processor,
                   std::function<void()> onThemeChanged)
     : state (processor.apvts()), themeChanged (std::move (onThemeChanged))
 {
-    titleLabel.setText ("Current", juce::dontSendNotification);
-    titleLabel.setFont (juce::Font (juce::FontOptions (18.0f, juce::Font::bold)));
-    addAndMakeVisible (titleLabel);
-
     auto configLabel = [this] (juce::Label& l, const juce::String& text)
     {
         l.setText (text, juce::dontSendNotification);
@@ -37,18 +33,15 @@ MenuBar::MenuBar (CurrentAudioProcessor& processor,
         };
         addAndMakeVisible (playButton);
 
-        configLabel (tempoLabel, "Tempo");
-        tempoSlider.setSliderStyle (juce::Slider::IncDecButtons);
         // 20 BPM floor matches LAM's Tempo stepper (safe for anything sized
         // from a beat length); 300 is the musically useful ceiling.
-        tempoSlider.setRange (20.0, 300.0, 1.0);
-        tempoSlider.setValue (processor.getInternalBpm(), juce::dontSendNotification);
-        tempoSlider.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 44, 24);
-        tempoSlider.onValueChange = [this, &processor]()
+        bpmStepper.setRange (20.0, 300.0, 1.0);
+        bpmStepper.setValue (processor.getInternalBpm(), juce::dontSendNotification);
+        bpmStepper.onValueChange = [&processor] (double v)
         {
-            processor.setInternalBpm (tempoSlider.getValue());
+            processor.setInternalBpm (v);
         };
-        addAndMakeVisible (tempoSlider);
+        addAndMakeVisible (bpmStepper);
     }
 
     addAndMakeVisible (rootCombo);
@@ -83,20 +76,29 @@ void MenuBar::paint (juce::Graphics& g)
     g.fillRoundedRectangle (b, 6.0f);
     g.setColour (s.panelBorder);
     g.drawRoundedRectangle (b.reduced (0.5f), 6.0f, 1.0f);
-
-    titleLabel.setColour (juce::Label::textColourId, s.text);
 }
 
 void MenuBar::resized()
 {
     auto area = getLocalBounds().reduced (12, 0);
 
-    titleLabel.setBounds (area.removeFromLeft (110).withSizeKeepingCentre (110, 24));
-
     constexpr int comboW = 92;
     constexpr int labelW = 46;
     constexpr int gap    = 8;
     const int rowH = 26;
+
+    // In the Standalone the transport leads the bar: Play first, then the BPM
+    // stepper, ahead of the global Root / Scale combos.
+    if (showTransport)
+    {
+        auto playSlot = area.removeFromLeft (56).withSizeKeepingCentre (56, rowH);
+        playButton.setBounds (playSlot);
+        area.removeFromLeft (gap);
+
+        auto bpmSlot = area.removeFromLeft (104).withSizeKeepingCentre (104, rowH);
+        bpmStepper.setBounds (bpmSlot);
+        area.removeFromLeft (gap);
+    }
 
     auto place = [&] (juce::Label& lbl, juce::Component& ctl, int w)
     {
@@ -110,14 +112,6 @@ void MenuBar::resized()
 
     place (rootLabel,  rootCombo,  comboW);
     place (scaleLabel, scaleCombo, comboW);
-
-    if (showTransport)
-    {
-        auto playSlot = area.removeFromLeft (56).withSizeKeepingCentre (56, rowH);
-        playButton.setBounds (playSlot);
-        area.removeFromLeft (gap);
-        place (tempoLabel, tempoSlider, 104);
-    }
 
     // Theme sits at the far right.
     auto rightSlot = area.removeFromRight (labelW + 90 + gap);

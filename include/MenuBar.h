@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
+#include "StepperControl.h"
 
 class CurrentAudioProcessor;
 
@@ -34,19 +35,18 @@ private:
 
     juce::AudioProcessorValueTreeState& state;
 
-    juce::Label    titleLabel;
-
     juce::Label    rootLabel, scaleLabel;
     juce::ComboBox rootCombo, scaleCombo;
 
     juce::Label    themeLabel;
     juce::ComboBox themeCombo;
 
-    // Standalone-only internal transport (never created in plugin wrappers).
+    // Standalone-only internal transport (never created in plugin wrappers):
+    // the Play toggle is the leftmost item, immediately followed by the BPM
+    // stepper ([ + ] value [ - ]).
     bool             showTransport = false;
     juce::TextButton playButton { "Play" };
-    juce::Label      tempoLabel;
-    juce::Slider     tempoSlider;
+    StepperControl   bpmStepper;
 
     std::unique_ptr<ComboAttachment> rootAtt, scaleAtt, themeAtt;
 
