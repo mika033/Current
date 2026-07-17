@@ -56,6 +56,25 @@ juce::String Canvas::shiftSublabel (const ModuleSettings& settings)
     return settings.shiftAmount > 0 ? "+" + n : n;
 }
 
+juce::String Canvas::scaleModSublabel (const ModuleSettings& settings) const
+{
+    // The scale it snaps to — the module's one meaningful fact at a glance.
+    const auto scales = choicesWithGlobal (ParamIDs::scale);
+    return scales[juce::jlimit (0, scales.size() - 1, settings.scaleOverride + 1)];
+}
+
+juce::String Canvas::progressionSublabel (const ModuleSettings& settings)
+{
+    // Short progressions read whole ("I-IV-V-I"); longer ones summarise.
+    if ((int) settings.progSteps.size() > 4)
+        return juce::String (settings.progSteps.size()) + " steps";
+    juce::StringArray parts;
+    for (const auto& s : settings.progSteps)
+        parts.add (ModuleOptions::degreeNames()[juce::jlimit (
+            0, ModuleOptions::degreeNames().size() - 1, s.degree)]);
+    return parts.joinIntoString ("-");
+}
+
 juce::StringArray Canvas::choicesWithGlobal (const char* paramID) const
 {
     juce::StringArray items { "Global" };
@@ -140,10 +159,14 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
         node->setSublabel (channelSublabel (instance.type, instance.channel));
     else if (instance.type == ModuleType::Random || instance.type == ModuleType::ScaleGen
              || instance.type == ModuleType::Arp || instance.type == ModuleType::Lfo
-             || instance.type == ModuleType::Delay)
+             || instance.type == ModuleType::Delay || instance.type == ModuleType::Quantize)
         node->setSublabel (rateSublabel (instance.settings));
     else if (instance.type == ModuleType::Shift)
         node->setSublabel (shiftSublabel (instance.settings));
+    else if (instance.type == ModuleType::ScaleMod)
+        node->setSublabel (scaleModSublabel (instance.settings));
+    else if (instance.type == ModuleType::Progression)
+        node->setSublabel (progressionSublabel (instance.settings));
 
     node->onSelected = [this] (ModuleComponent& n) { selectNode (&n); };
 
@@ -179,6 +202,21 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
             openLfoDialog (n);
             return;
         }
+        if (n.moduleType() == ModuleType::Quantize)
+        {
+            openQuantizeDialog (n);
+            return;
+        }
+        if (n.moduleType() == ModuleType::ScaleMod)
+        {
+            openScaleModDialog (n);
+            return;
+        }
+        if (n.moduleType() == ModuleType::Progression)
+        {
+            openProgressionDialog (n);
+            return;
+        }
         if (n.moduleType() == ModuleType::Shift)
         {
             openShiftDialog (n);
@@ -190,7 +228,7 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
             return;
         }
 
-        // Other modules: an empty placeholder where their settings will live.
+        // Fallback for future module types that don't have a dialog yet.
         auto* dlg = owner.showInlineDialog (juce::String (descriptorFor (n.moduleType()).name)
                                             + " settings",
                                             "Settings for this module will appear here in a later phase.");
@@ -370,7 +408,7 @@ void Canvas::openLfoDialog (ModuleComponent& node)
     auto* dlg = owner.showInlineDialog ("LFO settings");
     addRootScaleControls (*dlg, s);
     dlg->addComboBox ("shape", ModuleOptions::lfoShapeNames(), s.lfoShape, "Shape");
-    dlg->addComboBox ("cycle", ModuleOptions::lfoCycleNames(), s.lfoCycle, "Cycle length");
+    dlg->addComboBox ("cycle", ModuleOptions::barLengthNames(), s.lfoCycle, "Cycle length");
     dlg->addComboBox ("depthOct",   { "0", "1", "2", "3", "4" },
                       s.lfoDepthOct, "Depth (octaves)");
     dlg->addComboBox ("depthSteps", { "0", "1", "2", "3", "4", "5", "6" },
@@ -399,6 +437,138 @@ void Canvas::openLfoDialog (ModuleComponent& node)
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (rateSublabel (ns));
+        }
+        d->getParentComponent()->removeChildComponent (d);
+        delete d;
+    };
+}
+
+void Canvas::openQuantizeDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    auto* dlg = owner.showInlineDialog ("Quantize settings",
+                                        "Notes are moved onto the rate grid; "
+                                        "swing pushes every second grid step late.");
+    addRateControl (*dlg, s);
+    dlg->addComboBox ("swing", ModuleOptions::swingNames(), s.swing, "Swing");
+    dlg->addButton ("OK", 1);
+    dlg->addButton ("Cancel", 0);
+
+    // Captures the id, not the node — the node can be deleted or rebuilt while
+    // the dialog is up (host state restore), so it is re-looked-up on OK.
+    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    {
+        if (result == 1)
+        {
+            auto ns = proc.getModuleSettings (id);
+            readRateControl (*d, ns);
+            ns.swing = d->getComboBoxSelectedIndex ("swing");
+            proc.setModuleSettings (id, ns);
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (rateSublabel (ns));
+        }
+        d->getParentComponent()->removeChildComponent (d);
+        delete d;
+    };
+}
+
+void Canvas::openScaleModDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    auto* dlg = owner.showInlineDialog ("Scale settings",
+                                        "Notes passing through are forced onto "
+                                        "this scale.");
+    addRootScaleControls (*dlg, s);
+    dlg->addButton ("OK", 1);
+    dlg->addButton ("Cancel", 0);
+
+    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    {
+        if (result == 1)
+        {
+            auto ns = proc.getModuleSettings (id);
+            readRootScaleControls (*d, ns);
+            proc.setModuleSettings (id, ns);
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (scaleModSublabel (ns));
+        }
+        d->getParentComponent()->removeChildComponent (d);
+        delete d;
+    };
+}
+
+void Canvas::openProgressionDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    juce::StringArray octaves;
+    for (int o = -ModuleOptions::kProgOctaveRange; o <= ModuleOptions::kProgOctaveRange; ++o)
+        octaves.add (o > 0 ? "+" + juce::String (o) : juce::String (o));
+
+    auto* dlg = owner.showInlineDialog ("Progression settings",
+                                        "Each step transposes passing notes to its "
+                                        "scale degree; Rate is one step's length.");
+    addRootScaleControls (*dlg, s);
+    dlg->addComboBox ("progRate", ModuleOptions::barLengthNames(), s.progRate, "Rate");
+
+    // One row per step: degree + octave side by side. The row set is edited
+    // live by the Add/Remove buttons; combo names are indexed so OK can read
+    // whatever count the user ended up with.
+    auto addStepRow = [dlg, octaves] (int index, const ProgressionStep& step)
+    {
+        dlg->addComboBox ("deg" + juce::String (index), ModuleOptions::degreeNames(),
+                          step.degree, "Step " + juce::String (index + 1));
+        dlg->addComboBox ("oct" + juce::String (index), octaves,
+                          step.octave + ModuleOptions::kProgOctaveRange, "Octave", true);
+    };
+    for (int i = 0; i < (int) s.progSteps.size(); ++i)
+        addStepRow (i, s.progSteps[(size_t) i]);
+
+    // The live row count, shared by the two utility buttons and the OK read.
+    auto stepCount = std::make_shared<int> ((int) s.progSteps.size());
+
+    dlg->addUtilityButton ("Add step", [stepCount, addStepRow]()
+    {
+        if (*stepCount >= ModuleOptions::kMaxProgSteps)
+            return;
+        addStepRow ((*stepCount)++, {});
+    });
+    dlg->addUtilityButton ("Remove", [dlg, stepCount]()
+    {
+        if (*stepCount <= 1)   // a progression always keeps one step
+            return;
+        --(*stepCount);
+        dlg->removeComboBox ("deg" + juce::String (*stepCount));
+        dlg->removeComboBox ("oct" + juce::String (*stepCount));
+    });
+
+    dlg->addButton ("OK", 1);
+    dlg->addButton ("Cancel", 0);
+
+    dlg->onResult = [this, id, stepCount] (int result, InlineDialog* d)
+    {
+        if (result == 1)
+        {
+            auto ns = proc.getModuleSettings (id);
+            readRootScaleControls (*d, ns);
+            ns.progRate = d->getComboBoxSelectedIndex ("progRate");
+            ns.progSteps.clear();
+            for (int i = 0; i < *stepCount; ++i)
+                ns.progSteps.push_back ({
+                    d->getComboBoxSelectedIndex ("deg" + juce::String (i)),
+                    d->getComboBoxSelectedIndex ("oct" + juce::String (i))
+                        - ModuleOptions::kProgOctaveRange });
+            proc.setModuleSettings (id, ns);
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (progressionSublabel (ns));
         }
         d->getParentComponent()->removeChildComponent (d);
         delete d;

@@ -26,10 +26,11 @@ shape as what an Output module finally sends to the host. Connections are made
 port-to-port. One output may feed any number of inputs (fan-out), and several
 outputs may feed one input (fan-in) — incoming notes simply merge.
 
-Root, scale, and quantize have global settings in the menu bar. Modules use
-the global values by default; a module may override them locally or ignore
-them. Whether a module is deterministic or probabilistic is decided per
-module — there is no global switch.
+Root and scale have global settings in the menu bar. Modules use the global
+values by default; a module may override them locally or ignore them. (There
+is no global quantize switch — snapping to a scale is the Scale modulator's
+job, placed where it's wanted in the flow.) Whether a module is deterministic
+or probabilistic is decided per module — there is no global switch.
 
 Stateful time modules (Delay, Retrograde) follow shared transport rules: on
 stop, everything stops and buffered material is discarded, with note-offs sent
@@ -46,14 +47,17 @@ it. The list will grow as modules gain settings; today it is:
 - **Root and scale** — where a module's notes live. Both default to Global,
   borrowed live from the menu bar (so a module left on Global tracks later
   menu-bar changes), or can be overridden locally: root C to B, the same
-  scale list as the menu bar. Used by Random, Scale, and LFO; planned for
-  Quantize (its local override). Shift carries a variant of the scale half:
-  its list adds an Off choice (work chromatically, no scale at all) after
-  Global.
+  scale list as the menu bar. Used by the Random, Scale, and LFO generators
+  and the Scale and Progression modulators. Shift carries a variant of the
+  scale half: its list adds an Off choice (work chromatically, no scale at
+  all) after Global.
 - **Rate** — the step grid a module works on, as a note length (1/32 to 1/1)
   locked to host tempo: the grid a generator emits its MIDI on, or the grid a
   modulator re-times passing MIDI to. Used by Arp, Random, Scale, and LFO;
-  Delay uses the same control as its echo spacing.
+  Quantize uses it as its timing grid, and Delay uses the same control as its
+  echo spacing. (Progression's Rate is deliberately a different control — a
+  bar length, shared with the LFO's cycle length — because progressions move
+  in bars, not subdivisions.)
 - **Repeat** — when a module's pattern is reset and replayed from the start,
   counted from transport start: 1/4, 1/2, or 1 to 4 bars (assuming 4/4), or
   Endless — the normal default — meaning the pattern just runs on until the
@@ -78,15 +82,18 @@ default settings; the two I/O modules followed with the first real setting
 dialogs, and the Arp — reclassified as a modulator, since it transforms the
 notes flowing into it — now carries one too. Shift gained its settings
 (amount + scale), a third generator, the LFO, arrived with a full dialog, and
-the Delay — the first stateful time modulator — followed. Only Quantize still
-runs a fixed default — double-clicking it opens a placeholder. Until port
-wiring lands everything runs as one fixed chain: host MIDI enters through
-MIDI In (or an implicit all-channels input if none is placed), feeds the Arp
-and the generators, results pass through Quantize and then Shift, the Delay
-adds its echoes to everything leaving the chain, and everything exits through
-Output (or an implicit channel-preserving output). A consequence of the fixed
-chain: placing several copies of the same module doesn't layer them — extra
-copies share the first one's settings until wiring lands.
+the Delay — the first stateful time modulator — followed. The latest batch
+reworked Quantize into a timing quantizer (rate + swing; the old global
+Quantize checkbox is gone) and added the Scale and Progression modulators, so
+every module in the palette now has real settings. Until port wiring lands
+everything runs as one fixed chain: host MIDI enters through MIDI In (or an
+implicit all-channels input if none is placed), feeds the Arp and the
+generators, results pass through the Scale modulator, then Progression, then
+Shift, Quantize re-times what leaves the chain onto its swung grid, the Delay
+adds its echoes, and everything exits through Output (or an implicit
+channel-preserving output). A consequence of the fixed chain: placing several
+copies of the same module doesn't layer them — extra copies share the first
+one's settings until wiring lands.
 
 Each implemented module's entry ends with a "User settings" bullet list of
 what the user can change today, so the gap between current and planned
@@ -234,20 +241,72 @@ User settings:
 
 ### Quantize (modulator)
 
-Quantize forces every note passing through it onto a scale. Out-of-scale
-pitches snap to the nearest scale member; in-scale pitches pass untouched. Use
-it after anything chromatic — a Shift, an external keyboard — to keep the
-result in key.
+Quantize is about timing, not pitch: while the transport runs, every note
+flowing through is moved onto its rate grid — a note played (or generated)
+between grid points waits for the next one. Use it to tighten loose live
+playing, or to put groove onto straight material via swing. A note released
+while it is still waiting keeps its played duration; a note already on the
+grid passes unmoved. When the transport is stopped there is no grid, so
+everything passes straight through and live playing stays immediate.
 
-Current fixed behaviour: snaps to the global root and scale. Planned settings:
-a local root/scale override. Note that the global Quantize toggle in the menu
-bar applies the same snapping graph-wide; the module exists so quantization
-can be placed at a specific point in the flow.
+Swing (0–100%, default 0) pushes every second grid step late, following the
+shared pair-based model from the standards repo's `swing-timing.md` (the same
+maths as Little Arp Monster): within each pair of steps the first stretches
+by swing/2 of a step and the second shrinks by the same amount, so pair
+starts always sit on the straight grid and the loop length never changes.
+Around 67% gives the classic triplet shuffle. A generator running at the
+Quantize rate lands exactly on the swung grid — instant shuffle for the Scale
+generator's runs. As a stateful time module, Quantize follows the shared
+transport rules: on stop, notes still waiting are discarded and nothing
+hangs. The node shows its rate as a sublabel.
 
 User settings:
 
-- None yet (the global root, scale, and quantize toggle in the menu bar
-  apply, but nothing is settable on the module itself).
+- Rate — 1/32 to 1/1 (default 1/16); the timing grid.
+- Swing — 0% to 100% in 10% steps (default 0%).
+
+### Scale (modulator)
+
+The Scale modulator forces every note passing through it onto a scale:
+out-of-scale pitches snap to the nearest scale member, in-scale pitches pass
+untouched. Use it after anything chromatic — a Shift set to semitones, an
+external keyboard — to keep the result in key, placed exactly where you want
+the snapping to happen. Root and scale each default to Global, following the
+menu bar like the generators; the node shows the chosen scale as a sublabel.
+(Not to be confused with the Scale generator, the square one — that plays
+scale runs; this one corrals what flows through it.)
+
+User settings:
+
+- Root — Global (default) or C to B.
+- Scale — Global (default) or any scale from the global list.
+
+### Progression (modulator)
+
+Progression turns a static loop into a chord progression: it transposes
+everything flowing through it to the current step of a step list you define —
+hold a C-major vamp, give the module I-IV-V, and the vamp walks the changes
+by itself. Each step is a scale degree (I to VII) plus an octave offset (−2
+to +2); degree movement is diatonic (in scale members of its root/scale, so
+the result stays in key), the octave offset is plain ±12s. Degree I with
+octave 0 — the default step — passes notes untouched.
+
+Rate sets how long one step lasts (1/4 bar to 8 bars, default 1 bar), counted
+from transport start; the list loops when it runs out. Add step / Remove in
+the settings dialog grow and shrink the list (1 to 8 steps), which is how the
+progression's length is set. Root and scale default to Global. While the
+transport is stopped the first step applies, so auditioning matches how
+playback will start. Note-offs always release what their note-on sounded,
+even across a step change — nothing hangs mid-chord-change. The node shows
+short progressions in full ("I-IV-V") and long ones as a step count.
+
+User settings:
+
+- Root — Global (default) or C to B.
+- Scale — Global (default) or any scale from the global list.
+- Rate — 1/4 bar to 8 bars (default 1 bar); the length of one step.
+- Steps — 1 to 8 steps (default one step, I); per step a degree I–VII
+  (default I) and an octave −2 to +2 (default 0).
 
 ### Shift (modulator)
 
@@ -308,8 +367,8 @@ open details, where any, are flagged.
   `design/grid-interaction.md` conventions.
 - **Chord** — emits triads, 7ths, or other voicings instead of single notes.
   The core (pick a chord type, emit it on the generator grid from the current
-  root) is codable now. The optional progression-walking feature still needs
-  its data model and UI decided — how a user defines the progression.
+  root) is codable now. Progression-walking needs no feature of its own any
+  more: feed the Chord generator through the Progression modulator.
 - **Drone** — holds sustained notes indefinitely, re-triggering whenever the
   global root or scale changes. Which pitches it holds (root only, root plus
   fifth, a full chord) is its main setting; default to the root.
@@ -329,11 +388,11 @@ open details, where any, are flagged.
   (settings: subdivision count and, likely, a velocity ramp).
 - **Strum** — spreads the notes of a chord out over a short time window, like
   a strummed guitar (settings: spread time, direction).
-- **Swing / Groove** — shifts off-beats later (or earlier) for groove. Follows
-  the shared pair-based, loop-length-invariant swing model in the standards
-  repo's `swing-timing.md`.
 - **Note Length / Legato** — overrides or scales gate length, from staccato
   through fully legato.
+
+(A separate Swing / Groove module was planned here; the Quantize modulator's
+swing setting covers it.)
 
 ### Modulators — rhythm application
 

@@ -5,8 +5,9 @@
 #include <vector>
 #include <juce_core/juce_core.h>
 
-// Scale interval tables + pitch helpers used by the Phase 2 engine (the Quantize
-// modulator and the Random generator). The interval sets are semitone offsets
+// Scale interval tables + pitch helpers used by the engine (the Scale
+// modulator's snapping, the generators' scale walks, and the degree-based
+// transposes in Shift and Progression). The interval sets are semitone offsets
 // within one octave from the root. Index order matches kScaleNames in
 // PluginProcessor.cpp — keep the two in lock-step.
 namespace ScaleTables

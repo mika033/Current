@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_core/juce_core.h>
+#include <vector>
 
 // The shared per-module settings blob and the option tables behind it. Several
 // settings recur across modules (root/scale override, rate, repeat, mode,
@@ -91,6 +92,27 @@ namespace ModuleOptions
     constexpr int kScaleGlobal = -1;
     constexpr int kScaleOff    = -2;
 
+    // Swing (Quantize): how far every second step of the rate grid is pushed
+    // late, following the shared pair-based model from the standards repo's
+    // swing-timing.md (the same maths as Little Arp Monster): within each pair
+    // of steps the even step stretches by (1 + swing/2) and the odd step
+    // shrinks by (1 - swing/2), so pair starts always sit on the straight
+    // grid. 0% = straight time; ~67% is the classic triplet shuffle.
+    inline const juce::StringArray& swingNames()
+    {
+        static const juce::StringArray names { "0%", "10%", "20%", "30%", "40%",
+                                               "50%", "60%", "70%", "80%", "90%",
+                                               "100%" };
+        return names;
+    }
+
+    inline double swingFraction (int index)
+    {
+        return 0.1 * juce::jlimit (0, 10, index);
+    }
+
+    constexpr int kSwingOff = 0;
+
     // Shift: transpose range, symmetric around 0. The same numeric range is
     // used whether the module shifts chromatic semitones (scale Off) or scale
     // degrees (scale Global / named).
@@ -114,22 +136,39 @@ namespace ModuleOptions
     constexpr int kLfoSquare   = 4;
     constexpr int kLfoRandom   = 5;
 
-    // LFO cycle length: one full sweep of the shape, in bars (assuming 4/4,
-    // like the repeat table above).
-    inline const juce::StringArray& lfoCycleNames()
+    // Bar lengths (assuming 4/4, like the repeat table above). Shared by the
+    // LFO's cycle length and the Progression's rate — both are "how long one
+    // musical unit lasts" choices, so they present the same list.
+    inline const juce::StringArray& barLengthNames()
     {
         static const juce::StringArray names { "1/4 bar", "1/2 bar", "1 bar",
                                                "2 bars", "4 bars", "8 bars" };
         return names;
     }
 
-    inline double lfoCycleQuarterNotes (int index)
+    inline double barLengthQuarterNotes (int index)
     {
         static const double qn[] = { 1.0, 2.0, 4.0, 8.0, 16.0, 32.0 };
         return qn[(size_t) juce::jlimit (0, 5, index)];
     }
 
-    constexpr int kLfoCycleOneBar = 2;
+    constexpr int kBarsOneBar = 2;
+
+    // Progression: scale degrees a step can sit on. Fixed at the seven-degree
+    // vocabulary of the common scales; on shorter scales (Pentatonic) the
+    // higher degrees simply walk further — VI in a pentatonic is its 6th
+    // member counting on, i.e. the octave root.
+    inline const juce::StringArray& degreeNames()
+    {
+        static const juce::StringArray names { "I", "II", "III", "IV", "V", "VI", "VII" };
+        return names;
+    }
+
+    // Progression per-step octave range (-2..+2) and the cap on how many steps
+    // a progression can hold. The cap keeps the settings dialog manageable and
+    // bounds the lock-free engine snapshot (one atomic per step).
+    constexpr int kProgOctaveRange = 2;
+    constexpr int kMaxProgSteps    = 8;
 
     // Delay feedback: each echo's velocity as a share of the note before it.
     // The velocity decay is what ends the repeats — echoes below the audible
@@ -176,11 +215,26 @@ namespace ModuleOptions
     }
 }
 
-// One module's settings. Random uses root/scale/rate/range; Scale uses
-// root/scale/rate/repeat plus mode/octaves/endOnRoot; Arp uses
+// One progression step: which scale degree the passing material is moved to
+// (0 = I, the no-op degree) and an extra whole-octave offset.
+struct ProgressionStep
+{
+    int degree = 0;   // 0..6 = I..VII
+    int octave = 0;   // -kProgOctaveRange..+kProgOctaveRange
+
+    bool operator== (const ProgressionStep& o) const
+    {
+        return degree == o.degree && octave == o.octave;
+    }
+};
+
+// One module's settings. Random uses root/scale/rate/range; Scale (generator)
+// uses root/scale/rate/repeat plus mode/octaves/endOnRoot; Arp uses
 // mode/rate/octaves/gate/repeat; LFO uses root/scale/rate plus its lfo*
-// fields; Shift uses scaleOverride (with the extra Off sentinel) and
-// shiftAmount; Delay uses rate (its delay time) plus its delay* fields.
+// fields; Quantize uses rate (its timing grid) and swing; the Scale modulator
+// uses root/scale only; Progression uses root/scale plus its prog* fields;
+// Shift uses scaleOverride (with the extra Off sentinel) and shiftAmount;
+// Delay uses rate (its delay time) plus its delay* fields.
 // Other module types ignore the whole struct. Root/scale
 // overrides of -1 mean "follow the global menu-bar setting" — the engine
 // resolves them per block, so a module left on Global tracks later menu-bar
@@ -218,11 +272,22 @@ struct ModuleSettings
     // default) passes notes through untouched until the user dials it in.
     int shiftAmount = 0;   // -kShiftRange..+kShiftRange
 
+    // Quantize only: how far every second grid step is pushed late (the grid
+    // itself is the shared `rate` field). Index into swingNames().
+    int swing = ModuleOptions::kSwingOff;
+
+    // Progression only. The rate is a bar length (one step of the progression),
+    // deliberately not the shared note-length rate — progressions move in bars,
+    // not subdivisions. The step list is what the user edits in the dialog;
+    // never empty (a fresh module holds one step on I).
+    int progRate = ModuleOptions::kBarsOneBar;   // index into barLengthNames()
+    std::vector<ProgressionStep> progSteps { {} };
+
     // LFO only. Depth is the swing around the centre note (the root at octave
     // 3), split into whole octaves plus extra scale steps — both directions,
     // so depth 1 octave means the pitch sweeps centre ± one octave.
-    int lfoShape      = ModuleOptions::kLfoSine;        // index into lfoShapeNames()
-    int lfoCycle      = ModuleOptions::kLfoCycleOneBar; // index into lfoCycleNames()
+    int lfoShape      = ModuleOptions::kLfoSine;    // index into lfoShapeNames()
+    int lfoCycle      = ModuleOptions::kBarsOneBar; // index into barLengthNames()
     int lfoDepthOct   = 1;   // 0..4 octaves
     int lfoDepthSteps = 0;   // 0..6 extra scale steps
     int lfoPhase      = 0;   // index into lfoPhaseNames() (quarter-cycle steps)

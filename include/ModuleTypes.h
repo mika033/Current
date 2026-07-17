@@ -25,6 +25,8 @@ enum class ModuleType
     // modulator, not a generator)
     Arp,
     Quantize,
+    ScaleMod,      // the "Scale" modulator — forces passing notes onto a scale
+    Progression,
     Shift,
     Delay,
     // I/O
@@ -38,6 +40,7 @@ enum class ModuleType
 inline bool moduleHasInputPort (ModuleType t)
 {
     return t == ModuleType::Arp || t == ModuleType::Quantize
+        || t == ModuleType::ScaleMod || t == ModuleType::Progression
         || t == ModuleType::Shift || t == ModuleType::Delay
         || t == ModuleType::Output;
 }
@@ -66,19 +69,24 @@ struct ModuleDescriptor
     }
 };
 
-// The palette, in display order: generators, modulators, I/O.
-inline const std::array<ModuleDescriptor, 9>& moduleCatalogue()
+// The palette, in display order: generators, modulators, I/O. The Scale
+// modulator shares its display name with the Scale generator on purpose (the
+// user asked for a "scale modulator"); shape and colour keep them apart, and
+// their persistence ids differ ("Scale" vs "ScaleMod").
+inline const std::array<ModuleDescriptor, 11>& moduleCatalogue()
 {
-    static const std::array<ModuleDescriptor, 9> kCatalogue = {{
-        { ModuleType::Random,   ModuleKind::Generator, "Random"   },
-        { ModuleType::ScaleGen, ModuleKind::Generator, "Scale"    },
-        { ModuleType::Lfo,      ModuleKind::Generator, "LFO"      },
-        { ModuleType::Arp,      ModuleKind::Modulator, "Arp"      },
-        { ModuleType::Quantize, ModuleKind::Modulator, "Quantize" },
-        { ModuleType::Shift,    ModuleKind::Modulator, "Shift"    },
-        { ModuleType::Delay,    ModuleKind::Modulator, "Delay"    },
-        { ModuleType::MidiIn,   ModuleKind::IO,        "MIDI In"  },
-        { ModuleType::Output,   ModuleKind::IO,        "Output"   }
+    static const std::array<ModuleDescriptor, 11> kCatalogue = {{
+        { ModuleType::Random,      ModuleKind::Generator, "Random"      },
+        { ModuleType::ScaleGen,    ModuleKind::Generator, "Scale"       },
+        { ModuleType::Lfo,         ModuleKind::Generator, "LFO"         },
+        { ModuleType::Arp,         ModuleKind::Modulator, "Arp"         },
+        { ModuleType::Quantize,    ModuleKind::Modulator, "Quantize"    },
+        { ModuleType::ScaleMod,    ModuleKind::Modulator, "Scale"       },
+        { ModuleType::Progression, ModuleKind::Modulator, "Progression" },
+        { ModuleType::Shift,       ModuleKind::Modulator, "Shift"       },
+        { ModuleType::Delay,       ModuleKind::Modulator, "Delay"       },
+        { ModuleType::MidiIn,      ModuleKind::IO,        "MIDI In"     },
+        { ModuleType::Output,      ModuleKind::IO,        "Output"      }
     }};
     return kCatalogue;
 }
@@ -101,11 +109,13 @@ inline juce::String moduleTypeToString (ModuleType type)
         case ModuleType::Random:   return "Random";
         case ModuleType::ScaleGen: return "Scale";
         case ModuleType::Lfo:      return "LFO";
-        case ModuleType::Quantize: return "Quantize";
-        case ModuleType::Shift:    return "Shift";
-        case ModuleType::Delay:    return "Delay";
-        case ModuleType::MidiIn:   return "MidiIn";
-        case ModuleType::Output:   return "Output";
+        case ModuleType::Quantize:    return "Quantize";
+        case ModuleType::ScaleMod:    return "ScaleMod";
+        case ModuleType::Progression: return "Progression";
+        case ModuleType::Shift:       return "Shift";
+        case ModuleType::Delay:       return "Delay";
+        case ModuleType::MidiIn:      return "MidiIn";
+        case ModuleType::Output:      return "Output";
     }
     return "Arp";
 }
@@ -116,6 +126,8 @@ inline ModuleType moduleTypeFromString (const juce::String& s)
     if (s == "Scale")    return ModuleType::ScaleGen;
     if (s == "LFO")      return ModuleType::Lfo;
     if (s == "Quantize") return ModuleType::Quantize;
+    if (s == "ScaleMod") return ModuleType::ScaleMod;
+    if (s == "Progression") return ModuleType::Progression;
     if (s == "Shift")    return ModuleType::Shift;
     if (s == "Delay")    return ModuleType::Delay;
     if (s == "MidiIn")   return ModuleType::MidiIn;

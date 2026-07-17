@@ -9,18 +9,18 @@ phases. File references are relative to the repo root; headers live in
 ## What the plugin is right now
 
 A JUCE MIDI-effect plugin (VST3 + Standalone, Linux build only so far). The
-editor shows a menu bar (global root / scale / quantize + theme switch), a
-canvas that modules can be dragged onto from a palette of nine (generators
-Random, Scale, and LFO, modulators Arp, Quantize, Shift, and Delay, I/O
-modules MIDI In and Output), and an engine that actually runs those modules —
-but as a fixed implicit chain, because there is no port wiring yet. The I/O
-modules carry a per-module MIDI channel; the Random / Scale / LFO generators,
-the Arp, Shift, and Delay carry full settings (drawn from the shared settings
-pool — root/scale override, rate, repeat, mode, octaves, gate — plus their
-type-specific fields such as the LFO's shape/cycle/depth/phase, Shift's
-amount + chromatic-or-degrees scale, and the Delay's feedback + per-echo
-shift), all edited through real double-click dialogs; only Quantize still
-runs a baked-in default behind a settings placeholder.
+editor shows a menu bar (global root / scale + theme switch), a canvas that
+modules can be dragged onto from a palette of eleven (generators Random,
+Scale, and LFO, modulators Arp, Quantize, Scale, Progression, Shift, and
+Delay, I/O modules MIDI In and Output), and an engine that actually runs
+those modules — but as a fixed implicit chain, because there is no port
+wiring yet. The I/O modules carry a per-module MIDI channel; every other
+module carries full settings (drawn from the shared settings pool —
+root/scale override, rate, repeat, mode, octaves, gate, plus their
+type-specific fields such as the LFO's shape/cycle/depth/phase, Quantize's
+swing, the Progression's step list, Shift's amount + chromatic-or-degrees
+scale, and the Delay's feedback + per-echo shift), all edited through real
+double-click dialogs.
 
 ## Component map
 
@@ -36,9 +36,9 @@ runs a baked-in default behind a settings placeholder.
   `applyTheme()`.
 - `MainView` (MainView.h/.cpp) — pure layout: `MenuBar` top, `Canvas` middle,
   `PaletteBar` bottom.
-- `MenuBar` (MenuBar.h/.cpp) — global-settings combos and the Quantize toggle,
-  bound to the APVTS via attachments, plus the Theme combo. Edit and Load/Save
-  menus are deferred phases.
+- `MenuBar` (MenuBar.h/.cpp) — global-settings combos (root, scale), bound to
+  the APVTS via attachments, plus the Theme combo. Edit and Load/Save menus
+  are deferred phases.
 - `Canvas` (Canvas.h/.cpp) — the drop surface and the bridge between on-screen
   nodes and the processor's module model.
 - `ModuleComponent` (ModuleComponent.h/.cpp) — one draggable node. Square for
@@ -52,8 +52,10 @@ runs a baked-in default behind a settings placeholder.
   JUCE widgets.
 - `InlineDialog` (InlineDialog.h/.cpp) — the in-editor modal helper (the
   SnorkelAudioStandards rule forbids `juce::AlertWindow` / `DialogWindow`).
-  Backs the settings placeholder and the I/O channel dialog; it supports text
-  fields, combo boxes, and multiple buttons so real dialogs can grow on it.
+  Backs every settings dialog; it supports text fields, combo boxes (including
+  same-row pairs and post-show add/remove for dynamic dialogs like the
+  Progression's step list), closing action buttons, and non-closing utility
+  buttons.
 - `tools/engine_smoketest.cpp` — headless engine test, see Testing below.
 
 ## The canvas model and who owns it
@@ -94,15 +96,15 @@ reads a lock-free snapshot.
   types are present as `std::atomic<bool>` flags, two atomic 16-bit channel
   masks carrying the I/O modules' settings (input filter, output stamp —
   semantics documented on `Engine::Config`), and a set of atomic ints/bools
-  carrying the first Arp / Random / Scale / LFO / Shift / Delay module's
-  settings (the implicit chain runs one of each; extra copies share the first
-  one's settings).
+  carrying each settings-bearing module type's first instance (the implicit
+  chain runs one of each; extra copies share the first one's settings). The
+  Progression's step list rides in a fixed array of atomics, one packed int
+  per step (degree + biased octave) plus a count.
 - `processBlock` reads those atomics plus the raw parameter values (root,
-  scale, quantize — themselves atomics via APVTS) and hands the `Engine` a
-  plain `Engine::Config` by value. No locks anywhere. Each field is
-  independently atomic; a block seeing a half-updated combination is
-  indistinguishable from the edit landing one block later, so no seqlock is
-  needed.
+  scale — themselves atomics via APVTS) and hands the `Engine` a plain
+  `Engine::Config` by value. No locks anywhere. Each field is independently
+  atomic; a block seeing a half-updated combination is indistinguishable from
+  the edit landing one block later, so no seqlock is needed.
 
 Presence flags and two masks are enough only because position never affects
 the sound and there is exactly one implicit chain. When wiring lands and the audio thread
@@ -138,12 +140,25 @@ semantics) is at the top of `Engine.h`. Summary:
   shared option tables and the per-module settings blob live in
   `ModuleSettings.h` (GUI-free), used by the engine config, the processor,
   and the canvas dialogs alike.
-- Modulators apply as pure pitch mapping (`mapPitch`): Quantize snaps to the
-  global root/scale (also applied when the global quantize toggle is on),
-  then Shift transposes by its amount — scale degrees via
-  `ScaleTables::stepInScale` when its scale is Global/named, chromatic
-  semitones when Off (`ModuleOptions::kScaleOff`, stored in the shared
-  `scaleOverride` field).
+- Pitch modulators apply as a mapping chain (`mapPitch`): the Scale modulator
+  snaps to its (root, scale); the Progression transposes to its current step
+  (degree via `ScaleTables::stepInScale`, octave chromatic — the step is
+  looked up per note-on from the quarter-note position the note will sound
+  at, and note-offs stay safe because they release from the activeGen /
+  activePass bookkeeping, not from re-mapping); then Shift transposes by its
+  amount — scale degrees via `stepInScale` when its scale is Global/named,
+  chromatic semitones when Off (`ModuleOptions::kScaleOff`, stored in the
+  shared `scaleOverride` field).
+- Quantize is the second stateful time modulator: while playing, every
+  note-on leaving the chain is deferred to the next point of its rate grid
+  (`pendingQuant`), with swing pushing odd grid points late by swing/2 of a
+  step (pair-based model, `swing-timing.md`). Generated notes keep their
+  gate; host-held notes register in `activePass` when they finally sound, and
+  a host note-off that beats its own deferred note-on converts the entry to a
+  fixed duration instead. The queue is discarded on transport stop; when
+  stopped, Quantize passes everything through (no grid). Its grid clock keeps
+  ticking from transport start even with no Quantize placed, so a module
+  dropped mid-play joins the song's grid.
 - The Delay is the exception to pure mapping — it is the first stateful time
   modulator. Every emitted note-on (pass-through and generated) books an echo
   in `pendingEchoes` (velocity × feedback, pitch + per-echo shift, one delay
@@ -185,19 +200,22 @@ pick the new module up from the catalogue without further changes. All three
 kinds are in the palette: generators square, modulators circle, I/O triangles
 (MIDI In points right, Output left, toward their single port). Per-module
 settings live on `ModuleInstance`: the I/O modules' MIDI channel and the
-shared `ModuleSettings` blob (used by Arp, Random, Scale, LFO, Shift, and
-Delay), each edited via a real settings dialog in `Canvas`
-(`openChannelDialog`, `openArpDialog`, `openRandomDialog`,
-`openScaleGenDialog`, `openLfoDialog`, `openShiftDialog`,
-`openDelayDialog`), reflected in a node sublabel (channel, rate, or Shift's
-signed amount), and persisted with the canvas state. The dialogs build
-their combos through `Canvas`'s shared add/read helper pairs (root+scale,
-rate, repeat, mode, octaves) so a shared setting is the identical control in
-every module — modules.md's "Shared settings" section is the product-level
-rule. The root/scale lists are sourced from the APVTS choice parameters
-("Global" prepended), so they can't drift from the menu bar; Shift's dialog
-inserts its extra "Off" entry into that same list. Settings for Quantize are
-still a later phase.
+shared `ModuleSettings` blob (used by every other type), each edited via a
+real settings dialog in `Canvas` (`openChannelDialog`, `openArpDialog`,
+`openRandomDialog`, `openScaleGenDialog`, `openLfoDialog`,
+`openQuantizeDialog`, `openScaleModDialog`, `openProgressionDialog`,
+`openShiftDialog`, `openDelayDialog`), reflected in a node sublabel (channel,
+rate, Shift's signed amount, the Scale modulator's scale, or the
+Progression's degrees), and persisted with the canvas state. The dialogs
+build their combos through `Canvas`'s shared add/read helper pairs
+(root+scale, rate, repeat, mode, octaves) so a shared setting is the
+identical control in every module — modules.md's "Shared settings" section is
+the product-level rule. The root/scale lists are sourced from the APVTS
+choice parameters ("Global" prepended), so they can't drift from the menu
+bar; Shift's dialog inserts its extra "Off" entry into that same list. The
+Progression dialog is the first dynamic one: its step rows (degree + octave
+side by side via `InlineDialog`'s same-row combos) are added and removed live
+by non-closing utility buttons, and the panel re-lays itself out.
 
 ## Theming
 

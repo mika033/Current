@@ -6,13 +6,13 @@
 #include <vector>
 
 // The MIDI engine. There is no user wiring yet, so the modules run as a fixed
-// implicit chain; the I/O modules, the Random/Scale/LFO generators, the Arp,
-// Shift, and Delay carry real, user-editable settings — only Quantize still
-// runs a baked-in default. Signal flow, per block:
+// implicit chain; every module carries real, user-editable settings. Signal
+// flow, per block:
 //
 //   host MIDI -> MIDI In (channel filter)
 //     -> stepped modules add notes  (Arp, Random, Scale, LFO)
-//     -> modulators transform       (Quantize, then Shift)
+//     -> pitch modulators transform (Scale, then Progression, then Shift)
+//     -> Quantize re-times note-ons onto its swung grid
 //     -> Output (channel stamp) -> Delay adds echoes -> host
 //
 // Stepped-module behaviour (each on its own step clock, gate = a fraction of
@@ -47,8 +47,28 @@
 //               instead of tracking the cycle.
 //
 // Modulators:
-//   - Quantize: snaps every note to the global root + scale (fixed default —
-//               its local override is a later phase).
+//   - Quantize: re-times notes, not pitches: while the transport is playing,
+//               every note-on heading out of the chain (pass-through and
+//               generated alike) is deferred to the next point of the
+//               module's rate grid, counted from transport start. Swing
+//               pushes every second grid point late by swing/2 of a step —
+//               the shared pair-based model from swing-timing.md (pair
+//               starts stay on the straight grid, so a generator running at
+//               the same rate lands the classic shuffle). A held host note
+//               released while its on is still waiting keeps its duration:
+//               the off is deferred by the same amount. Deferred notes are
+//               a buffer, so the shared transport rules apply — on stop the
+//               queue is discarded; when the transport is stopped the module
+//               passes everything through untouched (no grid to quantize to).
+//   - Scale:    snaps every note's pitch to its (root, scale), each defaulting
+//               to the global (-1). In-scale pitches pass untouched.
+//   - Progression: walks its step list (scale degree I..VII + octave, one
+//               step per `progRateQn`, counted from transport start, looping)
+//               and transposes every passing note to the current step: degree
+//               moves in scale members of its (root, scale), the octave adds
+//               chromatic ±12s. Degree I / octave 0 is a strict no-op, like
+//               an idle Shift. While the transport is stopped the first step
+//               applies, so auditioning matches how playback will start.
 //   - Shift:    transposes every note by `shiftAmount`. With a scale active
 //               (shiftScale Global/-1 or a named scale index) the amount moves
 //               in scale degrees — out-of-scale notes snap to the scale first;
@@ -94,15 +114,17 @@ class Engine
 public:
     struct Config
     {
-        bool hasArp      = false;
-        bool hasRandom   = false;
-        bool hasScaleGen = false;
-        bool hasLfo      = false;
-        bool hasQuantize = false;
-        bool hasShift    = false;
-        bool hasDelay    = false;
-        bool hasMidiIn   = false;
-        bool hasOutput   = false;
+        bool hasArp         = false;
+        bool hasRandom      = false;
+        bool hasScaleGen    = false;
+        bool hasLfo         = false;
+        bool hasQuantize    = false;
+        bool hasScaleMod    = false;
+        bool hasProgression = false;
+        bool hasShift       = false;
+        bool hasDelay       = false;
+        bool hasMidiIn      = false;
+        bool hasOutput      = false;
 
         // Arp settings. Until wiring lands the implicit chain runs one Arp at
         // most; extra copies on the canvas share the first one's settings (the
@@ -140,6 +162,25 @@ public:
         int    lfoDepthSteps = 0;      //   ... plus extra scale steps
         double lfoPhase      = 0.0;    // start phase as a cycle fraction (0..1)
 
+        // Quantize settings: the timing grid and the swing amount (0..1, the
+        // fraction of a step pair redistributed to the even step).
+        double quantStepQn = 0.25;   // grid in quarter notes (1/16)
+        double quantSwing  = 0.0;    // 0 = straight
+
+        // Scale modulator settings. -1 = use the global value.
+        int scaleModRoot  = -1;
+        int scaleModScale = -1;
+
+        // Progression settings. Steps are published as parallel fixed arrays
+        // so the snapshot stays lock-free-friendly; only the first
+        // `progStepCount` entries are meaningful.
+        int    progRoot      = -1;
+        int    progScale     = -1;
+        double progRateQn    = 4.0;   // one progression step (1 bar)
+        int    progStepCount = 0;
+        std::array<int, 8> progDegrees {};   // 0..6 = I..VII
+        std::array<int, 8> progOctaves {};   // -2..+2
+
         // Shift settings. shiftScale -1 = global scale (shift in degrees),
         // >= 0 = named scale (degrees), kScaleOff (-2) = chromatic semitones.
         int shiftAmount = 0;
@@ -159,6 +200,7 @@ public:
         bool anyModule() const
         {
             return hasArp || hasRandom || hasScaleGen || hasLfo || hasQuantize
+                || hasScaleMod || hasProgression
                 || hasShift || hasDelay || hasMidiIn || hasOutput;
         }
     };
@@ -170,15 +212,16 @@ public:
     void process (juce::MidiBuffer& midi,
                   int numSamples,
                   const juce::Optional<juce::AudioPlayHead::PositionInfo>& pos,
-                  int root, int scaleIndex, bool globalQuantize,
+                  int root, int scaleIndex,
                   const Config& cfg);
 
 private:
-    // Map a single pitch through the modulator chain (Quantize then Shift). Same
-    // pure function is applied to note-ons and note-offs so their pitches always
-    // match and no note can hang.
+    // Map a single pitch through the modulator chain (Scale, then Progression
+    // at `progIndex`, then Shift). Applied to note-ons only — note-offs are
+    // released from the activeGen/activePass bookkeeping, which remembers the
+    // emitted pitch, so a progression step change mid-note can't hang anything.
     int mapPitch (int note, int root, int scaleIndex,
-                  bool globalQuantize, const Config& cfg) const;
+                  int progIndex, const Config& cfg) const;
 
     // Emit note-offs for every note the engine is currently sounding (generated
     // and passed-through respectively).
@@ -212,6 +255,23 @@ private:
     struct EchoNote { int note; int channel; int velocity; int samplesUntil; };
     std::vector<EchoNote> pendingEchoes;
 
+    // Notes the Quantize module is holding back until their grid point.
+    // `samplesUntil` (the emission point) and `arrivalOffset` (when the note
+    // actually arrived) are block-relative like EchoNote and decremented
+    // together, so arrivalOffset can go negative once the arrival block has
+    // passed. gateSamples >= 0 = release is ours (generated notes, and host
+    // notes whose off already arrived — the off keeps the played duration);
+    // -1 = the host still holds the note, so firing registers it in
+    // activePass and the host's note-off releases it. Cleared on transport
+    // stop, like pendingEchoes.
+    struct QuantNote
+    {
+        int note; int channel; int velocity;
+        int samplesUntil; int arrivalOffset; int gateSamples;
+        int inNote; int inChannel; bool fromHost;
+    };
+    std::vector<QuantNote> pendingQuant;
+
     // Per-module step clocks (samples until the next step lands), all reset
     // on transport start so every stepped module's first step fires at sample
     // 0. The rates differ per module now, so they can't share one counter.
@@ -227,6 +287,14 @@ private:
                              // gives the position inside the repeat window
     int    lfoStep    = 0;   // steps since transport start — locates the
                              // position inside the LFO cycle
+    // Quantize's grid bookkeeping: sample distance to the next straight grid
+    // boundary and that boundary's index since transport start (index parity
+    // decides whether swing delays it). Unlike the step clocks above these
+    // advance every block, whether or not anything fired.
+    double quantSamplesToNext = 0.0;
+    int    quantStep          = 0;
+    // Progression playhead in quarter notes since transport start.
+    double progQn     = 0.0;
     bool   wasPlaying = false;
 
     juce::Random rng;

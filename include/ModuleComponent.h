@@ -12,7 +12,7 @@
 //
 // The component owns only its appearance and gestures; the canvas owns the
 // model. Position changes and double-clicks are reported back through the
-// callbacks so the canvas can persist them and open the settings placeholder.
+// callbacks so the canvas can persist them and open the settings dialog.
 class ModuleComponent : public juce::Component
 {
 public:

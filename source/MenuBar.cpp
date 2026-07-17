@@ -28,9 +28,6 @@ MenuBar::MenuBar (juce::AudioProcessorValueTreeState& apvts,
     rootAtt  = std::make_unique<ComboAttachment> (state, ParamIDs::root,  rootCombo);
     scaleAtt = std::make_unique<ComboAttachment> (state, ParamIDs::scale, scaleCombo);
 
-    addAndMakeVisible (quantizeToggle);
-    quantizeAtt = std::make_unique<ButtonAttachment> (state, ParamIDs::quantize, quantizeToggle);
-
     configLabel (themeLabel, "Theme");
     addAndMakeVisible (themeCombo);
     populateFromChoiceParam (themeCombo, ParamIDs::theme);
@@ -83,10 +80,6 @@ void MenuBar::resized()
 
     place (rootLabel,  rootCombo,  comboW);
     place (scaleLabel, scaleCombo, comboW);
-
-    // Quantize toggle stands alone (its own caption is the toggle text).
-    quantizeToggle.setBounds (area.removeFromLeft (110).withSizeKeepingCentre (110, rowH));
-    area.removeFromLeft (gap);
 
     // Theme sits at the far right.
     auto rightSlot = area.removeFromRight (labelW + 90 + gap);

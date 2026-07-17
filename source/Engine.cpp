@@ -44,6 +44,7 @@ void Engine::reset()
     activeGen.clear();
     activePass.clear();
     pendingEchoes.clear();
+    pendingQuant.clear();
     arpSamplesToNext = 0.0;
     randomSamplesToNext = 0.0;
     scaleSamplesToNext = 0.0;
@@ -52,15 +53,37 @@ void Engine::reset()
     arpStep = 0;
     scaleStep = 0;
     lfoStep = 0;
+    quantSamplesToNext = 0.0;
+    quantStep = 0;
+    progQn = 0.0;
     wasPlaying = false;
 }
 
 int Engine::mapPitch (int note, int root, int scaleIndex,
-                      bool globalQuantize, const Config& cfg) const
+                      int progIndex, const Config& cfg) const
 {
     int p = note;
-    if (cfg.hasQuantize || globalQuantize)
-        p = ScaleTables::snapToScale (p, root, scaleIndex);
+    if (cfg.hasScaleMod)
+        p = ScaleTables::snapToScale (p,
+                                      cfg.scaleModRoot  >= 0 ? cfg.scaleModRoot  : root,
+                                      cfg.scaleModScale >= 0 ? cfg.scaleModScale : scaleIndex);
+    if (cfg.hasProgression && cfg.progStepCount > 0)
+    {
+        const int i = juce::jlimit (0, cfg.progStepCount - 1, progIndex);
+        const int degree = cfg.progDegrees[(size_t) i];
+        const int octave = cfg.progOctaves[(size_t) i];
+        // Degree I / octave 0 is a strict no-op (like an idle Shift): the
+        // degree walk would otherwise snap out-of-scale notes to the scale.
+        if (degree != 0 || octave != 0)
+        {
+            if (degree != 0)
+                p = ScaleTables::stepInScale (p,
+                                              cfg.progRoot  >= 0 ? cfg.progRoot  : root,
+                                              cfg.progScale >= 0 ? cfg.progScale : scaleIndex,
+                                              degree);
+            p = juce::jlimit (0, 127, p + 12 * octave);
+        }
+    }
     // Amount 0 is a strict no-op: degree-shifting snaps out-of-scale notes to
     // the scale as part of the walk, but an idle Shift must not quantize.
     if (cfg.hasShift && cfg.shiftAmount != 0)
@@ -92,7 +115,7 @@ void Engine::flushPassedNotes (juce::MidiBuffer& midi, int sample)
 void Engine::process (juce::MidiBuffer& midi,
                       int numSamples,
                       const juce::Optional<juce::AudioPlayHead::PositionInfo>& pos,
-                      int root, int scaleIndex, bool globalQuantize,
+                      int root, int scaleIndex,
                       const Config& cfg)
 {
     // No modules on the canvas → true pass-through. If modules were just removed
@@ -107,6 +130,7 @@ void Engine::process (juce::MidiBuffer& midi,
             flushPassedNotes (midi, 0);
         held.fill (false);
         pendingEchoes.clear();
+        pendingQuant.clear();
         wasPlaying = false;
         return;
     }
@@ -135,6 +159,9 @@ void Engine::process (juce::MidiBuffer& midi,
         arpStep = 0;
         scaleStep = 0;
         lfoStep = 0;
+        quantSamplesToNext = 0.0;
+        quantStep = 0;
+        progQn = 0.0;
     }
 
     // Capture the host's incoming events, then rebuild the buffer.
@@ -142,13 +169,16 @@ void Engine::process (juce::MidiBuffer& midi,
     incoming.swapWith (midi);
 
     // Transport stop: everything the engine generated is released and the
-    // Delay's buffered echoes are discarded (the shared transport rule).
+    // Delay's buffered echoes and Quantize's deferred notes are discarded (the
+    // shared transport rule). A discarded host-held note's eventual note-off
+    // finds no activePass entry and is simply ignored — nothing hangs.
     // Passed-through host notes are not flushed — the host still owes their
     // note-offs (a live key is released independently of the transport).
     if (! isPlaying && wasPlaying)
     {
         flushGeneratedNotes (midi, 0);
         pendingEchoes.clear();
+        pendingQuant.clear();
     }
     wasPlaying = isPlaying;
 
@@ -174,6 +204,44 @@ void Engine::process (juce::MidiBuffer& midi,
         pendingEchoes.push_back ({ n, channel, v, atSample + (int) delaySamples });
     };
 
+    // Quantize needs the transport grid, so it only re-times while playing;
+    // stopped, everything passes straight through (live playing stays live).
+    const bool   quantActive      = cfg.hasQuantize && isPlaying;
+    const double quantStepSamples = juce::jmax (1.0, samplesPerQn * cfg.quantStepQn);
+    const double quantSwingOff    = juce::jlimit (0.0, 1.0, cfg.quantSwing)
+                                        * 0.5 * quantStepSamples;
+
+    // The next swung grid point at or after block sample `s`. Straight
+    // boundary `quantStep` sits at quantSamplesToNext; swing pushes odd
+    // boundaries late by swing/2 of a step (pair-based model — even
+    // boundaries, the pair starts, stay put). The scan starts one boundary
+    // back because a swung odd point can still be ahead of `s` when its
+    // straight position has already passed.
+    auto quantTarget = [&] (int s) -> int
+    {
+        for (int j = juce::jmax (0, quantStep - 1); ; ++j)
+        {
+            const double straight = quantSamplesToNext
+                                  + (double) (j - quantStep) * quantStepSamples;
+            const double swung = straight + ((j & 1) != 0 ? quantSwingOff : 0.0);
+            if (swung >= (double) s)
+                return (int) std::llround (swung);
+        }
+    };
+
+    // Which progression step applies at block sample `s` (which may lie past
+    // this block for quantize-deferred notes — the pitch is decided by the
+    // step in force when the note will actually sound). Stopped transport
+    // pins the progression to its first step.
+    auto progIndexAt = [&] (int s) -> int
+    {
+        if (! isPlaying || cfg.progStepCount <= 0 || cfg.progRateQn <= 0.0)
+            return 0;
+        const double qn = progQn + (double) s / samplesPerQn;
+        return (int) ((juce::int64) std::floor (qn / cfg.progRateQn)
+                          % (juce::int64) cfg.progStepCount);
+    };
+
     // --- Host events: input filter, held tracking, pass-through -------------
     for (const auto meta : incoming)
     {
@@ -190,10 +258,22 @@ void Engine::process (juce::MidiBuffer& midi,
             held[(size_t) m.getNoteNumber()] = true;
             if (! swallowHostNotes)
             {
+                // Pitch is decided by the moment the note will sound (the
+                // quantize target), so a deferred note lands on the
+                // progression step in force when it plays, not when it was
+                // played.
+                const int target = quantActive ? quantTarget (s) : s;
                 const int p = mapPitch (m.getNoteNumber(), root, scaleIndex,
-                                        globalQuantize, cfg);
+                                        progIndexAt (target), cfg);
                 forEachOutChannel (cfg.outChannelMask, m.getChannel(), [&] (int ch)
                 {
+                    if (quantActive)
+                    {
+                        pendingQuant.push_back ({ p, ch, m.getVelocity(),
+                                                  target, s, -1,
+                                                  m.getNoteNumber(), m.getChannel(), true });
+                        return;
+                    }
                     midi.addEvent (juce::MidiMessage::noteOn (ch, p, (juce::uint8) m.getVelocity()), s);
                     activePass.push_back ({ m.getNoteNumber(), m.getChannel(), p, ch });
                     scheduleEcho (p, ch, m.getVelocity(), s);
@@ -216,6 +296,13 @@ void Engine::process (juce::MidiBuffer& midi,
                 else
                     ++it;
             }
+            // Key released while its quantized note-on is still waiting: keep
+            // the played duration — the note now releases itself that long
+            // after it finally sounds (activeGen), instead of via activePass.
+            for (auto& q : pendingQuant)
+                if (q.fromHost && q.gateSamples < 0
+                    && q.inNote == m.getNoteNumber() && q.inChannel == m.getChannel())
+                    q.gateSamples = juce::jmax (1, s - q.arrivalOffset);
         }
         else if (m.getChannel() > 0)
         {
@@ -240,12 +327,22 @@ void Engine::process (juce::MidiBuffer& midi,
     if (isPlaying)
     {
         // Map through the modulator chain and emit on the Output channel(s),
-        // remembering the note for its gate-timed release.
+        // remembering the note for its gate-timed release. With Quantize
+        // active the note is deferred to its grid point instead (keeping its
+        // gate), which is how a straight generator picks up the swing.
         auto emitGenerated = [&] (int rawPitch, int sample, int gateSamples)
         {
-            const int p = mapPitch (rawPitch, root, scaleIndex, globalQuantize, cfg);
+            const int target = quantActive ? quantTarget (sample) : sample;
+            const int p = mapPitch (rawPitch, root, scaleIndex,
+                                    progIndexAt (target), cfg);
             forEachOutChannel (cfg.outChannelMask, 1, [&] (int ch)
             {
+                if (quantActive)
+                {
+                    pendingQuant.push_back ({ p, ch, 100, target, sample, gateSamples,
+                                              0, 0, false });
+                    return;
+                }
                 midi.addEvent (juce::MidiMessage::noteOn (ch, p, (juce::uint8) 100), sample);
                 activeGen.push_back ({ p, ch, sample + gateSamples });
                 scheduleEcho (p, ch, 100, sample);
@@ -438,6 +535,41 @@ void Engine::process (juce::MidiBuffer& midi,
         }
     }
 
+    // --- Quantize: sound the deferred notes whose grid point lands this block --
+    // Runs before the Delay sweep so echoes booked here can still fire within
+    // the same block when the delay time is short.
+    if (! cfg.hasQuantize)
+    {
+        // Module removed mid-wait: its buffered notes go with it (the shared
+        // "buffered material is discarded" rule, same as the Delay below).
+        pendingQuant.clear();
+    }
+    else if (! pendingQuant.empty())
+    {
+        for (auto& q : pendingQuant)
+        {
+            if (q.samplesUntil >= numSamples)
+                continue;
+            const int at = juce::jmax (0, q.samplesUntil);
+            midi.addEvent (juce::MidiMessage::noteOn (q.channel, q.note,
+                                                      (juce::uint8) q.velocity), at);
+            if (q.gateSamples >= 0)
+                activeGen.push_back ({ q.note, q.channel, q.samplesUntil + q.gateSamples });
+            else
+                activePass.push_back ({ q.inNote, q.inChannel, q.note, q.channel });
+            scheduleEcho (q.note, q.channel, q.velocity, at);
+            q.velocity = 0;   // mark as fired for the sweep below
+        }
+        pendingQuant.erase (std::remove_if (pendingQuant.begin(), pendingQuant.end(),
+                                            [] (const QuantNote& q) { return q.velocity == 0; }),
+                            pendingQuant.end());
+        for (auto& q : pendingQuant)
+        {
+            q.samplesUntil  -= numSamples;
+            q.arrivalOffset -= numSamples;
+        }
+    }
+
     // --- Delay: fire the echoes due this block --------------------------------
     // Runs whether or not the transport is playing (a live key echoes too).
     // Index loop on purpose: a fired echo appends its successor, which may
@@ -485,5 +617,20 @@ void Engine::process (juce::MidiBuffer& midi,
             it->samplesLeft -= numSamples;
             ++it;
         }
+    }
+
+    // --- Advance the transport-position bookkeeping --------------------------
+    // Kept ticking whether or not the modules are placed, so a Quantize or
+    // Progression dropped mid-play joins the grid where the song actually is
+    // instead of where its own clock would have drifted to.
+    if (isPlaying)
+    {
+        while (quantSamplesToNext < (double) numSamples)
+        {
+            quantSamplesToNext += quantStepSamples;
+            ++quantStep;
+        }
+        quantSamplesToNext -= (double) numSamples;
+        progQn += (double) numSamples / samplesPerQn;
     }
 }
