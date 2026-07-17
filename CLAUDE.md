@@ -78,6 +78,10 @@ Phases 1 (basics) and 2 (canvas skeleton) of `generative-midi-plugin-requirement
 
 Note on phase numbering: the requirements were renumbered after the first coding session — what the phase-1 branch and its commits called "Phase 1: Canvas skeleton" is now Phase 2. Code comments follow the current numbering.
 
+## Pre-release
+
+Current has not shipped: there are no users, so no saved DAW projects or presets exist outside development. Consequences: state and preset formats may change freely between sessions; never write migration shims or backward-compat load paths for older in-development formats (an old dev save loading with defaults is fine); don't hesitate to rename parameters, reorder option lists, or restructure persisted state when the design improves. This section comes out when the plugin ships (see `shipping-checklist.md` in the standards repo).
+
 ## Build instructions
 
 - Linux: `./build_and_run_linux.sh` builds the VST3 + Standalone into `build-linux/`, installs the VST3 into `~/.vst3`, and launches the Standalone. Pass `--no-run` to build only (e.g. headless/CI — there's no display to open a window on). First configure fetches JUCE 8.0.12 via FetchContent, so it takes a few minutes; later builds are incremental.
