@@ -84,6 +84,7 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.hasArp          = engHasArp.load();
     cfg.hasRandom       = engHasRandom.load();
     cfg.hasScaleGen     = engHasScaleGen.load();
+    cfg.hasLfo          = engHasLfo.load();
     cfg.hasQuantize     = engHasQuantize.load();
     cfg.hasShift        = engHasShift.load();
     cfg.hasMidiIn       = engHasMidiIn.load();
@@ -111,6 +112,18 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.scaleMode      = engScaleMode.load();
     cfg.scaleEndOnRoot = engScaleEndOnRoot.load();
 
+    cfg.lfoRoot       = engLfoRoot.load();
+    cfg.lfoScale      = engLfoScale.load();
+    cfg.lfoStepQn     = ModuleOptions::rateQuarterNotes (engLfoRate.load());
+    cfg.lfoCycleQn    = ModuleOptions::lfoCycleQuarterNotes (engLfoCycle.load());
+    cfg.lfoShape      = engLfoShape.load();
+    cfg.lfoDepthOct   = engLfoDepthOct.load();
+    cfg.lfoDepthSteps = engLfoDepthSteps.load();
+    cfg.lfoPhase      = ModuleOptions::lfoPhaseFraction (engLfoPhase.load());
+
+    cfg.shiftAmount = engShiftAmount.load();
+    cfg.shiftScale  = engShiftScale.load();
+
     const int  root          = (int) (rootParam     != nullptr ? rootParam->load()  : 0.0f);
     const int  scaleIndex    = (int) (scaleParam    != nullptr ? scaleParam->load() : 0.0f);
     const bool globalQuantize = (quantizeParam != nullptr ? quantizeParam->load() > 0.5f : false);
@@ -132,7 +145,8 @@ juce::AudioProcessorEditor* CurrentAudioProcessor::createEditor()
 
 void CurrentAudioProcessor::refreshEngineConfig()
 {
-    bool arp = false, rnd = false, scaleGen = false, quant = false, shift = false;
+    bool arp = false, rnd = false, scaleGen = false, lfo = false;
+    bool quant = false, shift = false;
     bool midiIn = false, output = false;
     std::uint16_t inMask = 0, outMask = 0;
 
@@ -177,8 +191,29 @@ void CurrentAudioProcessor::refreshEngineConfig()
                 }
                 scaleGen = true;
                 break;
+            case ModuleType::Lfo:
+                if (! lfo)
+                {
+                    engLfoRoot.store (m.settings.rootOverride);
+                    engLfoScale.store (m.settings.scaleOverride);
+                    engLfoRate.store (m.settings.rate);
+                    engLfoCycle.store (m.settings.lfoCycle);
+                    engLfoShape.store (m.settings.lfoShape);
+                    engLfoDepthOct.store (m.settings.lfoDepthOct);
+                    engLfoDepthSteps.store (m.settings.lfoDepthSteps);
+                    engLfoPhase.store (m.settings.lfoPhase);
+                }
+                lfo = true;
+                break;
             case ModuleType::Quantize: quant = true; break;
-            case ModuleType::Shift:    shift = true; break;
+            case ModuleType::Shift:
+                if (! shift)
+                {
+                    engShiftAmount.store (m.settings.shiftAmount);
+                    engShiftScale.store (m.settings.scaleOverride);
+                }
+                shift = true;
+                break;
             case ModuleType::MidiIn:
                 midiIn = true;
                 // Channel 0 = All; several MIDI Ins merge (union).
@@ -196,6 +231,7 @@ void CurrentAudioProcessor::refreshEngineConfig()
     engHasArp.store (arp);
     engHasRandom.store (rnd);
     engHasScaleGen.store (scaleGen);
+    engHasLfo.store (lfo);
     engHasQuantize.store (quant);
     engHasShift.store (shift);
     engHasMidiIn.store (midiIn);
@@ -321,13 +357,14 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         if (m.type == ModuleType::MidiIn || m.type == ModuleType::Output)
             node.setProperty ("channel", m.channel, nullptr);
         // The shared module settings, only where the type actually uses them.
-        if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen)
+        if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen
+            || m.type == ModuleType::Lfo)
         {
             node.setProperty ("root",  m.settings.rootOverride, nullptr);
             node.setProperty ("scale", m.settings.scaleOverride, nullptr);
         }
         if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen
-            || m.type == ModuleType::Arp)
+            || m.type == ModuleType::Arp || m.type == ModuleType::Lfo)
             node.setProperty ("rate", m.settings.rate, nullptr);
         if (m.type == ModuleType::ScaleGen || m.type == ModuleType::Arp)
         {
@@ -344,6 +381,20 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
             node.setProperty ("endOnRoot", m.settings.endOnRoot, nullptr);
         if (m.type == ModuleType::Arp)
             node.setProperty ("gate", m.settings.gate, nullptr);
+        if (m.type == ModuleType::Shift)
+        {
+            // "scale" doubles as Shift's chromatic/degree switch (kScaleOff).
+            node.setProperty ("scale",       m.settings.scaleOverride, nullptr);
+            node.setProperty ("shiftAmount", m.settings.shiftAmount, nullptr);
+        }
+        if (m.type == ModuleType::Lfo)
+        {
+            node.setProperty ("lfoShape",      m.settings.lfoShape, nullptr);
+            node.setProperty ("lfoCycle",      m.settings.lfoCycle, nullptr);
+            node.setProperty ("lfoDepthOct",   m.settings.lfoDepthOct, nullptr);
+            node.setProperty ("lfoDepthSteps", m.settings.lfoDepthSteps, nullptr);
+            node.setProperty ("lfoPhase",      m.settings.lfoPhase, nullptr);
+        }
         canvas.appendChild (node, nullptr);
     }
     state.appendChild (canvas, nullptr);
@@ -394,6 +445,12 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             m.settings.mode          = (int)  node.getProperty ("mode", def.mode);
             m.settings.repeat        = (int)  node.getProperty ("repeat",
                                           isScaleGen ? ModuleOptions::kRepeatOneBar : def.repeat);
+            m.settings.shiftAmount   = (int)  node.getProperty ("shiftAmount", def.shiftAmount);
+            m.settings.lfoShape      = (int)  node.getProperty ("lfoShape", def.lfoShape);
+            m.settings.lfoCycle      = (int)  node.getProperty ("lfoCycle", def.lfoCycle);
+            m.settings.lfoDepthOct   = (int)  node.getProperty ("lfoDepthOct", def.lfoDepthOct);
+            m.settings.lfoDepthSteps = (int)  node.getProperty ("lfoDepthSteps", def.lfoDepthSteps);
+            m.settings.lfoPhase      = (int)  node.getProperty ("lfoPhase", def.lfoPhase);
 
             moduleList.push_back (m);
         }

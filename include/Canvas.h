@@ -53,8 +53,11 @@ private:
     void openArpDialog (ModuleComponent& node);
     void openRandomDialog (ModuleComponent& node);
     void openScaleGenDialog (ModuleComponent& node);
+    void openLfoDialog (ModuleComponent& node);
+    void openShiftDialog (ModuleComponent& node);
     static juce::String channelSublabel (ModuleType type, int channel);
     static juce::String rateSublabel (const ModuleSettings& settings);
+    static juce::String shiftSublabel (const ModuleSettings& settings);
 
     // Shared dialog controls, one add/read pair per shared setting (see
     // modules.md "Shared settings"). Every dialog builds its combos through

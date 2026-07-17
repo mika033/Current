@@ -42,9 +42,11 @@ void Engine::reset()
     arpSamplesToNext = 0.0;
     randomSamplesToNext = 0.0;
     scaleSamplesToNext = 0.0;
+    lfoSamplesToNext = 0.0;
     arpIndex = 0;
     arpStep = 0;
     scaleStep = 0;
+    lfoStep = 0;
     wasPlaying = false;
 }
 
@@ -54,8 +56,17 @@ int Engine::mapPitch (int note, int root, int scaleIndex,
     int p = note;
     if (cfg.hasQuantize || globalQuantize)
         p = ScaleTables::snapToScale (p, root, scaleIndex);
-    if (cfg.hasShift)
-        p = juce::jlimit (0, 127, p + 12);   // fixed +1 octave default
+    // Amount 0 is a strict no-op: degree-shifting snaps out-of-scale notes to
+    // the scale as part of the walk, but an idle Shift must not quantize.
+    if (cfg.hasShift && cfg.shiftAmount != 0)
+    {
+        if (cfg.shiftScale == ModuleOptions::kScaleOff)
+            p = juce::jlimit (0, 127, p + cfg.shiftAmount);
+        else
+            p = ScaleTables::stepInScale (p, root,
+                                          cfg.shiftScale >= 0 ? cfg.shiftScale : scaleIndex,
+                                          cfg.shiftAmount);
+    }
     return p;
 }
 
@@ -113,9 +124,11 @@ void Engine::process (juce::MidiBuffer& midi,
         arpSamplesToNext = 0.0;
         randomSamplesToNext = 0.0;
         scaleSamplesToNext = 0.0;
+        lfoSamplesToNext = 0.0;
         arpIndex = 0;
         arpStep = 0;
         scaleStep = 0;
+        lfoStep = 0;
     }
 
     // Capture the host's incoming events, then rebuild the buffer.
@@ -344,6 +357,54 @@ void Engine::process (juce::MidiBuffer& midi,
                 ++scaleStep;
                 if (idx < (int) pattern.size())
                     emitGenerated (pattern[(size_t) idx], s, gate);
+            });
+        }
+
+        if (cfg.hasLfo)
+        {
+            const int lRoot  = cfg.lfoRoot  >= 0 ? cfg.lfoRoot  : root;
+            const int lScale = cfg.lfoScale >= 0 ? cfg.lfoScale : scaleIndex;
+            const int centre = 48 + juce::jlimit (0, 11, lRoot);   // root at octave 3,
+                                                                   // like the Scale gen
+            // Depth in scale degrees: whole octaves are one scale-length each
+            // (7 degrees in a 7-note scale, 12 in Chromatic) plus extra steps.
+            const int degreesPerOctave = (int) ScaleTables::intervalsForScale (lScale).size();
+            const int depthDegrees = juce::jmax (0, cfg.lfoDepthOct) * degreesPerOctave
+                                   + juce::jmax (0, cfg.lfoDepthSteps);
+            const double cycleQn = juce::jmax (0.001, cfg.lfoCycleQn);
+
+            runSteps (lfoSamplesToNext, cfg.lfoStepQn, 0.5, [&] (int s, int gate)
+            {
+                // Position inside the cycle, from the grid position since
+                // transport start plus the start-phase offset.
+                const double x = std::fmod ((double) lfoStep * cfg.lfoStepQn / cycleQn
+                                                + cfg.lfoPhase, 1.0);
+                ++lfoStep;
+
+                double v = 0.0;   // bipolar shape value at x
+                switch (cfg.lfoShape)
+                {
+                    case ModuleOptions::kLfoTriangle:
+                        // 0 rising at phase 0, +1 at 90°, -1 at 270° — aligned
+                        // with the sine so swapping shapes keeps the phase feel.
+                        v = x < 0.25 ? 4.0 * x
+                          : x < 0.75 ? 2.0 - 4.0 * x
+                                     : 4.0 * x - 4.0;
+                        break;
+                    case ModuleOptions::kLfoSawUp:    v = 2.0 * x - 1.0; break;
+                    case ModuleOptions::kLfoSawDown:  v = 1.0 - 2.0 * x; break;
+                    case ModuleOptions::kLfoSquare:   v = x < 0.5 ? 1.0 : -1.0; break;
+                    case ModuleOptions::kLfoRandom:
+                        v = rng.nextDouble() * 2.0 - 1.0;   // fresh draw per note
+                        break;
+                    default:   // kLfoSine
+                        v = std::sin (x * juce::MathConstants<double>::twoPi);
+                        break;
+                }
+
+                const int offset = (int) std::llround (v * (double) depthDegrees);
+                emitGenerated (ScaleTables::stepInScale (centre, lRoot, lScale, offset),
+                               s, gate);
             });
         }
     }

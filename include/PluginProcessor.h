@@ -112,7 +112,7 @@ private:
     // block later.
     Engine engine;
     std::atomic<bool> engHasArp { false }, engHasRandom { false },
-                      engHasScaleGen { false },
+                      engHasScaleGen { false }, engHasLfo { false },
                       engHasQuantize { false }, engHasShift { false },
                       engHasMidiIn { false }, engHasOutput { false };
     std::atomic<std::uint16_t> engInChannelMask { 0xffff }, engOutChannelMask { 0 };
@@ -137,6 +137,14 @@ private:
                      engScaleOctaves { 1 },
                      engScaleMode { ModuleOptions::kModeUp };
     std::atomic<bool> engScaleEndOnRoot { true };
+    std::atomic<int> engLfoRoot { -1 }, engLfoScale { -1 },
+                     engLfoRate { ModuleOptions::kRate1_16 },
+                     engLfoCycle { ModuleOptions::kLfoCycleOneBar },
+                     engLfoShape { ModuleOptions::kLfoSine },
+                     engLfoDepthOct { 1 }, engLfoDepthSteps { 0 },
+                     engLfoPhase { 0 };
+    std::atomic<int> engShiftAmount { 0 },
+                     engShiftScale { ModuleOptions::kScaleGlobal };
 
     // Cached parameter pointers (set in the ctor, read every block).
     std::atomic<float>* rootParam     = nullptr;

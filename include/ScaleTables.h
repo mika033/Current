@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdlib>
 #include <vector>
 #include <juce_core/juce_core.h>
 
@@ -49,5 +50,25 @@ namespace ScaleTables
             if (note + dist <= 127 && isInScale (note + dist, root, scaleIndex)) return note + dist;
         }
         return note;   // unreachable for any real scale, but keeps the note valid
+    }
+
+    // Move `degrees` scale members up (positive) or down from `note`. An
+    // out-of-scale start snaps to the scale first, so the walk always counts
+    // whole scale steps. The walk stops at the last reachable scale note when
+    // it would leave [0, 127], rather than wrapping or going silent.
+    inline int stepInScale (int note, int root, int scaleIndex, int degrees)
+    {
+        int p = snapToScale (juce::jlimit (0, 127, note), root, scaleIndex);
+        const int dir = degrees >= 0 ? 1 : -1;
+        for (int k = std::abs (degrees); k > 0; --k)
+        {
+            int q = p + dir;
+            while (q >= 0 && q <= 127 && ! isInScale (q, root, scaleIndex))
+                q += dir;
+            if (q < 0 || q > 127)
+                break;
+            p = q;
+        }
+        return p;
     }
 }

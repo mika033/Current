@@ -20,6 +20,7 @@ enum class ModuleType
     // Generators
     Random,
     ScaleGen,   // the "Scale" module — suffixed to avoid reading as a scale type
+    Lfo,
     // Modulators (Arp transforms held input notes into an arpeggio, so it is a
     // modulator, not a generator)
     Arp,
@@ -64,11 +65,12 @@ struct ModuleDescriptor
 };
 
 // The palette, in display order: generators, modulators, I/O.
-inline const std::array<ModuleDescriptor, 7>& moduleCatalogue()
+inline const std::array<ModuleDescriptor, 8>& moduleCatalogue()
 {
-    static const std::array<ModuleDescriptor, 7> kCatalogue = {{
+    static const std::array<ModuleDescriptor, 8> kCatalogue = {{
         { ModuleType::Random,   ModuleKind::Generator, "Random"   },
         { ModuleType::ScaleGen, ModuleKind::Generator, "Scale"    },
+        { ModuleType::Lfo,      ModuleKind::Generator, "LFO"      },
         { ModuleType::Arp,      ModuleKind::Modulator, "Arp"      },
         { ModuleType::Quantize, ModuleKind::Modulator, "Quantize" },
         { ModuleType::Shift,    ModuleKind::Modulator, "Shift"    },
@@ -95,6 +97,7 @@ inline juce::String moduleTypeToString (ModuleType type)
         case ModuleType::Arp:      return "Arp";
         case ModuleType::Random:   return "Random";
         case ModuleType::ScaleGen: return "Scale";
+        case ModuleType::Lfo:      return "LFO";
         case ModuleType::Quantize: return "Quantize";
         case ModuleType::Shift:    return "Shift";
         case ModuleType::MidiIn:   return "MidiIn";
@@ -107,6 +110,7 @@ inline ModuleType moduleTypeFromString (const juce::String& s)
 {
     if (s == "Random")   return ModuleType::Random;
     if (s == "Scale")    return ModuleType::ScaleGen;
+    if (s == "LFO")      return ModuleType::Lfo;
     if (s == "Quantize") return ModuleType::Quantize;
     if (s == "Shift")    return ModuleType::Shift;
     if (s == "MidiIn")   return ModuleType::MidiIn;

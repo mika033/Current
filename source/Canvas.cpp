@@ -49,6 +49,13 @@ juce::String Canvas::rateSublabel (const ModuleSettings& settings)
     return ModuleOptions::rateNames()[settings.rate];
 }
 
+juce::String Canvas::shiftSublabel (const ModuleSettings& settings)
+{
+    // Signed amount, explicit "+" so direction reads at a glance.
+    const auto n = juce::String (settings.shiftAmount);
+    return settings.shiftAmount > 0 ? "+" + n : n;
+}
+
 juce::StringArray Canvas::choicesWithGlobal (const char* paramID) const
 {
     juce::StringArray items { "Global" };
@@ -132,8 +139,10 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
     if (instance.type == ModuleType::MidiIn || instance.type == ModuleType::Output)
         node->setSublabel (channelSublabel (instance.type, instance.channel));
     else if (instance.type == ModuleType::Random || instance.type == ModuleType::ScaleGen
-             || instance.type == ModuleType::Arp)
+             || instance.type == ModuleType::Arp || instance.type == ModuleType::Lfo)
         node->setSublabel (rateSublabel (instance.settings));
+    else if (instance.type == ModuleType::Shift)
+        node->setSublabel (shiftSublabel (instance.settings));
 
     node->onSelected = [this] (ModuleComponent& n) { selectNode (&n); };
 
@@ -162,6 +171,16 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
         if (n.moduleType() == ModuleType::ScaleGen)
         {
             openScaleGenDialog (n);
+            return;
+        }
+        if (n.moduleType() == ModuleType::Lfo)
+        {
+            openLfoDialog (n);
+            return;
+        }
+        if (n.moduleType() == ModuleType::Shift)
+        {
+            openShiftDialog (n);
             return;
         }
 
@@ -331,6 +350,96 @@ void Canvas::openScaleGenDialog (ModuleComponent& node)
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (rateSublabel (ns));
+        }
+        d->getParentComponent()->removeChildComponent (d);
+        delete d;
+    };
+}
+
+void Canvas::openLfoDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    auto* dlg = owner.showInlineDialog ("LFO settings");
+    addRootScaleControls (*dlg, s);
+    dlg->addComboBox ("shape", ModuleOptions::lfoShapeNames(), s.lfoShape, "Shape");
+    dlg->addComboBox ("cycle", ModuleOptions::lfoCycleNames(), s.lfoCycle, "Cycle length");
+    dlg->addComboBox ("depthOct",   { "0", "1", "2", "3", "4" },
+                      s.lfoDepthOct, "Depth (octaves)");
+    dlg->addComboBox ("depthSteps", { "0", "1", "2", "3", "4", "5", "6" },
+                      s.lfoDepthSteps, "Depth (scale steps)");
+    addRateControl (*dlg, s);
+    dlg->addComboBox ("phase", ModuleOptions::lfoPhaseNames(), s.lfoPhase,
+                      "Phase (degrees)");
+    dlg->addButton ("OK", 1);
+    dlg->addButton ("Cancel", 0);
+
+    // Captures the id, not the node — the node can be deleted or rebuilt while
+    // the dialog is up (host state restore), so it is re-looked-up on OK.
+    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    {
+        if (result == 1)
+        {
+            auto ns = proc.getModuleSettings (id);
+            readRootScaleControls (*d, ns);
+            ns.lfoShape      = d->getComboBoxSelectedIndex ("shape");
+            ns.lfoCycle      = d->getComboBoxSelectedIndex ("cycle");
+            ns.lfoDepthOct   = d->getComboBoxSelectedIndex ("depthOct");
+            ns.lfoDepthSteps = d->getComboBoxSelectedIndex ("depthSteps");
+            readRateControl (*d, ns);
+            ns.lfoPhase      = d->getComboBoxSelectedIndex ("phase");
+            proc.setModuleSettings (id, ns);
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (rateSublabel (ns));
+        }
+        d->getParentComponent()->removeChildComponent (d);
+        delete d;
+    };
+}
+
+void Canvas::openShiftDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    // Shift's scale list adds "Off" (work chromatically) after "Global", so
+    // the combo index maps to the override as: 0 = Global (-1), 1 = Off (-2),
+    // 2.. = the scale list.
+    auto scales = choicesWithGlobal (ParamIDs::scale);
+    scales.insert (1, "Off");
+    const int scaleIndex = s.scaleOverride == ModuleOptions::kScaleGlobal ? 0
+                         : s.scaleOverride == ModuleOptions::kScaleOff    ? 1
+                                                                          : s.scaleOverride + 2;
+
+    juce::StringArray amounts;
+    for (int a = -ModuleOptions::kShiftRange; a <= ModuleOptions::kShiftRange; ++a)
+        amounts.add (a > 0 ? "+" + juce::String (a) : juce::String (a));
+
+    auto* dlg = owner.showInlineDialog ("Shift settings",
+                                        "With a scale, the amount shifts in scale steps; "
+                                        "with scale Off, in semitones.");
+    dlg->addComboBox ("amount", amounts, s.shiftAmount + ModuleOptions::kShiftRange,
+                      "Amount");
+    dlg->addComboBox ("scale", scales, scaleIndex, "Scale");
+    dlg->addButton ("OK", 1);
+    dlg->addButton ("Cancel", 0);
+
+    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    {
+        if (result == 1)
+        {
+            auto ns = proc.getModuleSettings (id);
+            ns.shiftAmount = d->getComboBoxSelectedIndex ("amount") - ModuleOptions::kShiftRange;
+            const int idx = d->getComboBoxSelectedIndex ("scale");
+            ns.scaleOverride = idx == 0 ? ModuleOptions::kScaleGlobal
+                             : idx == 1 ? ModuleOptions::kScaleOff
+                                        : idx - 2;
+            proc.setModuleSettings (id, ns);
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (shiftSublabel (ns));
         }
         d->getParentComponent()->removeChildComponent (d);
         delete d;

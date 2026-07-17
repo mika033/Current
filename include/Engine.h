@@ -6,12 +6,12 @@
 #include <vector>
 
 // The MIDI engine. There is no user wiring yet, so the modules run as a fixed
-// implicit chain; the I/O modules, the Random/Scale generators, and the Arp
-// carry real, user-editable settings, the rest still run baked-in defaults.
-// Signal flow, per block:
+// implicit chain; the I/O modules, the Random/Scale/LFO generators, the Arp,
+// and Shift carry real, user-editable settings — only Quantize still runs a
+// baked-in default. Signal flow, per block:
 //
 //   host MIDI -> MIDI In (channel filter)
-//     -> stepped modules add notes  (Arp, Random, Scale)
+//     -> stepped modules add notes  (Arp, Random, Scale, LFO)
 //     -> modulators transform       (Quantize, then Shift)
 //     -> Output (channel stamp) -> host
 //
@@ -37,10 +37,22 @@
 //               than the window is cut off, a shorter one rests until the
 //               window restarts. With repeat Endless it loops back-to-back —
 //               the pattern restarts right after its last note.
+//   - LFO:      a classic LFO sampled on the note grid and mapped to pitch.
+//               Each step evaluates the shape at the current position inside
+//               the cycle (cycle length in bars from transport start, plus the
+//               start-phase offset) and maps the bipolar value to a scale
+//               member around the centre note (the root at octave 3), swinging
+//               ± its depth (whole octaves + extra scale steps, both counted
+//               in scale degrees). The Random shape redraws a value per note
+//               instead of tracking the cycle.
 //
-// Fixed defaults (deliberately not user-editable yet):
-//   - Quantize: snaps every note to the global root + scale.
-//   - Shift:    transposes every note by +12 semitones.
+// Modulators:
+//   - Quantize: snaps every note to the global root + scale (fixed default —
+//               its local override is a later phase).
+//   - Shift:    transposes every note by `shiftAmount`. With a scale active
+//               (shiftScale Global/-1 or a named scale index) the amount moves
+//               in scale degrees — out-of-scale notes snap to the scale first;
+//               with the scale Off (kScaleOff) it moves chromatic semitones.
 //
 // I/O module behaviour (channel editable per module):
 //   - MIDI In:  filters which host events enter the graph by channel. With no
@@ -72,6 +84,7 @@ public:
         bool hasArp      = false;
         bool hasRandom   = false;
         bool hasScaleGen = false;
+        bool hasLfo      = false;
         bool hasQuantize = false;
         bool hasShift    = false;
         bool hasMidiIn   = false;
@@ -103,6 +116,21 @@ public:
         int    scaleMode      = 0;      // kModeUp or kModeDown (Up/Down only)
         bool   scaleEndOnRoot = true;
 
+        // LFO generator settings.
+        int    lfoRoot       = -1;
+        int    lfoScale      = -1;
+        double lfoStepQn     = 0.25;   // note grid in quarter notes (1/16)
+        double lfoCycleQn    = 4.0;    // one full shape sweep (1 bar)
+        int    lfoShape      = 0;      // ModuleOptions::kLfo* shape indices
+        int    lfoDepthOct   = 1;      // swing around the centre: whole octaves
+        int    lfoDepthSteps = 0;      //   ... plus extra scale steps
+        double lfoPhase      = 0.0;    // start phase as a cycle fraction (0..1)
+
+        // Shift settings. shiftScale -1 = global scale (shift in degrees),
+        // >= 0 = named scale (degrees), kScaleOff (-2) = chromatic semitones.
+        int shiftAmount = 0;
+        int shiftScale  = -1;
+
         // Bit (ch - 1) set = channel ch participates. inChannelMask is all-ones
         // when no MIDI In module narrows the input; outChannelMask is 0 when no
         // Output module is present (meaning: keep each event's own channel).
@@ -111,7 +139,7 @@ public:
 
         bool anyModule() const
         {
-            return hasArp || hasRandom || hasScaleGen || hasQuantize
+            return hasArp || hasRandom || hasScaleGen || hasLfo || hasQuantize
                 || hasShift || hasMidiIn || hasOutput;
         }
     };
@@ -162,12 +190,15 @@ private:
     double arpSamplesToNext    = 0.0;
     double randomSamplesToNext = 0.0;
     double scaleSamplesToNext  = 0.0;
+    double lfoSamplesToNext    = 0.0;
     int    arpIndex   = 0;   // position in the arp walk; advances only when a
                              // note fires, resets at each repeat-window start
     int    arpStep    = 0;   // arp grid steps since transport start — locates
                              // the repeat-window boundaries
     int    scaleStep  = 0;   // steps since transport start; % steps-per-repeat
                              // gives the position inside the repeat window
+    int    lfoStep    = 0;   // steps since transport start — locates the
+                             // position inside the LFO cycle
     bool   wasPlaying = false;
 
     juce::Random rng;

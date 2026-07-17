@@ -197,7 +197,10 @@ void InlineDialog::resized()
 {
     const int panelH  = calculatePanelHeight();
     const int centreX = getLocalBounds().getCentreX();
-    const int panelY  = (getHeight() - panelH) / 2;
+    // Clamp to the top edge when the panel is taller than the editor (the
+    // biggest dialogs at the minimum window size): the title and every control
+    // stay reachable and only bottom padding can clip.
+    const int panelY  = juce::jmax (0, (getHeight() - panelH) / 2);
 
     panelBounds = juce::Rectangle<int> (centreX - panelWidth / 2, panelY,
                                         panelWidth, panelH);

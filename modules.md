@@ -46,11 +46,13 @@ it. The list will grow as modules gain settings; today it is:
 - **Root and scale** — where a module's notes live. Both default to Global,
   borrowed live from the menu bar (so a module left on Global tracks later
   menu-bar changes), or can be overridden locally: root C to B, the same
-  scale list as the menu bar. Used by Random and Scale; planned for Quantize
-  (its local override).
+  scale list as the menu bar. Used by Random, Scale, and LFO; planned for
+  Quantize (its local override). Shift carries a variant of the scale half:
+  its list adds an Off choice (work chromatically, no scale at all) after
+  Global.
 - **Rate** — the step grid a module works on, as a note length (1/32 to 1/1)
   locked to host tempo: the grid a generator emits its MIDI on, or the grid a
-  modulator re-times passing MIDI to. Used by Arp, Random, and Scale.
+  modulator re-times passing MIDI to. Used by Arp, Random, Scale, and LFO.
 - **Repeat** — when a module's pattern is reset and replayed from the start,
   counted from transport start: 1/4, 1/2, or 1 to 4 bars (assuming 4/4), or
   Endless — the normal default — meaning the pattern just runs on until the
@@ -73,14 +75,16 @@ The first modules shipped with the Phase 2 canvas skeleton running fixed
 default settings; the two I/O modules followed with the first real setting
 (their channel dialog), the Random and Scale generators gained full settings
 dialogs, and the Arp — reclassified as a modulator, since it transforms the
-notes flowing into it — now carries one too. Quantize and Shift still run
-fixed defaults — double-clicking them opens a placeholder. Until port wiring
-lands everything runs as one fixed chain: host MIDI enters through MIDI In
-(or an implicit all-channels input if none is placed), feeds the Arp and the
-generators, results pass through Quantize and then Shift, and exit through
-Output (or an implicit channel-preserving output). A consequence of the fixed
-chain: placing several copies of the same module doesn't layer them — extra
-copies share the first one's settings until wiring lands.
+notes flowing into it — now carries one too. Shift gained its settings
+(amount + scale) and a third generator, the LFO, arrived with a full dialog.
+Only Quantize still runs a fixed default — double-clicking it opens a
+placeholder. Until port wiring lands everything runs as one fixed chain: host
+MIDI enters through MIDI In (or an implicit all-channels input if none is
+placed), feeds the Arp and the generators, results pass through Quantize and
+then Shift, and exit through Output (or an implicit channel-preserving
+output). A consequence of the fixed chain: placing several copies of the same
+module doesn't layer them — extra copies share the first one's settings until
+wiring lands.
 
 Each implemented module's entry ends with a "User settings" bullet list of
 what the user can change today, so the gap between current and planned
@@ -168,6 +172,38 @@ User settings:
 - Rate — 1/16 to 1/1 (default 1/8).
 - Repeat — Endless, 1/4, 1/2, 1 bar (default), 2, 3, or 4 bars.
 
+### LFO (generator)
+
+The LFO turns a classic low-frequency oscillator into melody: its value is
+sampled on a note grid and mapped to pitch, so instead of a control signal
+you get a stream of notes tracing the shape. The cycle length sets how long
+one full sweep of the shape takes, in bars (1/4 bar to 8 bars, default 1
+bar), counted from transport start. The rate sets how many notes are output —
+one per step, 1/32 to 1/1 (default 1/16). Depth sets how far the pitch
+swings around the centre note (the root at octave 3, so C3 for a C root),
+given as whole octaves (0–4, default 1) plus extra scale steps (0–6, default
+0) — both directions, so a depth of one octave sweeps C2 to C4. All movement
+is in scale degrees, so the result always lands in key.
+
+Shape offers the usual suspects: Sine (default), Triangle, Saw Up, Saw Down,
+Square, and Random, which redraws a fresh value for every note instead of
+tracing the cycle. Phase sets where in the cycle playback starts — 0, 90,
+180, or 270 degrees — useful for offsetting two LFOs against each other or
+starting a sine at its peak. Root and scale default to Global like the other
+generators. Gate is half a step, velocity 100, and the node shows its rate
+as a sublabel.
+
+User settings:
+
+- Root — Global (default) or C to B.
+- Scale — Global (default) or any scale from the global list.
+- Shape — Sine (default), Triangle, Saw Up, Saw Down, Square, or Random.
+- Cycle length — 1/4 bar to 8 bars (default 1 bar).
+- Depth (octaves) — 0 to 4 (default 1).
+- Depth (scale steps) — 0 to 6 (default 0).
+- Rate — 1/32 to 1/1 (default 1/16).
+- Phase — 0 (default), 90, 180, or 270 degrees.
+
 ### Arp (modulator)
 
 The Arp re-times what flows into it, turning held notes into a running
@@ -213,15 +249,23 @@ User settings:
 
 ### Shift (modulator)
 
-Shift transposes every note passing through it up or down by a fixed number
-of semitones. Note-ons and note-offs shift together, so nothing ever hangs.
-
-Current fixed behaviour: +12 semitones (one octave up). Planned settings: the
-shift amount.
+Shift transposes every note passing through it up or down by a set amount
+(−36 to +36, default 0 — a fresh Shift passes notes through untouched until
+you dial it in). What the amount means depends on the scale setting. With a
+scale active — Global (the default, following the menu bar) or any named
+scale — the shift moves in scale steps: +2 in C major turns C into E, and
+out-of-scale notes snap into the scale as part of the walk, so the result is
+always in key. With the scale set to Off, the shift is plain chromatic
+semitones: +2 turns C into D regardless of key. Note-ons and note-offs shift
+together, so nothing ever hangs, and the node shows its signed amount as a
+sublabel.
 
 User settings:
 
-- None yet.
+- Amount — −36 to +36 (default 0); scale steps or semitones per the scale
+  setting.
+- Scale — Global (default), Off (chromatic), or any scale from the global
+  list.
 
 ## Planned — speced
 
@@ -230,9 +274,6 @@ open details, where any, are flagged.
 
 ### Generators
 
-- **LFO** — a traditional LFO (shape, rate, phase, depth) whose value is
-  sampled on the generator's note grid and mapped to pitch across a
-  configurable note range, emitting MIDI notes rather than a control signal.
 - **Step Sequencer** — the user draws a fixed melodic pattern in a mini piano
   roll and the module plays it in a loop. The grid UI should follow the shared
   `design/grid-interaction.md` conventions.
