@@ -7,13 +7,13 @@
 
 // The MIDI engine. There is no user wiring yet, so the modules run as a fixed
 // implicit chain; the I/O modules, the Random/Scale/LFO generators, the Arp,
-// and Shift carry real, user-editable settings — only Quantize still runs a
-// baked-in default. Signal flow, per block:
+// Shift, and Delay carry real, user-editable settings — only Quantize still
+// runs a baked-in default. Signal flow, per block:
 //
 //   host MIDI -> MIDI In (channel filter)
 //     -> stepped modules add notes  (Arp, Random, Scale, LFO)
 //     -> modulators transform       (Quantize, then Shift)
-//     -> Output (channel stamp) -> host
+//     -> Output (channel stamp) -> Delay adds echoes -> host
 //
 // Stepped-module behaviour (each on its own step clock, gate = a fraction of
 // its step — fixed at half for Random/Scale, the Arp's is user-set; velocity
@@ -53,6 +53,19 @@
 //               (shiftScale Global/-1 or a named scale index) the amount moves
 //               in scale degrees — out-of-scale notes snap to the scale first;
 //               with the scale Off (kScaleOff) it moves chromatic semitones.
+//   - Delay:    every note-on leaving the chain (pass-through and generated
+//               alike) schedules an echo one delay time (`delayTimeQn`) later
+//               at `delayFeedback` times its velocity, which in turn schedules
+//               the next, until the velocity decays below the audible floor —
+//               feedback is thus also the repeat count. Each echo is shifted
+//               `delayShift` semitones from the note before it (cumulative
+//               across the chain); an echo that would leave the MIDI range
+//               ends the chain instead of clamping. Echoes derive from the
+//               final emitted stream, so they are not re-mapped through
+//               Quantize/Shift, and their gate is half the delay time. On
+//               transport stop pending echoes are discarded (and sounding
+//               ones released) per the shared transport rules; echoes keep
+//               running while the transport is stopped for live playing.
 //
 // I/O module behaviour (channel editable per module):
 //   - MIDI In:  filters which host events enter the graph by channel. With no
@@ -87,6 +100,7 @@ public:
         bool hasLfo      = false;
         bool hasQuantize = false;
         bool hasShift    = false;
+        bool hasDelay    = false;
         bool hasMidiIn   = false;
         bool hasOutput   = false;
 
@@ -131,6 +145,11 @@ public:
         int shiftAmount = 0;
         int shiftScale  = -1;
 
+        // Delay settings.
+        double delayTimeQn   = 0.5;   // echo spacing in quarter notes (1/8)
+        double delayFeedback = 0.5;   // per-echo velocity multiplier
+        int    delayShift    = 0;     // per-echo pitch shift, semitones
+
         // Bit (ch - 1) set = channel ch participates. inChannelMask is all-ones
         // when no MIDI In module narrows the input; outChannelMask is 0 when no
         // Output module is present (meaning: keep each event's own channel).
@@ -140,7 +159,7 @@ public:
         bool anyModule() const
         {
             return hasArp || hasRandom || hasScaleGen || hasLfo || hasQuantize
-                || hasShift || hasMidiIn || hasOutput;
+                || hasShift || hasDelay || hasMidiIn || hasOutput;
         }
     };
 
@@ -183,6 +202,15 @@ private:
     // several per incoming note).
     struct PassNote { int inNote; int inChannel; int outNote; int outChannel; };
     std::vector<PassNote> activePass;
+
+    // Echoes the Delay has scheduled but not yet sounded. `samplesUntil` is
+    // relative to the current block's start and is decremented as blocks pass;
+    // once an echo fires it moves into activeGen for its gate-timed release
+    // and schedules its successor. Cleared on transport stop (the shared
+    // "buffered material is discarded" rule) — sample-based counting means a
+    // host loop wrap simply spills echoes into the next pass, as speced.
+    struct EchoNote { int note; int channel; int velocity; int samplesUntil; };
+    std::vector<EchoNote> pendingEchoes;
 
     // Per-module step clocks (samples until the next step lands), all reset
     // on transport start so every stepped module's first step fires at sample

@@ -131,6 +131,28 @@ namespace ModuleOptions
 
     constexpr int kLfoCycleOneBar = 2;
 
+    // Delay feedback: each echo's velocity as a share of the note before it.
+    // The velocity decay is what ends the repeats — echoes below the audible
+    // floor aren't scheduled — so feedback doubles as the repeat count.
+    inline const juce::StringArray& feedbackNames()
+    {
+        static const juce::StringArray names { "10%", "20%", "30%", "40%", "50%",
+                                               "60%", "70%", "80%", "90%" };
+        return names;
+    }
+
+    inline double feedbackFraction (int index)
+    {
+        return 0.1 * (juce::jlimit (0, 8, index) + 1);
+    }
+
+    constexpr int kFeedbackHalf = 4;   // 50%
+
+    // Delay per-echo pitch shift range, in semitones. Cumulative across the
+    // feedback chain (echo k sits k * shift above the source), so a modest
+    // range already spans the keyboard after a few repeats.
+    constexpr int kDelayShiftRange = 12;
+
     // LFO start phase, in quarter-cycle steps (0 / 90 / 180 / 270 degrees).
     inline const juce::StringArray& lfoPhaseNames()
     {
@@ -158,7 +180,8 @@ namespace ModuleOptions
 // root/scale/rate/repeat plus mode/octaves/endOnRoot; Arp uses
 // mode/rate/octaves/gate/repeat; LFO uses root/scale/rate plus its lfo*
 // fields; Shift uses scaleOverride (with the extra Off sentinel) and
-// shiftAmount. Other module types ignore the whole struct. Root/scale
+// shiftAmount; Delay uses rate (its delay time) plus its delay* fields.
+// Other module types ignore the whole struct. Root/scale
 // overrides of -1 mean "follow the global menu-bar setting" — the engine
 // resolves them per block, so a module left on Global tracks later menu-bar
 // changes.
@@ -203,4 +226,10 @@ struct ModuleSettings
     int lfoDepthOct   = 1;   // 0..4 octaves
     int lfoDepthSteps = 0;   // 0..6 extra scale steps
     int lfoPhase      = 0;   // index into lfoPhaseNames() (quarter-cycle steps)
+
+    // Delay only. The delay time itself is the shared `rate` field (defaulted
+    // to 1/8 at drop time). Each echo is shifted delayShift semitones from the
+    // note before it, so a non-zero shift climbs (or falls) across the chain.
+    int delayFeedback = ModuleOptions::kFeedbackHalf;   // index into feedbackNames()
+    int delayShift    = 0;   // -kDelayShiftRange..+kDelayShiftRange semitones
 };

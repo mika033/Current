@@ -87,6 +87,7 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.hasLfo          = engHasLfo.load();
     cfg.hasQuantize     = engHasQuantize.load();
     cfg.hasShift        = engHasShift.load();
+    cfg.hasDelay        = engHasDelay.load();
     cfg.hasMidiIn       = engHasMidiIn.load();
     cfg.hasOutput       = engHasOutput.load();
     cfg.inChannelMask   = engInChannelMask.load();
@@ -124,6 +125,10 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.shiftAmount = engShiftAmount.load();
     cfg.shiftScale  = engShiftScale.load();
 
+    cfg.delayTimeQn   = ModuleOptions::rateQuarterNotes (engDelayRate.load());
+    cfg.delayFeedback = ModuleOptions::feedbackFraction (engDelayFeedback.load());
+    cfg.delayShift    = engDelayShift.load();
+
     const int  root          = (int) (rootParam     != nullptr ? rootParam->load()  : 0.0f);
     const int  scaleIndex    = (int) (scaleParam    != nullptr ? scaleParam->load() : 0.0f);
     const bool globalQuantize = (quantizeParam != nullptr ? quantizeParam->load() > 0.5f : false);
@@ -146,7 +151,7 @@ juce::AudioProcessorEditor* CurrentAudioProcessor::createEditor()
 void CurrentAudioProcessor::refreshEngineConfig()
 {
     bool arp = false, rnd = false, scaleGen = false, lfo = false;
-    bool quant = false, shift = false;
+    bool quant = false, shift = false, delay = false;
     bool midiIn = false, output = false;
     std::uint16_t inMask = 0, outMask = 0;
 
@@ -214,6 +219,15 @@ void CurrentAudioProcessor::refreshEngineConfig()
                 }
                 shift = true;
                 break;
+            case ModuleType::Delay:
+                if (! delay)
+                {
+                    engDelayRate.store (m.settings.rate);
+                    engDelayFeedback.store (m.settings.delayFeedback);
+                    engDelayShift.store (m.settings.delayShift);
+                }
+                delay = true;
+                break;
             case ModuleType::MidiIn:
                 midiIn = true;
                 // Channel 0 = All; several MIDI Ins merge (union).
@@ -234,6 +248,7 @@ void CurrentAudioProcessor::refreshEngineConfig()
     engHasLfo.store (lfo);
     engHasQuantize.store (quant);
     engHasShift.store (shift);
+    engHasDelay.store (delay);
     engHasMidiIn.store (midiIn);
     engHasOutput.store (output);
     // No MIDI In module = implicit all-channels input; no Output = keep each
@@ -267,6 +282,12 @@ int CurrentAudioProcessor::addModule (ModuleType type, float x, float y)
         // Endless everywhere else — this default lineup is the exception.)
         m.settings.rate   = ModuleOptions::kRate1_8;
         m.settings.repeat = ModuleOptions::kRepeatOneBar;
+    }
+    else if (type == ModuleType::Delay)
+    {
+        // 1/8 echoes: the shared rate default of 1/16 is generator-paced and
+        // too fast to read as an echo.
+        m.settings.rate = ModuleOptions::kRate1_8;
     }
 
     moduleList.push_back (m);
@@ -364,7 +385,8 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
             node.setProperty ("scale", m.settings.scaleOverride, nullptr);
         }
         if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen
-            || m.type == ModuleType::Arp || m.type == ModuleType::Lfo)
+            || m.type == ModuleType::Arp || m.type == ModuleType::Lfo
+            || m.type == ModuleType::Delay)
             node.setProperty ("rate", m.settings.rate, nullptr);
         if (m.type == ModuleType::ScaleGen || m.type == ModuleType::Arp)
         {
@@ -394,6 +416,11 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
             node.setProperty ("lfoDepthOct",   m.settings.lfoDepthOct, nullptr);
             node.setProperty ("lfoDepthSteps", m.settings.lfoDepthSteps, nullptr);
             node.setProperty ("lfoPhase",      m.settings.lfoPhase, nullptr);
+        }
+        if (m.type == ModuleType::Delay)
+        {
+            node.setProperty ("feedback",   m.settings.delayFeedback, nullptr);
+            node.setProperty ("delayShift", m.settings.delayShift, nullptr);
         }
         canvas.appendChild (node, nullptr);
     }
@@ -432,11 +459,16 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             // rate/repeat) are restated so an untouched module reloads as it
             // was dropped.
             ModuleSettings def;
+            // Types whose drop-time rate default differs from the struct's
+            // (see addModule) restate it here so an untouched module reloads
+            // as it was dropped.
             const bool isScaleGen = m.type == ModuleType::ScaleGen;
+            const bool isDelay    = m.type == ModuleType::Delay;
             m.settings.rootOverride  = (int)  node.getProperty ("root",  def.rootOverride);
             m.settings.scaleOverride = (int)  node.getProperty ("scale", def.scaleOverride);
             m.settings.rate          = (int)  node.getProperty ("rate",
-                                          isScaleGen ? ModuleOptions::kRate1_8 : def.rate);
+                                          (isScaleGen || isDelay) ? ModuleOptions::kRate1_8
+                                                                  : def.rate);
             m.settings.rangeFrom     = (int)  node.getProperty ("from", def.rangeFrom);
             m.settings.rangeTo       = (int)  node.getProperty ("to",   def.rangeTo);
             m.settings.octaves       = (int)  node.getProperty ("octaves", def.octaves);
@@ -451,6 +483,8 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             m.settings.lfoDepthOct   = (int)  node.getProperty ("lfoDepthOct", def.lfoDepthOct);
             m.settings.lfoDepthSteps = (int)  node.getProperty ("lfoDepthSteps", def.lfoDepthSteps);
             m.settings.lfoPhase      = (int)  node.getProperty ("lfoPhase", def.lfoPhase);
+            m.settings.delayFeedback = (int)  node.getProperty ("feedback", def.delayFeedback);
+            m.settings.delayShift    = (int)  node.getProperty ("delayShift", def.delayShift);
 
             moduleList.push_back (m);
         }

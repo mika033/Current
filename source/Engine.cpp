@@ -26,6 +26,10 @@ namespace
         return channel >= 1 && channel <= 16
             && (inMask & (1u << (channel - 1))) != 0;
     }
+
+    // Echoes quieter than this aren't scheduled — the velocity decay is what
+    // terminates the Delay's feedback chain.
+    constexpr int kMinEchoVelocity = 5;
 }
 
 void Engine::prepare (double sampleRate)
@@ -39,6 +43,7 @@ void Engine::reset()
     held.fill (false);
     activeGen.clear();
     activePass.clear();
+    pendingEchoes.clear();
     arpSamplesToNext = 0.0;
     randomSamplesToNext = 0.0;
     scaleSamplesToNext = 0.0;
@@ -101,6 +106,7 @@ void Engine::process (juce::MidiBuffer& midi,
         if (! activePass.empty())
             flushPassedNotes (midi, 0);
         held.fill (false);
+        pendingEchoes.clear();
         wasPlaying = false;
         return;
     }
@@ -135,17 +141,38 @@ void Engine::process (juce::MidiBuffer& midi,
     juce::MidiBuffer incoming;
     incoming.swapWith (midi);
 
-    // Transport stop: everything the engine generated is released. Passed-
-    // through host notes are not flushed — the host still owes their note-offs
-    // (a live key is released independently of the transport).
+    // Transport stop: everything the engine generated is released and the
+    // Delay's buffered echoes are discarded (the shared transport rule).
+    // Passed-through host notes are not flushed — the host still owes their
+    // note-offs (a live key is released independently of the transport).
     if (! isPlaying && wasPlaying)
+    {
         flushGeneratedNotes (midi, 0);
+        pendingEchoes.clear();
+    }
     wasPlaying = isPlaying;
 
     // While the arp is running it consumes the host notes (they are its input),
     // so they don't also pass straight through. When stopped, host notes pass
     // through so live playing stays audible.
     const bool swallowHostNotes = cfg.hasArp && isPlaying;
+
+    // Delay: every emitted note-on (pass-through and generated) books its first
+    // echo here; a fired echo books the next one the same way. The chain ends
+    // when the decayed velocity drops below the floor or the shifted pitch
+    // leaves the MIDI range (deliberately not clamped — repeats piling up at
+    // the range edge sound worse than the run just ending).
+    const double delaySamples = juce::jmax (1.0, samplesPerQn * cfg.delayTimeQn);
+    auto scheduleEcho = [&] (int srcNote, int channel, int srcVelocity, int atSample)
+    {
+        if (! cfg.hasDelay)
+            return;
+        const int v = juce::roundToInt ((double) srcVelocity * cfg.delayFeedback);
+        const int n = srcNote + cfg.delayShift;
+        if (v < kMinEchoVelocity || n < 0 || n > 127)
+            return;
+        pendingEchoes.push_back ({ n, channel, v, atSample + (int) delaySamples });
+    };
 
     // --- Host events: input filter, held tracking, pass-through -------------
     for (const auto meta : incoming)
@@ -169,6 +196,7 @@ void Engine::process (juce::MidiBuffer& midi,
                 {
                     midi.addEvent (juce::MidiMessage::noteOn (ch, p, (juce::uint8) m.getVelocity()), s);
                     activePass.push_back ({ m.getNoteNumber(), m.getChannel(), p, ch });
+                    scheduleEcho (p, ch, m.getVelocity(), s);
                 });
             }
         }
@@ -220,6 +248,7 @@ void Engine::process (juce::MidiBuffer& midi,
             {
                 midi.addEvent (juce::MidiMessage::noteOn (ch, p, (juce::uint8) 100), sample);
                 activeGen.push_back ({ p, ch, sample + gateSamples });
+                scheduleEcho (p, ch, 100, sample);
             });
         };
 
@@ -407,6 +436,39 @@ void Engine::process (juce::MidiBuffer& midi,
                                s, gate);
             });
         }
+    }
+
+    // --- Delay: fire the echoes due this block --------------------------------
+    // Runs whether or not the transport is playing (a live key echoes too).
+    // Index loop on purpose: a fired echo appends its successor, which may
+    // itself be due within this block (short delay times / big buffers) and is
+    // then reached later in the same sweep.
+    if (! cfg.hasDelay)
+    {
+        // Module removed mid-chain: its buffered echoes go with it (already-
+        // sounding ones release normally through activeGen).
+        pendingEchoes.clear();
+    }
+    else if (! pendingEchoes.empty())
+    {
+        const int gateSamples = juce::jmax (1, (int) (delaySamples * 0.5) - 1);
+        for (size_t i = 0; i < pendingEchoes.size(); ++i)
+        {
+            const auto ec = pendingEchoes[i];   // by value — push_back may reallocate
+            if (ec.samplesUntil >= numSamples)
+                continue;
+            midi.addEvent (juce::MidiMessage::noteOn (ec.channel, ec.note,
+                                                      (juce::uint8) ec.velocity),
+                           juce::jmax (0, ec.samplesUntil));
+            activeGen.push_back ({ ec.note, ec.channel, ec.samplesUntil + gateSamples });
+            scheduleEcho (ec.note, ec.channel, ec.velocity, ec.samplesUntil);
+            pendingEchoes[i].velocity = 0;   // mark as fired for the sweep below
+        }
+        pendingEchoes.erase (std::remove_if (pendingEchoes.begin(), pendingEchoes.end(),
+                                             [] (const EchoNote& e) { return e.velocity == 0; }),
+                             pendingEchoes.end());
+        for (auto& e : pendingEchoes)
+            e.samplesUntil -= numSamples;
     }
 
     // --- Release generated notes whose gate ends this block ------------------

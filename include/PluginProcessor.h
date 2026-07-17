@@ -114,6 +114,7 @@ private:
     std::atomic<bool> engHasArp { false }, engHasRandom { false },
                       engHasScaleGen { false }, engHasLfo { false },
                       engHasQuantize { false }, engHasShift { false },
+                      engHasDelay { false },
                       engHasMidiIn { false }, engHasOutput { false };
     std::atomic<std::uint16_t> engInChannelMask { 0xffff }, engOutChannelMask { 0 };
 
@@ -145,6 +146,9 @@ private:
                      engLfoPhase { 0 };
     std::atomic<int> engShiftAmount { 0 },
                      engShiftScale { ModuleOptions::kScaleGlobal };
+    std::atomic<int> engDelayRate { ModuleOptions::kRate1_8 },
+                     engDelayFeedback { ModuleOptions::kFeedbackHalf },
+                     engDelayShift { 0 };
 
     // Cached parameter pointers (set in the ctor, read every block).
     std::atomic<float>* rootParam     = nullptr;

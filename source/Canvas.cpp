@@ -139,7 +139,8 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
     if (instance.type == ModuleType::MidiIn || instance.type == ModuleType::Output)
         node->setSublabel (channelSublabel (instance.type, instance.channel));
     else if (instance.type == ModuleType::Random || instance.type == ModuleType::ScaleGen
-             || instance.type == ModuleType::Arp || instance.type == ModuleType::Lfo)
+             || instance.type == ModuleType::Arp || instance.type == ModuleType::Lfo
+             || instance.type == ModuleType::Delay)
         node->setSublabel (rateSublabel (instance.settings));
     else if (instance.type == ModuleType::Shift)
         node->setSublabel (shiftSublabel (instance.settings));
@@ -181,6 +182,11 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
         if (n.moduleType() == ModuleType::Shift)
         {
             openShiftDialog (n);
+            return;
+        }
+        if (n.moduleType() == ModuleType::Delay)
+        {
+            openDelayDialog (n);
             return;
         }
 
@@ -440,6 +446,47 @@ void Canvas::openShiftDialog (ModuleComponent& node)
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (shiftSublabel (ns));
+        }
+        d->getParentComponent()->removeChildComponent (d);
+        delete d;
+    };
+}
+
+void Canvas::openDelayDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    juce::StringArray shifts;
+    for (int a = -ModuleOptions::kDelayShiftRange; a <= ModuleOptions::kDelayShiftRange; ++a)
+        shifts.add (a > 0 ? "+" + juce::String (a) : juce::String (a));
+
+    auto* dlg = owner.showInlineDialog ("Delay settings",
+                                        "Feedback sets how quickly the repeats fade; "
+                                        "a shift moves each repeat by that many semitones.");
+    addRateControl (*dlg, s);
+    dlg->addComboBox ("feedback", ModuleOptions::feedbackNames(), s.delayFeedback,
+                      "Feedback");
+    dlg->addComboBox ("shift", shifts, s.delayShift + ModuleOptions::kDelayShiftRange,
+                      "Shift (semitones)");
+    dlg->addButton ("OK", 1);
+    dlg->addButton ("Cancel", 0);
+
+    // Captures the id, not the node — the node can be deleted or rebuilt while
+    // the dialog is up (host state restore), so it is re-looked-up on OK.
+    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    {
+        if (result == 1)
+        {
+            auto ns = proc.getModuleSettings (id);
+            readRateControl (*d, ns);
+            ns.delayFeedback = d->getComboBoxSelectedIndex ("feedback");
+            ns.delayShift    = d->getComboBoxSelectedIndex ("shift")
+                                 - ModuleOptions::kDelayShiftRange;
+            proc.setModuleSettings (id, ns);
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (rateSublabel (ns));
         }
         d->getParentComponent()->removeChildComponent (d);
         delete d;

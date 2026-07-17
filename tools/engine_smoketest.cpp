@@ -625,7 +625,107 @@ int main()
         }
     }
 
-    // --- 15. ScaleTables spot checks -----------------------------------------
+    // --- 15. Delay: echo decay, per-echo shift, chain termination ------------
+    {
+        // One host note (on + off), then empty blocks until the echo chain has
+        // played out; collect the echoes' (pitch, velocity) pairs.
+        auto delayEchoes = [&] (double fb, int shift, int srcNote,
+                                int& onsOut, int& offsOut)
+        {
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasDelay      = true;
+            cfg.delayTimeQn   = 0.5;   // 1/8 at 120bpm = 11025 samples
+            cfg.delayFeedback = fb;
+            cfg.delayShift    = shift;
+
+            std::vector<std::pair<int, int>> echoes;
+            int ons = 0, offs = 0;
+            auto collect = [&] (const juce::MidiBuffer& b, bool skipSource)
+            {
+                for (const auto meta : b)
+                    if (meta.getMessage().isNoteOn())
+                        if (! (skipSource && meta.getMessage().getNoteNumber() == srcNote
+                                          && meta.getMessage().getVelocity() == 100))
+                            echoes.push_back ({ meta.getMessage().getNoteNumber(),
+                                                (int) meta.getMessage().getVelocity() });
+            };
+            {
+                juce::MidiBuffer midi;
+                midi.addEvent (juce::MidiMessage::noteOn  (1, srcNote, (juce::uint8) 100), 0);
+                midi.addEvent (juce::MidiMessage::noteOff (1, srcNote), 256);
+                e.process (midi, block, playing (false), 0, 0, false, cfg);
+                tally (midi, ons, offs);
+                collect (midi, true);
+            }
+            for (int i = 0; i < 600; ++i)
+            {
+                juce::MidiBuffer midi;
+                e.process (midi, block, playing (false), 0, 0, false, cfg);
+                tally (midi, ons, offs);
+                collect (midi, false);
+            }
+            onsOut = ons; offsOut = offs;
+            return echoes;
+        };
+
+        int ons = 0, offs = 0;
+
+        // Feedback 50%: velocities halve (roundToInt rounds half-to-even, so
+        // 12.5 -> 12) until they cross the floor of 5 — four echoes, all at
+        // the source pitch with shift 0.
+        check (delayEchoes (0.5, 0, 60, ons, offs)
+                   == std::vector<std::pair<int, int>> { { 60, 50 }, { 60, 25 },
+                                                         { 60, 12 }, { 60, 6 } },
+               "Delay fb 50%: four echoes with halving velocities");
+        check (ons == 5 && ons == offs, "Delay: source + echoes all balanced");
+
+        // Shift +12: each echo an octave above the one before.
+        {
+            const auto e12 = delayEchoes (0.5, 12, 60, ons, offs);
+            check (e12.size() == 4
+                       && e12[0].first == 72 && e12[1].first == 84
+                       && e12[2].first == 96 && e12[3].first == 108,
+                   "Delay shift +12 climbs an octave per echo");
+        }
+
+        // Lower feedback = fewer repeats (25%: 25, 6 -> two echoes).
+        check (delayEchoes (0.25, 0, 60, ons, offs).size() == 2,
+               "Delay fb 25% yields a shorter chain");
+
+        // An echo that would leave the MIDI range ends the chain (no clamp).
+        check (delayEchoes (0.5, 12, 120, ons, offs).empty(),
+               "Delay shift past 127 ends the chain instead of clamping");
+    }
+
+    // --- 15b. Delay: transport stop discards buffered echoes -----------------
+    {
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasDelay    = true;
+        cfg.delayTimeQn = 0.5;
+
+        int ons = 0, offs = 0;
+        {
+            juce::MidiBuffer midi;
+            midi.addEvent (juce::MidiMessage::noteOn  (1, 60, (juce::uint8) 100), 0);
+            midi.addEvent (juce::MidiMessage::noteOff (1, 60), 256);
+            e.process (midi, block, playing (true), 0, 0, false, cfg);
+            tally (midi, ons, offs);
+        }
+        // Stop before the first echo (11025 samples away) fires: the pending
+        // echo is discarded, so only the source note ever sounds.
+        for (int i = 0; i < 200; ++i)
+        {
+            juce::MidiBuffer midi;
+            e.process (midi, block, playing (false), 0, 0, false, cfg);
+            tally (midi, ons, offs);
+        }
+        check (ons == 1 && offs == 1,
+               "Delay: transport stop discards the buffered echo");
+    }
+
+    // --- 16. ScaleTables spot checks -----------------------------------------
     {
         check (ScaleTables::isInScale (60, 0, 0), "C is in C major");
         check (! ScaleTables::isInScale (61, 0, 0), "C# is not in C major");

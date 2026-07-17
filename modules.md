@@ -52,7 +52,8 @@ it. The list will grow as modules gain settings; today it is:
   Global.
 - **Rate** — the step grid a module works on, as a note length (1/32 to 1/1)
   locked to host tempo: the grid a generator emits its MIDI on, or the grid a
-  modulator re-times passing MIDI to. Used by Arp, Random, Scale, and LFO.
+  modulator re-times passing MIDI to. Used by Arp, Random, Scale, and LFO;
+  Delay uses the same control as its echo spacing.
 - **Repeat** — when a module's pattern is reset and replayed from the start,
   counted from transport start: 1/4, 1/2, or 1 to 4 bars (assuming 4/4), or
   Endless — the normal default — meaning the pattern just runs on until the
@@ -76,15 +77,16 @@ default settings; the two I/O modules followed with the first real setting
 (their channel dialog), the Random and Scale generators gained full settings
 dialogs, and the Arp — reclassified as a modulator, since it transforms the
 notes flowing into it — now carries one too. Shift gained its settings
-(amount + scale) and a third generator, the LFO, arrived with a full dialog.
-Only Quantize still runs a fixed default — double-clicking it opens a
-placeholder. Until port wiring lands everything runs as one fixed chain: host
-MIDI enters through MIDI In (or an implicit all-channels input if none is
-placed), feeds the Arp and the generators, results pass through Quantize and
-then Shift, and exit through Output (or an implicit channel-preserving
-output). A consequence of the fixed chain: placing several copies of the same
-module doesn't layer them — extra copies share the first one's settings until
-wiring lands.
+(amount + scale), a third generator, the LFO, arrived with a full dialog, and
+the Delay — the first stateful time modulator — followed. Only Quantize still
+runs a fixed default — double-clicking it opens a placeholder. Until port
+wiring lands everything runs as one fixed chain: host MIDI enters through
+MIDI In (or an implicit all-channels input if none is placed), feeds the Arp
+and the generators, results pass through Quantize and then Shift, the Delay
+adds its echoes to everything leaving the chain, and everything exits through
+Output (or an implicit channel-preserving output). A consequence of the fixed
+chain: placing several copies of the same module doesn't layer them — extra
+copies share the first one's settings until wiring lands.
 
 Each implemented module's entry ends with a "User settings" bullet list of
 what the user can change today, so the gap between current and planned
@@ -267,6 +269,33 @@ User settings:
 - Scale — Global (default), Off (chromatic), or any scale from the global
   list.
 
+### Delay (modulator)
+
+Delay repeats every note that passes it as a fading echo chain — the classic
+tape-echo feel, in MIDI. Each note (played or generated) spawns a repeat one
+delay time later; Rate sets that spacing as a note length (1/32 to 1/1,
+default 1/8), locked to host tempo. Feedback (10–90%, default 50%) sets each
+repeat's velocity as a share of the note before it; the chain ends when the
+repeats fade below audibility, so feedback doubles as the number of repeats —
+50% gives four, lower gives fewer, higher gives a long tail.
+
+Shift (−12 to +12 semitones, default 0) transposes each individual repeat by
+that amount relative to the repeat before it, so the chain climbs (or falls)
+as it fades — +12 turns an echo into an ascending octave cascade. The shift
+is chromatic and deliberately not re-quantized; a repeat that would leave the
+MIDI note range ends the chain rather than piling up at the edge. Echoes keep
+their note's channel, sound for half the delay time each, and follow the
+shared transport rules: on stop, pending repeats are discarded and sounding
+ones released, so nothing hangs; echoes also work while the transport is
+stopped, so live playing echoes too.
+
+User settings:
+
+- Rate — 1/32 to 1/1 (default 1/8); the echo spacing.
+- Feedback — 10% to 90% (default 50%); repeat decay, and thereby repeat count.
+- Shift — −12 to +12 semitones (default 0); applied to each repeat,
+  cumulatively across the chain.
+
 ## Planned — speced
 
 These are concrete enough to build. Each entry states the intended behaviour;
@@ -296,9 +325,6 @@ open details, where any, are flagged.
 
 ### Modulators — time and rhythm
 
-- **Delay / Echo** — repeats each note after a delay time, with feedback
-  controlling the number of repeats and decay shaping their fading velocities.
-  Stateful; follows the shared transport rules above.
 - **Ratchet / Repeat** — subdivides or retriggers a note into a burst
   (settings: subdivision count and, likely, a velocity ramp).
 - **Strum** — spreads the notes of a chord out over a short time window, like

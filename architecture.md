@@ -10,17 +10,17 @@ phases. File references are relative to the repo root; headers live in
 
 A JUCE MIDI-effect plugin (VST3 + Standalone, Linux build only so far). The
 editor shows a menu bar (global root / scale / quantize + theme switch), a
-canvas that modules can be dragged onto from a palette of eight (generators
-Random, Scale, and LFO, modulators Arp, Quantize, and Shift, I/O modules
-MIDI In and Output), and an engine that actually runs those modules — but as
-a fixed implicit chain, because there is no port wiring yet. The I/O modules
-carry a per-module MIDI channel; the Random / Scale / LFO generators, the
-Arp, and Shift carry full settings (drawn from the shared settings pool —
-root/scale override, rate, repeat, mode, octaves, gate — plus their
-type-specific fields such as the LFO's shape/cycle/depth/phase and Shift's
-amount + chromatic-or-degrees scale), all edited through real double-click
-dialogs; only Quantize still runs a baked-in default behind a settings
-placeholder.
+canvas that modules can be dragged onto from a palette of nine (generators
+Random, Scale, and LFO, modulators Arp, Quantize, Shift, and Delay, I/O
+modules MIDI In and Output), and an engine that actually runs those modules —
+but as a fixed implicit chain, because there is no port wiring yet. The I/O
+modules carry a per-module MIDI channel; the Random / Scale / LFO generators,
+the Arp, Shift, and Delay carry full settings (drawn from the shared settings
+pool — root/scale override, rate, repeat, mode, octaves, gate — plus their
+type-specific fields such as the LFO's shape/cycle/depth/phase, Shift's
+amount + chromatic-or-degrees scale, and the Delay's feedback + per-echo
+shift), all edited through real double-click dialogs; only Quantize still
+runs a baked-in default behind a settings placeholder.
 
 ## Component map
 
@@ -94,9 +94,9 @@ reads a lock-free snapshot.
   types are present as `std::atomic<bool>` flags, two atomic 16-bit channel
   masks carrying the I/O modules' settings (input filter, output stamp —
   semantics documented on `Engine::Config`), and a set of atomic ints/bools
-  carrying the first Arp / Random / Scale / LFO / Shift module's settings
-  (the implicit chain runs one of each; extra copies share the first one's
-  settings).
+  carrying the first Arp / Random / Scale / LFO / Shift / Delay module's
+  settings (the implicit chain runs one of each; extra copies share the first
+  one's settings).
 - `processBlock` reads those atomics plus the raw parameter values (root,
   scale, quantize — themselves atomics via APVTS) and hands the `Engine` a
   plain `Engine::Config` by value. No locks anywhere. Each field is
@@ -144,6 +144,15 @@ semantics) is at the top of `Engine.h`. Summary:
   `ScaleTables::stepInScale` when its scale is Global/named, chromatic
   semitones when Off (`ModuleOptions::kScaleOff`, stored in the shared
   `scaleOverride` field).
+- The Delay is the exception to pure mapping — it is the first stateful time
+  modulator. Every emitted note-on (pass-through and generated) books an echo
+  in `pendingEchoes` (velocity × feedback, pitch + per-echo shift, one delay
+  time later); fired echoes book their successors until the velocity decays
+  below a floor or the pitch leaves the MIDI range. Echoes derive from the
+  final emitted stream (post Quantize/Shift/Output), live in `activeGen` for
+  their gate-timed release, run regardless of transport, and the pending
+  queue is discarded on transport stop (the requirements' shared transport
+  rule for stateful time modules).
 - Output modules stamp everything leaving the engine with their channel; with
   several, the stream is duplicated once per channel (the implicit chain's
   fan-out). With none placed, events keep their own channel.
@@ -176,10 +185,11 @@ pick the new module up from the catalogue without further changes. All three
 kinds are in the palette: generators square, modulators circle, I/O triangles
 (MIDI In points right, Output left, toward their single port). Per-module
 settings live on `ModuleInstance`: the I/O modules' MIDI channel and the
-shared `ModuleSettings` blob (used by Arp, Random, Scale, LFO, and Shift),
-each edited via a real settings dialog in `Canvas` (`openChannelDialog`,
-`openArpDialog`, `openRandomDialog`, `openScaleGenDialog`, `openLfoDialog`,
-`openShiftDialog`), reflected in a node sublabel (channel, rate, or Shift's
+shared `ModuleSettings` blob (used by Arp, Random, Scale, LFO, Shift, and
+Delay), each edited via a real settings dialog in `Canvas`
+(`openChannelDialog`, `openArpDialog`, `openRandomDialog`,
+`openScaleGenDialog`, `openLfoDialog`, `openShiftDialog`,
+`openDelayDialog`), reflected in a node sublabel (channel, rate, or Shift's
 signed amount), and persisted with the canvas state. The dialogs build
 their combos through `Canvas`'s shared add/read helper pairs (root+scale,
 rate, repeat, mode, octaves) so a shared setting is the identical control in

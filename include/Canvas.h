@@ -55,6 +55,7 @@ private:
     void openScaleGenDialog (ModuleComponent& node);
     void openLfoDialog (ModuleComponent& node);
     void openShiftDialog (ModuleComponent& node);
+    void openDelayDialog (ModuleComponent& node);
     static juce::String channelSublabel (ModuleType type, int channel);
     static juce::String rateSublabel (const ModuleSettings& settings);
     static juce::String shiftSublabel (const ModuleSettings& settings);
