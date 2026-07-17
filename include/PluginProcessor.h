@@ -11,16 +11,15 @@
 // processor's APVTS layout can't drift.
 namespace ParamIDs
 {
-    constexpr auto root     = "root";
-    constexpr auto scale    = "scale";
-    constexpr auto quantize = "quantize";
-    constexpr auto theme    = "theme";
+    constexpr auto root  = "root";
+    constexpr auto scale = "scale";
+    constexpr auto theme = "theme";
 }
 
 // One placed module on the canvas. Position is stored in canvas coordinates
 // (top-left of the node). `channel` is the I/O modules' one setting (see
 // defaultChannelFor for its per-type semantics); `settings` is the shared
-// settings blob used by Random, Scale, and Arp. Each type ignores the fields
+// settings blob used by every non-I/O type. Each type ignores the fields
 // that aren't its.
 struct ModuleInstance
 {
@@ -75,6 +74,18 @@ public:
 
     juce::AudioProcessorValueTreeState& apvts() { return parameters; }
 
+    // --- Internal transport (Standalone / playhead-less hosts) --------------
+    // The Standalone's playhead reports isPlaying == false forever (there is
+    // no host transport), which would leave every stepped module silent; the
+    // menu bar shows a Play toggle and a Tempo stepper instead, wired to
+    // these (the LAM approach). processBlock synthesizes a playhead position
+    // from them, so the engine never knows the difference.
+    bool isStandalone() const { return wrapperType == wrapperType_Standalone; }
+    void setStandalonePlay (bool on)   { standalonePlay.store (on, std::memory_order_release); }
+    bool getStandalonePlay() const     { return standalonePlay.load (std::memory_order_acquire); }
+    void   setInternalBpm (double bpm) { internalBpm.store (bpm, std::memory_order_relaxed); }
+    double getInternalBpm() const      { return internalBpm.load (std::memory_order_relaxed); }
+
     // --- Canvas model (message thread only) ---------------------------------
     const std::vector<ModuleInstance>& modules() const { return moduleList; }
     int  addModule (ModuleType type, float x, float y);   // returns new id
@@ -112,8 +123,10 @@ private:
     // block later.
     Engine engine;
     std::atomic<bool> engHasArp { false }, engHasRandom { false },
-                      engHasScaleGen { false },
-                      engHasQuantize { false }, engHasShift { false },
+                      engHasScaleGen { false }, engHasLfo { false },
+                      engHasQuantize { false }, engHasScaleMod { false },
+                      engHasProgression { false }, engHasShift { false },
+                      engHasDelay { false },
                       engHasMidiIn { false }, engHasOutput { false };
     std::atomic<std::uint16_t> engInChannelMask { 0xffff }, engOutChannelMask { 0 };
 
@@ -137,11 +150,40 @@ private:
                      engScaleOctaves { 1 },
                      engScaleMode { ModuleOptions::kModeUp };
     std::atomic<bool> engScaleEndOnRoot { true };
+    std::atomic<int> engLfoRoot { -1 }, engLfoScale { -1 },
+                     engLfoRate { ModuleOptions::kRate1_16 },
+                     engLfoCycle { ModuleOptions::kBarsOneBar },
+                     engLfoShape { ModuleOptions::kLfoSine },
+                     engLfoDepthOct { 1 }, engLfoDepthSteps { 0 },
+                     engLfoPhase { 0 };
+    std::atomic<int> engQuantRate { ModuleOptions::kRate1_16 },
+                     engQuantSwing { ModuleOptions::kSwingOff };
+    std::atomic<int> engScaleModRoot { -1 }, engScaleModScale { -1 };
+    // Progression steps ride in one atomic each, packed as
+    // degree * 16 + (octave + kProgOctaveRange) — see packProgStep below.
+    std::atomic<int> engProgRoot { -1 }, engProgScale { -1 },
+                     engProgRate { ModuleOptions::kBarsOneBar },
+                     engProgCount { 0 };
+    std::array<std::atomic<int>, ModuleOptions::kMaxProgSteps> engProgSteps {};
+    std::atomic<int> engShiftAmount { 0 },
+                     engShiftScale { ModuleOptions::kScaleGlobal };
+    std::atomic<int> engDelayRate { ModuleOptions::kRate1_8 },
+                     engDelayFeedback { ModuleOptions::kFeedbackHalf },
+                     engDelayShift { 0 };
 
     // Cached parameter pointers (set in the ctor, read every block).
-    std::atomic<float>* rootParam     = nullptr;
-    std::atomic<float>* scaleParam    = nullptr;
-    std::atomic<float>* quantizeParam = nullptr;
+    std::atomic<float>* rootParam  = nullptr;
+    std::atomic<float>* scaleParam = nullptr;
+
+    // Internal-transport state (see the accessors above). The atomics are the
+    // UI -> audio handoff for the menu bar's Play/Tempo controls; internalQn
+    // and prevInternalPlay are audio-thread-only. Tempo is a runtime
+    // preference, not patch content, so it is not an APVTS parameter and
+    // resets to 120 each launch.
+    std::atomic<bool>   standalonePlay { false };
+    std::atomic<double> internalBpm { 120.0 };
+    double internalQn = 0.0;        // synthesized song position, quarter notes
+    bool   prevInternalPlay = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CurrentAudioProcessor)
 };

@@ -40,6 +40,13 @@ public:
         setColour (juce::TextButton::textColourOffId,  s.text);
         setColour (juce::TextButton::textColourOnId,   s.text);
 
+        // Slider colours cover the Tempo stepper (IncDecButtons style: the
+        // buttons draw from the TextButton colours above, the value box from
+        // these).
+        setColour (juce::Slider::textBoxTextColourId,       s.text);
+        setColour (juce::Slider::textBoxBackgroundColourId, s.widgetBg);
+        setColour (juce::Slider::textBoxOutlineColourId,    s.widgetOutline);
+
         setColour (juce::ToggleButton::textColourId,   s.text);
         setColour (juce::ToggleButton::tickColourId,   s.accent);
         setColour (juce::ToggleButton::tickDisabledColourId, s.widgetOutline);

@@ -22,8 +22,8 @@ public:
     /** Spawn an inline modal dialog inside the editor's component hierarchy.
      *  Returns a non-owning pointer the caller configures (addButton / onResult)
      *  then disposes of inside its onResult callback. Replaces juce::AlertWindow
-     *  per the SnorkelAudioStandards modal-dialog rule. In Phase 2 this backs the
-     *  empty module-settings placeholder. */
+     *  per the SnorkelAudioStandards modal-dialog rule. Backs the module
+     *  settings dialogs. */
     InlineDialog* showInlineDialog (const juce::String& title,
                                     const juce::String& message = {});
 

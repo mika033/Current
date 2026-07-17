@@ -11,7 +11,7 @@ class CurrentAudioProcessorEditor;
 class InlineDialog;
 
 // The central drop surface. Modules dragged from the palette land here and can
-// be moved around; double-clicking one opens its (empty) settings placeholder.
+// be moved around; double-clicking one opens its settings dialog.
 // The canvas is the bridge between the on-screen nodes and the processor's
 // module model — it rebuilds its nodes from the model on construction and writes
 // adds/moves back to it.
@@ -53,8 +53,17 @@ private:
     void openArpDialog (ModuleComponent& node);
     void openRandomDialog (ModuleComponent& node);
     void openScaleGenDialog (ModuleComponent& node);
+    void openLfoDialog (ModuleComponent& node);
+    void openQuantizeDialog (ModuleComponent& node);
+    void openScaleModDialog (ModuleComponent& node);
+    void openProgressionDialog (ModuleComponent& node);
+    void openShiftDialog (ModuleComponent& node);
+    void openDelayDialog (ModuleComponent& node);
     static juce::String channelSublabel (ModuleType type, int channel);
     static juce::String rateSublabel (const ModuleSettings& settings);
+    static juce::String shiftSublabel (const ModuleSettings& settings);
+    juce::String scaleModSublabel (const ModuleSettings& settings) const;
+    static juce::String progressionSublabel (const ModuleSettings& settings);
 
     // Shared dialog controls, one add/read pair per shared setting (see
     // modules.md "Shared settings"). Every dialog builds its combos through

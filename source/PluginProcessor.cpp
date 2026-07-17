@@ -7,13 +7,57 @@ namespace
     const juce::StringArray kRootNames { "C", "C#", "D", "D#", "E", "F",
                                          "F#", "G", "G#", "A", "A#", "B" };
 
-    // A representative handful for Phase 2; the full scale set arrives with the
-    // Quantize module's real settings in a later phase.
+    // A representative handful for Phase 2; growing the full scale set is a
+    // later phase. Index order must match ScaleTables::intervalsForScale.
     const juce::StringArray kScaleNames { "Major", "Minor", "Dorian", "Phrygian",
                                           "Lydian", "Mixolydian", "Locrian",
                                           "Pentatonic", "Chromatic" };
 
     const juce::StringArray kThemeNames { "Light", "Dark" };
+
+    // Progression steps in the lock-free snapshot: one int per step, degree in
+    // the high part, octave biased into the low bits. 16 leaves headroom over
+    // the 5 octave choices (-2..+2).
+    int packProgStep (const ProgressionStep& s)
+    {
+        return s.degree * 16 + (s.octave + ModuleOptions::kProgOctaveRange);
+    }
+
+    ProgressionStep unpackProgStep (int packed)
+    {
+        return { packed / 16, packed % 16 - ModuleOptions::kProgOctaveRange };
+    }
+
+    // Persistence form of the step list: "degree:octave" pairs, e.g.
+    // "0:0,3:0,4:-1". Compact, human-readable in the saved XML, and trivially
+    // versionable — the plugin is pre-release, so no migration shims.
+    juce::String progStepsToString (const std::vector<ProgressionStep>& steps)
+    {
+        juce::StringArray parts;
+        for (const auto& s : steps)
+            parts.add (juce::String (s.degree) + ":" + juce::String (s.octave));
+        return parts.joinIntoString (",");
+    }
+
+    std::vector<ProgressionStep> progStepsFromString (const juce::String& text)
+    {
+        std::vector<ProgressionStep> steps;
+        for (const auto& part : juce::StringArray::fromTokens (text, ",", ""))
+        {
+            ProgressionStep s;
+            s.degree = juce::jlimit (0, ModuleOptions::degreeNames().size() - 1,
+                                     part.upToFirstOccurrenceOf (":", false, false).getIntValue());
+            s.octave = juce::jlimit (-ModuleOptions::kProgOctaveRange,
+                                     ModuleOptions::kProgOctaveRange,
+                                     part.fromFirstOccurrenceOf (":", false, false).getIntValue());
+            steps.push_back (s);
+            if ((int) steps.size() >= ModuleOptions::kMaxProgSteps)
+                break;
+        }
+        if (steps.empty())
+            steps.push_back ({});   // the list is never empty — default step I
+        return steps;
+    }
 }
 
 CurrentAudioProcessor::CurrentAudioProcessor()
@@ -24,9 +68,8 @@ CurrentAudioProcessor::CurrentAudioProcessor()
           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       parameters (*this, nullptr, "STATE", createLayout())
 {
-    rootParam     = parameters.getRawParameterValue (ParamIDs::root);
-    scaleParam    = parameters.getRawParameterValue (ParamIDs::scale);
-    quantizeParam = parameters.getRawParameterValue (ParamIDs::quantize);
+    rootParam  = parameters.getRawParameterValue (ParamIDs::root);
+    scaleParam = parameters.getRawParameterValue (ParamIDs::scale);
 }
 
 CurrentAudioProcessor::~CurrentAudioProcessor() = default;
@@ -41,9 +84,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout CurrentAudioProcessor::creat
     layout.add (std::make_unique<juce::AudioParameterChoice> (
         juce::ParameterID { ParamIDs::scale, 1 }, "Scale", kScaleNames, 0));
 
-    layout.add (std::make_unique<juce::AudioParameterBool> (
-        juce::ParameterID { ParamIDs::quantize, 1 }, "Quantize", true));
-
     // Default index 1 = Dark, matching CurrentTheme::gActive's default.
     layout.add (std::make_unique<juce::AudioParameterChoice> (
         juce::ParameterID { ParamIDs::theme, 1 }, "Theme", kThemeNames, 1));
@@ -54,6 +94,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout CurrentAudioProcessor::creat
 void CurrentAudioProcessor::prepareToPlay (double sampleRate, int)
 {
     engine.prepare (sampleRate);
+    internalQn = 0.0;
+    // Cleared so a Play toggle already on at re-init gets a fresh off->on
+    // edge (and with it the rewind to bar 1) on the first block.
+    prevInternalPlay = false;
 }
 
 void CurrentAudioProcessor::releaseResources() {}
@@ -84,8 +128,12 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.hasArp          = engHasArp.load();
     cfg.hasRandom       = engHasRandom.load();
     cfg.hasScaleGen     = engHasScaleGen.load();
+    cfg.hasLfo          = engHasLfo.load();
     cfg.hasQuantize     = engHasQuantize.load();
+    cfg.hasScaleMod     = engHasScaleMod.load();
+    cfg.hasProgression  = engHasProgression.load();
     cfg.hasShift        = engHasShift.load();
+    cfg.hasDelay        = engHasDelay.load();
     cfg.hasMidiIn       = engHasMidiIn.load();
     cfg.hasOutput       = engHasOutput.load();
     cfg.inChannelMask   = engInChannelMask.load();
@@ -111,16 +159,78 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.scaleMode      = engScaleMode.load();
     cfg.scaleEndOnRoot = engScaleEndOnRoot.load();
 
-    const int  root          = (int) (rootParam     != nullptr ? rootParam->load()  : 0.0f);
-    const int  scaleIndex    = (int) (scaleParam    != nullptr ? scaleParam->load() : 0.0f);
-    const bool globalQuantize = (quantizeParam != nullptr ? quantizeParam->load() > 0.5f : false);
+    cfg.lfoRoot       = engLfoRoot.load();
+    cfg.lfoScale      = engLfoScale.load();
+    cfg.lfoStepQn     = ModuleOptions::rateQuarterNotes (engLfoRate.load());
+    cfg.lfoCycleQn    = ModuleOptions::barLengthQuarterNotes (engLfoCycle.load());
+    cfg.lfoShape      = engLfoShape.load();
+    cfg.lfoDepthOct   = engLfoDepthOct.load();
+    cfg.lfoDepthSteps = engLfoDepthSteps.load();
+    cfg.lfoPhase      = ModuleOptions::lfoPhaseFraction (engLfoPhase.load());
+
+    cfg.quantStepQn = ModuleOptions::rateQuarterNotes (engQuantRate.load());
+    cfg.quantSwing  = ModuleOptions::swingFraction (engQuantSwing.load());
+
+    cfg.scaleModRoot  = engScaleModRoot.load();
+    cfg.scaleModScale = engScaleModScale.load();
+
+    cfg.progRoot      = engProgRoot.load();
+    cfg.progScale     = engProgScale.load();
+    cfg.progRateQn    = ModuleOptions::barLengthQuarterNotes (engProgRate.load());
+    cfg.progStepCount = juce::jlimit (0, ModuleOptions::kMaxProgSteps, engProgCount.load());
+    for (int i = 0; i < cfg.progStepCount; ++i)
+    {
+        const auto step = unpackProgStep (engProgSteps[(size_t) i].load());
+        cfg.progDegrees[(size_t) i] = step.degree;
+        cfg.progOctaves[(size_t) i] = step.octave;
+    }
+
+    cfg.shiftAmount = engShiftAmount.load();
+    cfg.shiftScale  = engShiftScale.load();
+
+    cfg.delayTimeQn   = ModuleOptions::rateQuarterNotes (engDelayRate.load());
+    cfg.delayFeedback = ModuleOptions::feedbackFraction (engDelayFeedback.load());
+    cfg.delayShift    = engDelayShift.load();
+
+    const int root       = (int) (rootParam  != nullptr ? rootParam->load()  : 0.0f);
+    const int scaleIndex = (int) (scaleParam != nullptr ? scaleParam->load() : 0.0f);
 
     juce::Optional<juce::AudioPlayHead::PositionInfo> pos;
     if (auto* ph = getPlayHead())
         pos = ph->getPosition();
 
+    // Hosts the engine can't sync to get the internal transport instead (the
+    // LAM approach). Two cases: the Standalone — its playhead reports
+    // isPlaying == false forever, so the menu bar's Play toggle drives
+    // transport and the manual Tempo always wins over whatever BPM its
+    // playhead claims — and a plugin host with no playhead at all, which
+    // free-runs at the internal tempo. Ppq accumulates across blocks and
+    // rewinds on every off->on edge so playback always starts at the top of
+    // bar 1; the edge is detected here on the audio thread because
+    // internalQn is a bare double touched by processBlock — a UI-thread
+    // write would race. (A host playhead that merely lacks a ppq or bpm
+    // value keeps its isPlaying and is patched per-field inside the engine.)
+    if (isStandalone() || ! pos.hasValue())
+    {
+        const bool play = isStandalone() ? standalonePlay.load (std::memory_order_acquire)
+                                         : true;
+        const double bpm = internalBpm.load (std::memory_order_relaxed);
+        if (play && ! prevInternalPlay)
+            internalQn = 0.0;
+        prevInternalPlay = play;
+
+        juce::AudioPlayHead::PositionInfo pi;
+        pi.setIsPlaying (play);
+        pi.setBpm (bpm);
+        pi.setPpqPosition (internalQn);
+        if (play)
+            internalQn += (double) buffer.getNumSamples()
+                              / juce::jmax (1.0, (60.0 / bpm) * getSampleRate());
+        pos = pi;
+    }
+
     engine.process (midi, buffer.getNumSamples(), pos,
-                    root, scaleIndex, globalQuantize, cfg);
+                    root, scaleIndex, cfg);
 }
 
 juce::AudioProcessorEditor* CurrentAudioProcessor::createEditor()
@@ -132,7 +242,9 @@ juce::AudioProcessorEditor* CurrentAudioProcessor::createEditor()
 
 void CurrentAudioProcessor::refreshEngineConfig()
 {
-    bool arp = false, rnd = false, scaleGen = false, quant = false, shift = false;
+    bool arp = false, rnd = false, scaleGen = false, lfo = false;
+    bool quant = false, scaleMod = false, progression = false;
+    bool shift = false, delay = false;
     bool midiIn = false, output = false;
     std::uint16_t inMask = 0, outMask = 0;
 
@@ -177,8 +289,69 @@ void CurrentAudioProcessor::refreshEngineConfig()
                 }
                 scaleGen = true;
                 break;
-            case ModuleType::Quantize: quant = true; break;
-            case ModuleType::Shift:    shift = true; break;
+            case ModuleType::Lfo:
+                if (! lfo)
+                {
+                    engLfoRoot.store (m.settings.rootOverride);
+                    engLfoScale.store (m.settings.scaleOverride);
+                    engLfoRate.store (m.settings.rate);
+                    engLfoCycle.store (m.settings.lfoCycle);
+                    engLfoShape.store (m.settings.lfoShape);
+                    engLfoDepthOct.store (m.settings.lfoDepthOct);
+                    engLfoDepthSteps.store (m.settings.lfoDepthSteps);
+                    engLfoPhase.store (m.settings.lfoPhase);
+                }
+                lfo = true;
+                break;
+            case ModuleType::Quantize:
+                if (! quant)
+                {
+                    engQuantRate.store (m.settings.rate);
+                    engQuantSwing.store (m.settings.swing);
+                }
+                quant = true;
+                break;
+            case ModuleType::ScaleMod:
+                if (! scaleMod)
+                {
+                    engScaleModRoot.store (m.settings.rootOverride);
+                    engScaleModScale.store (m.settings.scaleOverride);
+                }
+                scaleMod = true;
+                break;
+            case ModuleType::Progression:
+                if (! progression)
+                {
+                    engProgRoot.store (m.settings.rootOverride);
+                    engProgScale.store (m.settings.scaleOverride);
+                    engProgRate.store (m.settings.progRate);
+                    const int count = juce::jlimit (0, ModuleOptions::kMaxProgSteps,
+                                                    (int) m.settings.progSteps.size());
+                    for (int i = 0; i < count; ++i)
+                        engProgSteps[(size_t) i].store (packProgStep (m.settings.progSteps[(size_t) i]));
+                    // Count last: a block that sees the new count sees the new
+                    // steps too (each field is independently atomic).
+                    engProgCount.store (count);
+                }
+                progression = true;
+                break;
+            case ModuleType::Shift:
+                if (! shift)
+                {
+                    engShiftAmount.store (m.settings.shiftAmount);
+                    engShiftScale.store (m.settings.scaleOverride);
+                }
+                shift = true;
+                break;
+            case ModuleType::Delay:
+                if (! delay)
+                {
+                    engDelayRate.store (m.settings.rate);
+                    engDelayFeedback.store (m.settings.delayFeedback);
+                    engDelayShift.store (m.settings.delayShift);
+                }
+                delay = true;
+                break;
             case ModuleType::MidiIn:
                 midiIn = true;
                 // Channel 0 = All; several MIDI Ins merge (union).
@@ -196,8 +369,12 @@ void CurrentAudioProcessor::refreshEngineConfig()
     engHasArp.store (arp);
     engHasRandom.store (rnd);
     engHasScaleGen.store (scaleGen);
+    engHasLfo.store (lfo);
     engHasQuantize.store (quant);
+    engHasScaleMod.store (scaleMod);
+    engHasProgression.store (progression);
     engHasShift.store (shift);
+    engHasDelay.store (delay);
     engHasMidiIn.store (midiIn);
     engHasOutput.store (output);
     // No MIDI In module = implicit all-channels input; no Output = keep each
@@ -231,6 +408,12 @@ int CurrentAudioProcessor::addModule (ModuleType type, float x, float y)
         // Endless everywhere else — this default lineup is the exception.)
         m.settings.rate   = ModuleOptions::kRate1_8;
         m.settings.repeat = ModuleOptions::kRepeatOneBar;
+    }
+    else if (type == ModuleType::Delay)
+    {
+        // 1/8 echoes: the shared rate default of 1/16 is generator-paced and
+        // too fast to read as an echo.
+        m.settings.rate = ModuleOptions::kRate1_8;
     }
 
     moduleList.push_back (m);
@@ -321,14 +504,24 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         if (m.type == ModuleType::MidiIn || m.type == ModuleType::Output)
             node.setProperty ("channel", m.channel, nullptr);
         // The shared module settings, only where the type actually uses them.
-        if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen)
+        if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen
+            || m.type == ModuleType::Lfo || m.type == ModuleType::ScaleMod
+            || m.type == ModuleType::Progression)
         {
             node.setProperty ("root",  m.settings.rootOverride, nullptr);
             node.setProperty ("scale", m.settings.scaleOverride, nullptr);
         }
         if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen
-            || m.type == ModuleType::Arp)
+            || m.type == ModuleType::Arp || m.type == ModuleType::Lfo
+            || m.type == ModuleType::Delay || m.type == ModuleType::Quantize)
             node.setProperty ("rate", m.settings.rate, nullptr);
+        if (m.type == ModuleType::Quantize)
+            node.setProperty ("swing", m.settings.swing, nullptr);
+        if (m.type == ModuleType::Progression)
+        {
+            node.setProperty ("progRate",  m.settings.progRate, nullptr);
+            node.setProperty ("progSteps", progStepsToString (m.settings.progSteps), nullptr);
+        }
         if (m.type == ModuleType::ScaleGen || m.type == ModuleType::Arp)
         {
             node.setProperty ("mode",    m.settings.mode, nullptr);
@@ -344,6 +537,25 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
             node.setProperty ("endOnRoot", m.settings.endOnRoot, nullptr);
         if (m.type == ModuleType::Arp)
             node.setProperty ("gate", m.settings.gate, nullptr);
+        if (m.type == ModuleType::Shift)
+        {
+            // "scale" doubles as Shift's chromatic/degree switch (kScaleOff).
+            node.setProperty ("scale",       m.settings.scaleOverride, nullptr);
+            node.setProperty ("shiftAmount", m.settings.shiftAmount, nullptr);
+        }
+        if (m.type == ModuleType::Lfo)
+        {
+            node.setProperty ("lfoShape",      m.settings.lfoShape, nullptr);
+            node.setProperty ("lfoCycle",      m.settings.lfoCycle, nullptr);
+            node.setProperty ("lfoDepthOct",   m.settings.lfoDepthOct, nullptr);
+            node.setProperty ("lfoDepthSteps", m.settings.lfoDepthSteps, nullptr);
+            node.setProperty ("lfoPhase",      m.settings.lfoPhase, nullptr);
+        }
+        if (m.type == ModuleType::Delay)
+        {
+            node.setProperty ("feedback",   m.settings.delayFeedback, nullptr);
+            node.setProperty ("delayShift", m.settings.delayShift, nullptr);
+        }
         canvas.appendChild (node, nullptr);
     }
     state.appendChild (canvas, nullptr);
@@ -377,16 +589,19 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             m.channel = (int) node.getProperty ("channel", defaultChannelFor (m.type));
 
             // Each type saves only the fields it uses, so the rest fall back
-            // to the struct's defaults. Per-type defaults (Scale's rate and
-            // repeat) are restated so an untouched module reloads as it was
-            // dropped. This is not a backward-compat path — we're pre-release
-            // (see CLAUDE.md): old in-development saves just load defaults.
+            // to the struct's defaults; types whose drop-time defaults differ
+            // from the struct's (see addModule) restate them so an untouched
+            // module reloads as it was dropped. Not a backward-compat path —
+            // we're pre-release (see CLAUDE.md): old in-development saves
+            // just load defaults.
             ModuleSettings def;
             const bool isScaleGen = m.type == ModuleType::ScaleGen;
+            const bool isDelay    = m.type == ModuleType::Delay;
             m.settings.rootOverride  = (int)  node.getProperty ("root",  def.rootOverride);
             m.settings.scaleOverride = (int)  node.getProperty ("scale", def.scaleOverride);
             m.settings.rate          = (int)  node.getProperty ("rate",
-                                          isScaleGen ? ModuleOptions::kRate1_8 : def.rate);
+                                          (isScaleGen || isDelay) ? ModuleOptions::kRate1_8
+                                                                  : def.rate);
             m.settings.rangeFrom     = (int)  node.getProperty ("from", def.rangeFrom);
             m.settings.rangeTo       = (int)  node.getProperty ("to",   def.rangeTo);
             m.settings.octaves       = (int)  node.getProperty ("octaves", def.octaves);
@@ -395,6 +610,19 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             m.settings.mode          = (int)  node.getProperty ("mode", def.mode);
             m.settings.repeat        = (int)  node.getProperty ("repeat",
                                           isScaleGen ? ModuleOptions::kRepeatOneBar : def.repeat);
+            m.settings.shiftAmount   = (int)  node.getProperty ("shiftAmount", def.shiftAmount);
+            m.settings.swing         = (int)  node.getProperty ("swing", def.swing);
+            m.settings.progRate      = (int)  node.getProperty ("progRate", def.progRate);
+            m.settings.progSteps     = progStepsFromString (
+                                           node.getProperty ("progSteps",
+                                                             progStepsToString (def.progSteps)).toString());
+            m.settings.lfoShape      = (int)  node.getProperty ("lfoShape", def.lfoShape);
+            m.settings.lfoCycle      = (int)  node.getProperty ("lfoCycle", def.lfoCycle);
+            m.settings.lfoDepthOct   = (int)  node.getProperty ("lfoDepthOct", def.lfoDepthOct);
+            m.settings.lfoDepthSteps = (int)  node.getProperty ("lfoDepthSteps", def.lfoDepthSteps);
+            m.settings.lfoPhase      = (int)  node.getProperty ("lfoPhase", def.lfoPhase);
+            m.settings.delayFeedback = (int)  node.getProperty ("feedback", def.delayFeedback);
+            m.settings.delayShift    = (int)  node.getProperty ("delayShift", def.delayShift);
 
             moduleList.push_back (m);
         }
