@@ -78,6 +78,10 @@ Phases 1 (basics) and 2 (canvas skeleton) of `generative-midi-plugin-requirement
 
 Note on phase numbering: the requirements were renumbered after the first coding session — what the phase-1 branch and its commits called "Phase 1: Canvas skeleton" is now Phase 2. Code comments follow the current numbering.
 
+## Naming
+
+"Current" is only a working title and cannot ship: Minimal Audio already has a product named Current. A different name must be chosen before release (add it to the shipping checklist work). Until then the repo, identifiers, and docs keep the working title — don't rename anything piecemeal.
+
 ## Pre-release
 
 Current has not shipped: there are no users, so no saved DAW projects or presets exist outside development. Consequences: state and preset formats may change freely between sessions; never write migration shims or backward-compat load paths for older in-development formats (an old dev save loading with defaults is fine); don't hesitate to rename parameters, reorder option lists, or restructure persisted state when the design improves. This section comes out when the plugin ships (see `shipping-checklist.md` in the standards repo).

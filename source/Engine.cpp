@@ -163,6 +163,9 @@ void Engine::process (juce::MidiBuffer& midi,
     // there are no counters to drift across loop wraps or tempo changes.
     const double blockStartQn = hostPpq.hasValue() ? *hostPpq : fallbackQn;
     const double blockEndQn   = blockStartQn + (double) numSamples / samplesPerQn;
+    // The fallback tracks the block end even while the host is supplying ppq,
+    // so a host that stops reporting it mid-run continues seamlessly from the
+    // last known position instead of jumping to a stale anchor.
     if (isPlaying)
         fallbackQn = blockEndQn;
 
