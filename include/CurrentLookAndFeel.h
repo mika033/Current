@@ -71,4 +71,38 @@ public:
     {
         return juce::Font (juce::FontOptions (kUiFontSize));
     }
+
+    // Flat-dot rotary for the module-window grid dials (octaves, gate, and the
+    // like). Ported from Little Arp Monster's LamLookAndFeel: a filled body, a
+    // thin outline, and an accent dot marking the value — no arc, no gradient,
+    // so it reads cleanly on both themes' panels. Colours come from the active
+    // scheme, so a theme swap recolours it for free.
+    void drawRotarySlider (juce::Graphics& g,
+                           int x, int y, int width, int height,
+                           float sliderPos,
+                           float rotaryStartAngle, float rotaryEndAngle,
+                           juce::Slider&) override
+    {
+        const auto& s = CurrentTheme::active();
+
+        auto bounds  = juce::Rectangle<int> (x, y, width, height).toFloat().reduced (4.0f);
+        auto radius  = juce::jmin (bounds.getWidth(), bounds.getHeight()) / 2.0f;
+        auto centreX = bounds.getCentreX();
+        auto centreY = bounds.getCentreY();
+        auto angle   = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
+
+        g.setColour (s.widgetBg);
+        g.fillEllipse (centreX - radius, centreY - radius, radius * 2.0f, radius * 2.0f);
+
+        g.setColour (s.widgetOutline);
+        g.drawEllipse (centreX - radius, centreY - radius, radius * 2.0f, radius * 2.0f, 1.5f);
+
+        const auto dotRadius   = radius * 0.22f;
+        const auto dotDistance = radius * 0.7f;
+        const auto dotX = centreX + dotDistance * std::cos (angle - juce::MathConstants<float>::halfPi);
+        const auto dotY = centreY + dotDistance * std::sin (angle - juce::MathConstants<float>::halfPi);
+
+        g.setColour (s.accent);
+        g.fillEllipse (dotX - dotRadius, dotY - dotRadius, dotRadius * 2.0f, dotRadius * 2.0f);
+    }
 };

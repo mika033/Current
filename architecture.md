@@ -55,10 +55,19 @@ real double-click dialogs.
   JUCE widgets.
 - `InlineDialog` (InlineDialog.h/.cpp) — the in-editor modal helper (the
   SnorkelAudioStandards rule forbids `juce::AlertWindow` / `DialogWindow`).
-  Backs every settings dialog; it supports text fields, combo boxes (including
-  same-row pairs and post-show add/remove for dynamic dialogs like the
-  Progression's step list), closing action buttons, and non-closing utility
-  buttons.
+  Backs the settings dialogs not yet migrated to `ModuleWindow`; it supports
+  text fields, combo boxes (including same-row pairs and post-show add/remove
+  for dynamic dialogs like the Progression's step list), closing action
+  buttons, and non-closing utility buttons.
+- `ModuleWindow` (ModuleWindow.h/.cpp) — the redesigned per-module settings
+  surface every module will eventually share (same modal-overlay and disposal
+  contract as `InlineDialog`, so both obey the modal-dialog rule). Fixed
+  structure: a title, a thin menu bar echoing the global one (three slots —
+  Root, Scale, and a Rate or Length combo, unused slots left blank), a 3x2
+  grid of combo/dial cells (labels above, Little Arp Monster section-box
+  sizing; dials for knob-friendly values like octaves/gate), and an action-
+  button row. Random is the first module on it (see the module-catalogue
+  section); the rest still open `InlineDialog` dialogs pending conversion.
 - `tools/engine_smoketest.cpp` — headless engine test, see Testing below.
 
 ## The canvas model and who owns it
@@ -256,6 +265,16 @@ bar; Shift's dialog inserts its extra "Off" entry into that same list. The
 Progression dialog is the first dynamic one: its step rows (degree + octave
 side by side via `InlineDialog`'s same-row combos) are added and removed live
 by non-closing utility buttons, and the panel re-lays itself out.
+
+The settings UI is migrating from these stacked `InlineDialog` dialogs to the
+structured `ModuleWindow` (see the component map). `openRandomDialog` is the
+first converted: it builds a `ModuleWindow` (menu bar Root / Scale / Rate,
+grid From / To dials) via `editor.showModuleWindow`, reading the controls
+back by name (`getComboSelectedIndex` / `getDialValue`) on OK. The Random
+wiring inlines its root/scale/rate mapping; when more modules move over, the
+shared-setting helper pairs above should get `ModuleWindow` counterparts so a
+shared control stays identical across modules (see modules.md "Shared
+settings"). The dials render through `CurrentLookAndFeel::drawRotarySlider`.
 
 ## Theming
 

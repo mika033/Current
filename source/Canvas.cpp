@@ -373,29 +373,37 @@ void Canvas::openRandomDialog (ModuleComponent& node)
     const int  id = node.moduleId();
     const auto s  = proc.getModuleSettings (id);
 
-    juce::StringArray noteNames;
-    for (int n = 0; n <= 127; ++n)
-        noteNames.add (ModuleOptions::midiNoteName (n));
+    // First module on the redesigned window: a thin menu bar (Root / Scale /
+    // Rate) over a 3x2 grid. Random's only own settings are the two range
+    // notes, so they take the top-left pair of cells and the rest stay blank —
+    // the shared frame the other modules will fill in.
+    auto* win = owner.showModuleWindow ("Random");
 
-    auto* dlg = owner.showInlineDialog ("Random settings");
-    addRootScaleControls (*dlg, s);
-    addRateControl (*dlg, s);
-    dlg->addComboBox ("from", noteNames, s.rangeFrom, "Range from");
-    dlg->addComboBox ("to",   noteNames, s.rangeTo,   "Range to");
-    dlg->addButton ("OK", 1);
-    dlg->addButton ("Cancel", 0);
+    // Menu bar. Combo index 0 = Global = override -1, so index = override + 1
+    // (matching the InlineDialog shared root/scale helpers).
+    win->setMenuCombo (0, "root",  choicesWithGlobal (ParamIDs::root),  s.rootOverride + 1,  "Root");
+    win->setMenuCombo (1, "scale", choicesWithGlobal (ParamIDs::scale), s.scaleOverride + 1, "Scale");
+    win->setMenuCombo (2, "rate",  ModuleOptions::rateNames(),          s.rate,              "Rate");
+
+    // Range as dials over the MIDI note span (0..127).
+    win->setGridDial (0, "from", 0.0, 127.0, 1.0, s.rangeFrom, "From");
+    win->setGridDial (1, "to",   0.0, 127.0, 1.0, s.rangeTo,   "To");
+
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
 
     // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the dialog is up (host state restore), so it is re-looked-up on OK.
-    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    // the window is up (host state restore), so it is re-looked-up on OK.
+    win->onResult = [this, id] (int result, ModuleWindow* w)
     {
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readRootScaleControls (*d, ns);
-            readRateControl (*d, ns);
-            ns.rangeFrom = d->getComboBoxSelectedIndex ("from");
-            ns.rangeTo   = d->getComboBoxSelectedIndex ("to");
+            ns.rootOverride  = w->getComboSelectedIndex ("root")  - 1;
+            ns.scaleOverride = w->getComboSelectedIndex ("scale") - 1;
+            ns.rate          = w->getComboSelectedIndex ("rate");
+            ns.rangeFrom     = juce::roundToInt (w->getDialValue ("from"));
+            ns.rangeTo       = juce::roundToInt (w->getDialValue ("to"));
             // A backwards range is a slip, not an intent — normalise it.
             if (ns.rangeFrom > ns.rangeTo)
                 std::swap (ns.rangeFrom, ns.rangeTo);
@@ -404,8 +412,8 @@ void Canvas::openRandomDialog (ModuleComponent& node)
                 if (n->moduleId() == id)
                     n->setSublabel (rateSublabel (ns));
         }
-        d->getParentComponent()->removeChildComponent (d);
-        delete d;
+        w->getParentComponent()->removeChildComponent (w);
+        delete w;
     };
 }
 
