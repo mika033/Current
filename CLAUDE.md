@@ -103,3 +103,19 @@ See `architecture.md`: component map, canvas-model ownership and persistence, th
 ## Module reference
 
 See `modules.md`: manual-style docs for the implemented modules plus the planned catalogue, tiered into speced (codable as-is) and idea-only (open questions listed per module). Keep it updated as modules gain real settings or specs firm up.
+
+## Known UI / settings inconsistencies (to fix in a later session)
+
+A settings-consistency audit across all 13 modules' dialogs (2026-07) turned up the items below. None are shipped-user-facing yet (pre-release), so they can be fixed freely. Decisions marked "open" still need the user's call before coding; the rest are agreed. Nothing here is implemented.
+
+- **Shift has a Scale override but no Root** — the one real gap. Its sibling modulators (Scale mod, Progression) both offer the shared root+scale pair and honour a per-module root; Shift instead hardcodes the *global* root in the engine (`Engine::mapPitch`, Shift branch), so it can only ever walk the current key's degrees. Agreed fix: give Shift a Root override behaving exactly like the siblings (Global default, resolved per block). The `rootOverride` field already exists on `ModuleSettings`; the engine `Config` needs a new `shiftRoot` (there is `shiftScale`/`shiftAmount` but no root), populated in `PluginProcessor` next to `engShiftScale`, persisted alongside `shiftAmount`, and read as `cfg.shiftRoot >= 0 ? cfg.shiftRoot : root`. Open: keep Shift's chromatic "Off" scale entry (shift in raw semitones) when adding Root, or drop it for a pure sibling-match. Leaning keep.
+
+- **Label collisions — the same word names different controls.** "Rate" is the note-length grid (1/32…1/1) on Random/Scale/LFO/Arp/Quantize/Delay but a bar-length (1/4 bar…16 bars) on Progression. "Repeat" is the note-length reset window (Endless…4 bars) on Scale/Arp but the bar-length hold-repeat on Chord/Drone. "Octaves" (1–4 range span, Scale/Arp) reads almost identically to "Octave" (±2 transpose offset, Drone; also per-step in Progression). Open: rename to disambiguate (leaning this) vs. leave the labels and only document the distinction.
+
+- **Gate is exposed only on Arp** — other stepped emitters (Scale gen, Random) run a fixed 50% (the code calls this a stub "until they grow the control"). Open: leave Arp-only and document as intentional (leaning this) vs. expand Gate to the stepped emitters.
+
+- **Scale generator's Rate list starts at 1/16** (no 1/32), unlike every other Rate user — a minor asymmetry in the control's range.
+
+- **Delay's per-echo Shift is chromatic-only** (semitones), whereas the Shift module can move in scale steps — an asymmetry, arguably a feature rather than a bug.
+
+Deliberate-and-fine (documented so a later session doesn't "unify" them by mistake): Arp / Quantize / Delay / I/O legitimately have no root/scale; Random and LFO legitimately have no Repeat (Random is stochastic, LFO is cyclic by its Cycle length).
