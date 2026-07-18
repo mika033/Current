@@ -56,11 +56,10 @@ real double-click dialogs.
 - `InlineDialog` (InlineDialog.h/.cpp) — the in-editor modal helper (the
   SnorkelAudioStandards rule forbids `juce::AlertWindow` / `DialogWindow`).
   Now backs only the **generic fallback** for a module type that has no
-  dedicated `ModuleWindow` yet (every real module has one). It also supports
-  text fields, same-row combo pairs, post-show add/remove utility buttons, and
-  closing action buttons — machinery once used by the Progression dialog and now
-  otherwise unused (a re-architecting candidate: trim to what the fallback
-  needs).
+  dedicated `ModuleWindow` yet (every real module has one), so it is trimmed to
+  what that needs: a title, an optional wrapped message, and action buttons. The
+  text-field and dynamic combo-row machinery it once carried for the module
+  dialogs was removed when the last module, Progression, moved to `ModuleWindow`.
 - `ModuleWindow` (ModuleWindow.h/.cpp) — the redesigned per-module settings
   surface every module shares (same modal-overlay and disposal contract as
   `InlineDialog`, so both obey the modal-dialog rule). Fixed structure: a title,
