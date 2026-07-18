@@ -77,19 +77,12 @@ private:
     // that support it (the pitch transformers plus Random/LFO); the
     // scale-walking generators pass false. `modeCount` narrows the mode list
     // (the Scale generator offers Up/Down only).
-    // Only Progression still opens an InlineDialog, and it needs just the
-    // Root/Scale pair (its Step-Length combo and dynamic step rows are built
-    // inline). The other InlineDialog shared helpers were retired as their
-    // modules moved to ModuleWindow.
-    void addRootScaleControls (InlineDialog&, const ModuleSettings&, bool scaleOffersOff);
-    void readRootScaleControls (const InlineDialog&, ModuleSettings&, bool scaleOffersOff) const;
-    // ModuleWindow counterparts of the shared controls above, so a shared
-    // setting is the identical control whichever window a module opens (the
-    // generators are on ModuleWindow, the rest still on InlineDialog). The menu
+    // Every module now settles its settings through ModuleWindow. These menu
     // helpers target the window's three fixed menu slots (Root=0, Scale=1,
     // Rate/Length=2); the grid helpers take the 0..5 grid cell. Read helpers
     // look the control up by name, so they need no slot. Gate and octaves are
     // dials here (the design's knob-friendly values); the rest are combos.
+    // Progression additionally swaps the grid for a custom body (its step list).
     void addRootScaleMenu (ModuleWindow&, const ModuleSettings&, bool scaleOffersOff);
     void readRootScaleMenu (const ModuleWindow&, ModuleSettings&, bool scaleOffersOff) const;
     static void addRateMenu (ModuleWindow&, const ModuleSettings&);

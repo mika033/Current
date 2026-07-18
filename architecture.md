@@ -55,22 +55,23 @@ real double-click dialogs.
   JUCE widgets.
 - `InlineDialog` (InlineDialog.h/.cpp) — the in-editor modal helper (the
   SnorkelAudioStandards rule forbids `juce::AlertWindow` / `DialogWindow`).
-  Now backs only the **Progression** settings dialog (every other module has
-  migrated to `ModuleWindow`); it survives for Progression's variable-length
-  step list, which needs its same-row combo pairs and post-show add/remove
-  utility buttons — features the fixed `ModuleWindow` grid has no equivalent
-  for yet. It also supports text fields and closing action buttons.
+  Now backs only the **generic fallback** for a module type that has no
+  dedicated `ModuleWindow` yet (every real module has one). It also supports
+  text fields, same-row combo pairs, post-show add/remove utility buttons, and
+  closing action buttons — machinery once used by the Progression dialog and now
+  otherwise unused (a re-architecting candidate: trim to what the fallback
+  needs).
 - `ModuleWindow` (ModuleWindow.h/.cpp) — the redesigned per-module settings
-  surface every module will eventually share (same modal-overlay and disposal
-  contract as `InlineDialog`, so both obey the modal-dialog rule). Fixed
-  structure: a title, a thin menu bar echoing the global one (three slots —
-  Root, Scale, and a Rate or Length combo, unused slots left blank), a 3x2
-  grid of combo/dial cells (labels above, Little Arp Monster section-box
-  sizing; dials for knob-friendly values like octaves/gate), and an action-
-  button row. Twelve of the thirteen modules are on it — all five generators
-  plus Arp, Quantize, Scale mod, Shift, Delay, MIDI In, and Output — routing
-  shared settings through `Canvas`'s `ModuleWindow` helper pairs; only
-  Progression still opens an `InlineDialog` (its step list has no grid home).
+  surface every module shares (same modal-overlay and disposal contract as
+  `InlineDialog`, so both obey the modal-dialog rule). Fixed structure: a title,
+  a thin menu bar echoing the global one (three slots — Root, Scale, and a Rate
+  or Length combo, unused slots left blank), a 3x2 grid of combo/dial cells
+  (labels above, Little Arp Monster section-box sizing; dials for knob-friendly
+  values like octaves/gate), and an action-button row. All thirteen modules are
+  on it, routing shared settings through `Canvas`'s `ModuleWindow` helper pairs.
+  For a module whose body the six cells can't hold, `setCustomBody` swaps the
+  grid for a caller-supplied component and sizes the panel to it, keeping the
+  rest of the chrome — **Progression** uses this for its step list (see below).
   Two hooks let one cell react to another: `setComboChangeCallback` and
   `refreshDial`, wrapped in `Canvas`'s shared `addAmountDial`/`readAmountDial`
   pair so Shift/Delay's amount dial rewords its unit ("steps"/"semitones") when
@@ -270,25 +271,24 @@ build their controls through `Canvas`'s shared add/read helper pairs
 identical control in every module — modules.md's "Shared settings" section is
 the product-level rule. The root/scale lists are sourced from the APVTS
 choice parameters ("Global" prepended), so they can't drift from the menu
-bar; Shift's dialog inserts its extra "Off" entry into that same list. The
-Progression dialog is the first dynamic one: its step rows (degree + octave
-side by side via `InlineDialog`'s same-row combos) are added and removed live
-by non-closing utility buttons, and the panel re-lays itself out.
+bar; Shift's dialog inserts its extra "Off" entry into that same list.
 
-The settings UI has migrated from these stacked `InlineDialog` dialogs to the
-structured `ModuleWindow` (see the component map) for all modules but
-Progression. Each converted `open*Dialog` builds a `ModuleWindow` via
+The settings UI is fully on the structured `ModuleWindow` (see the component
+map) for all thirteen modules. Each `open*Dialog` builds a `ModuleWindow` via
 `editor.showModuleWindow`, fills the menu bar (Root / Scale / Rate-or-Length)
-and grid cells through `Canvas`'s `ModuleWindow` helper pairs — the twins of
-the `InlineDialog` helpers, so a shared control stays identical across modules —
-and reads the controls back by name (`getComboSelectedIndex` / `getDialValue`)
-on OK. Modules with a value that reads well as a knob (octaves, gate, and
-Shift/Delay's amount) use grid **dials**, rendered through
-`CurrentLookAndFeel::drawRotarySlider`, with the value folded into the cell
-label; the amount dial's unit label is refreshed off the Scale combo via
-`setComboChangeCallback`/`refreshDial`. The only `InlineDialog` shared helper
-still live is `addRootScaleControls`, which Progression uses until it too moves
-over (its step list has no grid home — see CLAUDE.md's TODO).
+and grid cells through `Canvas`'s `ModuleWindow` helper pairs, and reads the
+controls back by name (`getComboSelectedIndex` / `getDialValue`) on OK. Modules
+with a value that reads well as a knob (octaves, gate, and Shift/Delay's amount)
+use grid **dials**, rendered through `CurrentLookAndFeel::drawRotarySlider`, with
+the value folded into the cell label; the amount dial's unit label is refreshed
+off the Scale combo via `setComboChangeCallback`/`refreshDial`.
+
+`openProgressionDialog` is the one dynamic case: instead of grid cells it calls
+`ModuleWindow::setCustomBody` with a `ProgressionStepList` — an arranger-style
+step row (cells with add/remove append arrows, plus Degree/Octave combos for the
+selected step; see `design/module-window.md`). The list holds a working copy of
+the steps and hands them back with `getSteps()` on OK. The menu bar still carries
+Root / Scale / Length through the usual helpers.
 
 ## Theming
 
@@ -342,8 +342,7 @@ scheme so both themes can tune them.
 ## Deferred, by design
 
 Port wiring and the real graph (with the snapshot handoff described above),
-per-module settings (the InlineDialog placeholder is the hook), the full
-module set from the requirements, I/O modules on the canvas, marquee
+the full module set from the requirements, I/O modules on the canvas, marquee
 multi-select / copy / paste / duplicate, pan and zoom, undo/redo, user preset
 Load/Save (follow `preset-system-guideline.md` / LAM when it lands), touch
 gestures, and the non-Linux targets.

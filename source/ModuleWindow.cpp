@@ -109,6 +109,16 @@ void ModuleWindow::setGridDial (int slot,
         resized();
 }
 
+void ModuleWindow::setCustomBody (std::unique_ptr<juce::Component> body, int height)
+{
+    customBody       = std::move (body);
+    customBodyHeight = height;
+    addAndMakeVisible (customBody.get());
+
+    if (getParentComponent())
+        resized();
+}
+
 void ModuleWindow::refreshDialLabel (GridCell& cell)
 {
     if (cell.label == nullptr || ! cell.dialFormat)
@@ -176,7 +186,9 @@ int ModuleWindow::calculatePanelHeight() const
     int h = padding;
     h += titleHeight;
     h += sectionGap + menuStripH;
-    h += sectionGap + (2 * cellRowH + rowGap + 2 * gridInset);   // grid box
+    // Body: the custom body's height when one is installed, else the 3x2 grid box.
+    h += sectionGap + (customBody != nullptr ? customBodyHeight
+                                             : 2 * cellRowH + rowGap + 2 * gridInset);
     h += sectionGap + buttonHeight;
     h += padding;
     return h;
@@ -252,9 +264,17 @@ void ModuleWindow::resized()
     }
     y += menuStripH + sectionGap;
 
-    // ----- Grid box: 3x2 cells, label above the control -----
-    const int gridBoxH = 2 * cellRowH + rowGap + 2 * gridInset;
+    // ----- Body: a custom body component, or the default 3x2 grid box -----
+    const int gridBoxH = customBody != nullptr ? customBodyHeight
+                                               : 2 * cellRowH + rowGap + 2 * gridInset;
     gridBoxBounds = { contentX, y, contentW, gridBoxH };
+    if (customBody != nullptr)
+    {
+        // The body draws itself inside the recessed section box paint() lays
+        // down; give it the full box so it owns the whole area.
+        customBody->setBounds (gridBoxBounds);
+    }
+    else
     {
         const int innerX = gridBoxBounds.getX() + gridInset;
         const int innerY = gridBoxBounds.getY() + gridInset;

@@ -1,6 +1,7 @@
 #include "Canvas.h"
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "ProgressionStepList.h"
 #include "Theme.h"
 
 Canvas::Canvas (CurrentAudioProcessor& processor, CurrentAudioProcessorEditor& editor)
@@ -132,21 +133,6 @@ int Canvas::scaleOverrideForIndex (int comboIndex, bool offersOff)
     if (offersOff)
         return comboIndex == 1 ? ModuleOptions::kScaleOff : comboIndex - 2;
     return comboIndex - 1;
-}
-
-void Canvas::addRootScaleControls (InlineDialog& dlg, const ModuleSettings& s, bool scaleOffersOff)
-{
-    // Root combo index 0 = Global = override -1, so index = override + 1 (no
-    // Off — a "no root" has no meaning). Scale runs through the shared mapping.
-    dlg.addComboBox ("root",  choicesWithGlobal (ParamIDs::root), s.rootOverride + 1, "Root");
-    dlg.addComboBox ("scale", scaleChoices (scaleOffersOff),
-                     scaleIndexForOverride (s.scaleOverride, scaleOffersOff), "Scale");
-}
-
-void Canvas::readRootScaleControls (const InlineDialog& dlg, ModuleSettings& s, bool scaleOffersOff) const
-{
-    s.rootOverride  = dlg.getComboBoxSelectedIndex ("root") - 1;
-    s.scaleOverride = scaleOverrideForIndex (dlg.getComboBoxSelectedIndex ("scale"), scaleOffersOff);
 }
 
 // --- Shared ModuleWindow controls ---------------------------------------------
@@ -684,73 +670,38 @@ void Canvas::openProgressionDialog (ModuleComponent& node)
     const int  id = node.moduleId();
     const auto s  = proc.getModuleSettings (id);
 
-    juce::StringArray octaves;
-    for (int o = -ModuleOptions::kProgOctaveRange; o <= ModuleOptions::kProgOctaveRange; ++o)
-        octaves.add (o > 0 ? "+" + juce::String (o) : juce::String (o));
+    // The one module whose body doesn't fit the shared 3x2 grid: its step list
+    // grows and shrinks, so it rides ModuleWindow's custom-body escape hatch
+    // (an arranger-style step row) while keeping the shared menu-bar chrome.
+    // A pitch transformer (Off = walk degrees chromatically). Length in the
+    // third menu slot is one step's length, drawn from the bar-length list —
+    // "Rate" stays reserved for the 1/32..1/1 note flavour.
+    auto* win = owner.showModuleWindow ("Progression");
+    addRootScaleMenu (*win, s, true);
+    win->setMenuCombo (2, "progRate", ModuleOptions::barLengthNames(), s.progRate, "Length");
 
-    // A pitch transformer (Off = walk degrees chromatically). Its per-step
-    // cadence is "Step Length", drawn from the bar-length list — "Rate" stays
-    // reserved for the 1/32..1/1 note flavour.
-    auto* dlg = owner.showInlineDialog ("Progression settings",
-                                        "Each step transposes passing notes to its "
-                                        "scale degree; Step Length is one step's length.");
-    addRootScaleControls (*dlg, s, true);
-    dlg->addComboBox ("progRate", ModuleOptions::barLengthNames(), s.progRate, "Step Length");
+    auto body = std::make_unique<ProgressionStepList> (s.progSteps);
+    auto* stepList = body.get();   // owned by the window; valid inside onResult
+    win->setCustomBody (std::move (body), ProgressionStepList::preferredHeight);
 
-    // One row per step: degree + octave side by side. The row set is edited
-    // live by the Add/Remove buttons; combo names are indexed so OK can read
-    // whatever count the user ended up with.
-    auto addStepRow = [dlg, octaves] (int index, const ProgressionStep& step)
-    {
-        dlg->addComboBox ("deg" + juce::String (index), ModuleOptions::degreeNames(),
-                          step.degree, "Step " + juce::String (index + 1));
-        dlg->addComboBox ("oct" + juce::String (index), octaves,
-                          step.octave + ModuleOptions::kProgOctaveRange, "Octave", true);
-    };
-    for (int i = 0; i < (int) s.progSteps.size(); ++i)
-        addStepRow (i, s.progSteps[(size_t) i]);
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
 
-    // The live row count, shared by the two utility buttons and the OK read.
-    auto stepCount = std::make_shared<int> ((int) s.progSteps.size());
-
-    dlg->addUtilityButton ("Add step", [stepCount, addStepRow]()
-    {
-        if (*stepCount >= ModuleOptions::kMaxProgSteps)
-            return;
-        addStepRow ((*stepCount)++, {});
-    });
-    dlg->addUtilityButton ("Remove", [dlg, stepCount]()
-    {
-        if (*stepCount <= 1)   // a progression always keeps one step
-            return;
-        --(*stepCount);
-        dlg->removeComboBox ("deg" + juce::String (*stepCount));
-        dlg->removeComboBox ("oct" + juce::String (*stepCount));
-    });
-
-    dlg->addButton ("OK", 1);
-    dlg->addButton ("Cancel", 0);
-
-    dlg->onResult = [this, id, stepCount] (int result, InlineDialog* d)
+    win->onResult = [this, id, stepList] (int result, ModuleWindow* w)
     {
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readRootScaleControls (*d, ns, true);
-            ns.progRate = d->getComboBoxSelectedIndex ("progRate");
-            ns.progSteps.clear();
-            for (int i = 0; i < *stepCount; ++i)
-                ns.progSteps.push_back ({
-                    d->getComboBoxSelectedIndex ("deg" + juce::String (i)),
-                    d->getComboBoxSelectedIndex ("oct" + juce::String (i))
-                        - ModuleOptions::kProgOctaveRange });
+            readRootScaleMenu (*w, ns, true);
+            ns.progRate  = w->getComboSelectedIndex ("progRate");
+            ns.progSteps = stepList->getSteps();
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (progressionSublabel (ns));
         }
-        d->getParentComponent()->removeChildComponent (d);
-        delete d;
+        w->getParentComponent()->removeChildComponent (w);
+        delete w;
     };
 }
 

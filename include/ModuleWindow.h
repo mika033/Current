@@ -73,6 +73,16 @@ public:
                       const juce::String& label,
                       std::function<juce::String (double)> valueText = {});
 
+    /** Replace the 3x2 grid body with a caller-supplied component (the escape
+     *  hatch for a module whose controls don't fit the fixed six cells —
+     *  Progression's variable-length step list). The window takes ownership,
+     *  sizes it to the body section, and keeps the shared title / menu bar /
+     *  OK-Cancel chrome and the recessed section-box frame around it. `height`
+     *  is the body section's height in px. The 3x2 grid cells are unused while a
+     *  custom body is set; read the body back through getCustomBody(). */
+    void setCustomBody (std::unique_ptr<juce::Component> body, int height);
+    juce::Component* getCustomBody() const { return customBody.get(); }
+
     int    getComboSelectedIndex (const juce::String& name) const;
     double getDialValue (const juce::String& name) const;
 
@@ -137,6 +147,11 @@ private:
     std::array<ComboSlot, kMenuSlots> menuSlots;
     std::array<GridCell,  kGridSlots> gridCells;
     juce::OwnedArray<ButtonEntry>     buttons;
+
+    // Escape hatch: when set, this replaces the 3x2 grid in the body slot (see
+    // setCustomBody). The grid cells stay empty in that case.
+    std::unique_ptr<juce::Component> customBody;
+    int customBodyHeight = 0;
 
     juce::Label& makeLabel (std::unique_ptr<juce::Label>& holder, const juce::String& text,
                             juce::Justification just);

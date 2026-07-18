@@ -71,6 +71,7 @@ target_sources(Current PRIVATE
     source/PaletteBar.cpp
     source/InlineDialog.cpp
     source/ModuleWindow.cpp
+    source/ProgressionStepList.cpp
 )
 
 target_include_directories(Current PRIVATE include)

@@ -99,9 +99,9 @@ decision log in `CLAUDE.md`.)
   unambiguous (`Octaves: 2` spans two octaves; `Octave: +1` shifts up one).
 - **Bar-length list** — the single canonical list of bar durations (1/4 bar
   to 16 bars) that every bar-based control draws from: Length, Repeat (plus
-  Endless), the LFO's Cycle length, and the Progression's **Step Length** (the
-  per-step duration, renamed from "Rate" so that "Rate" stays reserved for the
-  1/32–1/1 note grid).
+  Endless), the LFO's Cycle length, and the Progression's **Length** (its
+  per-step duration, drawn from this same list so that "Rate" stays reserved for
+  the 1/32–1/1 note grid).
 
 Also planned as a shared setting: an active-from/to bar range that limits a
 module to part of the arrangement (not yet implemented anywhere).
@@ -386,10 +386,12 @@ to +2); degree movement is diatonic (in scale members of its root/scale, so
 the result stays in key), the octave offset is plain ±12s. Degree I with
 octave 0 — the default step — passes notes untouched.
 
-Rate sets how long one step lasts (1/4 bar to 16 bars, default 1 bar), anchored
-to the song's bar 0; the list loops when it runs out. Add step / Remove in
-the settings dialog grow and shrink the list (1 to 8 steps), which is how the
-progression's length is set. Root and scale default to Global. While the
+Length sets how long one step lasts (1/4 bar to 16 bars, default 1 bar), anchored
+to the song's bar 0; the list loops when it runs out. The settings window shows
+the steps as a row of cells (degree big, octave as a corner tag); a trailing
+cell's up/down arrows add a step or remove the last one (1 to 8 steps), and
+clicking a cell selects it so the Degree and Octave menus below edit it. Root and
+scale default to Global. While the
 transport is stopped the first step applies, so auditioning matches how
 playback will start. Note-offs always release what their note-on sounded,
 even across a step change — nothing hangs mid-chord-change. The node shows
@@ -400,7 +402,7 @@ User settings:
 - Root — Global (default) or C to B.
 - Scale — Global (default), Off (walk degrees chromatically), or any scale
   from the global list.
-- Step Length — 1/4 bar to 16 bars (default 1 bar); the length of one step.
+- Length — 1/4 bar to 16 bars (default 1 bar); the length of one step.
 - Steps — 1 to 8 steps (default one step, I); per step a degree I–VII
   (default I) and an octave −2 to +2 (default 0).
 
