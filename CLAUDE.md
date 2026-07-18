@@ -162,3 +162,85 @@ Twelve of the thirteen modules are on the redesigned `ModuleWindow` (menu bar + 
 Why Progression is deferred: its settings include a **variable-length step list** (1–8 steps, each a degree + octave, with Add step / Remove buttons), and the `ModuleWindow` grid is a **fixed 3x2 of six cells** with no equivalent of `InlineDialog`'s post-show add/remove + utility-button mechanism. A six-cell grid does not obviously fit a growable step list, so this needs a **layout decision** before converting (a "Steps" count in the menu bar driving the six cells and capping at 6 steps? a bespoke scrollable step-list body replacing the grid for this one module?). The user chose to leave it as-is for now. When it moves over, `InlineDialog` and its remaining `addRootScaleControls`/`readRootScaleControls` helper pair (all that Progression still uses) are retired.
 
 The shared-setting `add/read` helpers have `ModuleWindow` counterparts in `Canvas` (`addRootScaleMenu`/`addRateMenu`/`addHoldLengthMenu` for the menu bar; `addGateDial`/`addOctavesDial`/`addModeCombo`/`addRepeatCombo`/`addHoldRepeatCombo` for the grid), plus `ModuleWindow`'s `setComboChangeCallback`/`refreshDial` for the Shift/Delay amount dial's live unit label. Whatever Progression needs (a Step-Length menu combo it can reuse `addHoldLengthMenu` for; a step-row mechanism it can't) extends this set.
+
+### Direction agreed 2026-07-18 (borrow from Little Sequencer's arranger) — NOT YET IMPLEMENTED
+
+This session we settled the layout question above **and** decided to expand what a
+Progression step can do, taking the interaction pattern from a different Snorkel
+plugin, **Little Sequencer** (`mika033/LittleSequencer`,
+https://github.com/mika033/LittleSequencer), specifically its **arranger tab**.
+No code was written — the next session should start here.
+
+**Reference access is the first blocker.** LittleSequencer is not in this
+workspace's repo scope. In this session `add_repo` kept returning "requires
+approval" and the approvals never registered on the backend (retried many times),
+and a direct `git clone` fails because the session's git proxy only authorises
+repos in scope. So the next session must get the repo in first: either the
+`add_repo`/source-add flow actually goes through (the user was granting GitHub App
+access to the repo and will retry from a fresh session), or the repo is added as a
+session **source** in the web-app environment config before the session starts.
+The GitHub MCP server (`mcp__github__get_file_contents` / `search_code`) uses the
+App token and may reach it even when the git proxy can't — worth trying as a
+fallback to read the arranger code. **Do not design the borrowed interaction from
+memory — read the arranger tab first.** We want its *feel* (how steps are added,
+removed, reordered, and edited in a row-based list), which is exactly the part
+prose can't capture.
+
+**What to borrow, and what to leave.** Little Sequencer's arranger is more
+complex than Current needs. It has **scenes** — Current does **not**; drop them
+entirely. What we keep is the **step-list arranger**: a user-editable series of
+steps the user grows and shrinks by adding/removing, laid out as a row list.
+
+**The expanded Progression step model the user asked for** (this supersedes the
+current "degree I–VII + octave ±2, one global Step Length" model — remember the
+Pre-release rule: no migration shims, an old dev save loading with defaults is
+fine, so restructure `ProgressionStep` / persisted state freely):
+
+- A Progression is a **series of steps**; the arrangement length is whatever the
+  user builds by **adding / removing steps** (keep a sensible max — today's cap is
+  `kMaxProgSteps` = 8; revisit whether to raise it once the row-list layout is in).
+- **Per-step length.** Each step now carries **its own length** (default **1
+  bar**), replacing the single global "Step Length" combo that applied to every
+  step. So a step is length + shift, and the arranger walks step to step, each
+  held for its own length. (Open: does the module-window menu bar still carry a
+  global Step-Length combo as a default/fallback, or does length move entirely
+  onto the per-step row? Leaning per-step-row only, since that's the whole point
+  of borrowing the arranger — confirm against how Little Sequencer does it.)
+- **Per-step shift, expressed in one of four ways.** Each step defines how much
+  the incoming MIDI is shifted, and the *kind* of shift is one of **four modes**:
+  **shift**, **note**, **degree**, **chroma**. (These four are the user's words
+  from Little Sequencer's arranger — their exact semantics must be read off the
+  reference, not guessed. Working interpretation to verify: *degree* = move by
+  scale degrees through the active Root/Scale, i.e. today's Progression behaviour;
+  *chroma* = move by raw semitones/chromatic; *note* = force to / target an
+  absolute note; *shift* = a plain transpose amount. Confirm and pin down each,
+  and how the per-step Root/Scale interacts with them, when the repo is readable.)
+
+**Recommended layout for the `ModuleWindow` port** (my recommendation this
+session, user has not yet ratified the visual details — ratify against the
+arranger once it's visible): keep Progression **inside the shared `ModuleWindow`
+frame** so it stays in the family — the **title** and the **menu bar** (Root /
+Scale, and a global time-base slot if we keep one) reuse the existing menu-bar
+helpers unchanged. **Replace the fixed 3x2 grid body** with a **bespoke,
+scrollable step-list body** for this one module: one **row per step** (its length
+control + its shift-mode selector + the shift value), with **Add step / Remove**
+affordances, modelled on the arranger's row interaction. This preserves the full
+variable-length capability (the reason the grid never fit) while keeping the
+shared chrome. The alternative — capping steps to fit six static cells — is a
+feature regression and is rejected.
+
+**Implementation consequence.** This needs a **new escape hatch on `ModuleWindow`**:
+a way for one module to supply a custom body component in place of the 3x2 grid,
+while keeping the shared title / menu bar / OK-Cancel contract. Add that as a
+first-class (if narrow) part of `ModuleWindow`'s surface rather than a
+Progression-only hack, so the step-list body is a clean sub-component. Once
+Progression is off `InlineDialog`, retire `InlineDialog` and the
+`addRootScaleControls`/`readRootScaleControls` pair as noted above.
+
+**Open questions to close in the next session (with the reference open):** the
+four shift modes' exact semantics and UI (one combo picking the mode + one
+value control that re-labels per mode, à la the Shift/Delay live-unit dial? or a
+different control per mode?); whether a global Step-Length stays in the menu bar
+or length is purely per-step; the max step count and whether the body scrolls or
+paginates; and how per-step Root/Scale (if retained) reads against the four
+modes.
