@@ -72,13 +72,16 @@ private:
     // Shared dialog controls, one add/read pair per shared setting (see
     // modules.md "Shared settings"). Every dialog builds its combos through
     // these so a setting looks and reads identically in every module.
-    // `firstRate` narrows the rate list's start (the Scale generator has no
-    // 1/32); `modeCount` narrows the mode list (the Scale generator offers
-    // Up/Down only).
-    void addRootScaleControls (InlineDialog&, const ModuleSettings&);
-    static void readRootScaleControls (const InlineDialog&, ModuleSettings&);
-    static void addRateControl (InlineDialog&, const ModuleSettings&, int firstRate = 0);
-    static void readRateControl (const InlineDialog&, ModuleSettings&, int firstRate = 0);
+    // `scaleOffersOff` adds the "Off" (chromatic) scale choice for the modules
+    // that support it (the pitch transformers plus Random/LFO); the
+    // scale-walking generators pass false. `modeCount` narrows the mode list
+    // (the Scale generator offers Up/Down only).
+    void addRootScaleControls (InlineDialog&, const ModuleSettings&, bool scaleOffersOff);
+    void readRootScaleControls (const InlineDialog&, ModuleSettings&, bool scaleOffersOff) const;
+    static void addRateControl (InlineDialog&, const ModuleSettings&);
+    static void readRateControl (const InlineDialog&, ModuleSettings&);
+    static void addGateControl (InlineDialog&, const ModuleSettings&);
+    static void readGateControl (const InlineDialog&, ModuleSettings&);
     static void addRepeatControl (InlineDialog&, const ModuleSettings&);
     static void readRepeatControl (const InlineDialog&, ModuleSettings&);
     static void addModeControl (InlineDialog&, const ModuleSettings&, int modeCount);
@@ -92,6 +95,15 @@ private:
     // dialogs' root/scale lists, sourced from the parameter so they can't
     // drift from the menu bar.
     juce::StringArray choicesWithGlobal (const char* paramID) const;
+
+    // The scale-override list and its index<->override mapping, shared by every
+    // pitch module (InlineDialog and Random's ModuleWindow alike) so "Global /
+    // Off / named" means the same thing everywhere. `offersOff` inserts "Off"
+    // (the kScaleOff sentinel) as the second entry. Root has no Off, so its
+    // combo is just choicesWithGlobal (index = override + 1).
+    juce::StringArray scaleChoices (bool offersOff) const;
+    static int scaleIndexForOverride (int scaleOverride, bool offersOff);
+    static int scaleOverrideForIndex (int comboIndex, bool offersOff);
 
     CurrentAudioProcessor&        proc;
     CurrentAudioProcessorEditor&  owner;

@@ -16,9 +16,10 @@
 //     -> Output (channel stamp) -> Delay adds echoes -> host
 //
 // Stepped-module behaviour (each on its own step clock, gate = a fraction of
-// its step — fixed at half for Random/Scale, the Arp's is user-set; velocity
-// 100; a root/scale override of -1 means "use the global value"; a repeat
-// window of <= 0 qn means Endless — the pattern never resets):
+// its step — user-set on every note-emitting Rate module: Random, Scale, LFO,
+// Arp; velocity 100; a root/scale override of -1 means "use the global value",
+// a scale override of -2 (Off) means chromatic; a repeat window of <= 0 qn
+// means Endless — the pattern never resets):
 //   - Arp:      a modulator that re-times its input: arpeggiates currently-held
 //               host notes on its step grid, walking them per its mode (Up,
 //               Down, Up-Down, Random) across `arpOctaves` octaves. Consumes
@@ -162,27 +163,32 @@ public:
         double arpGateFrac = 0.5;    // note length as a fraction of the step
         double arpRepeatQn = 0.0;    // <= 0 = Endless (walk never resets)
 
-        // Random generator settings. Root/scale of -1 = use the global value.
-        int    randomRoot   = -1;
-        int    randomScale  = -1;
-        double randomStepQn = 0.25;   // step length in quarter notes (1/16)
-        int    randomFrom   = 24;     // inclusive MIDI note range
-        int    randomTo     = 48;
+        // Random generator settings. Root/scale of -1 = use the global value;
+        // scale of kScaleOff (-2) = draw chromatically. Gate is the note length
+        // as a fraction of the step (like the Arp).
+        int    randomRoot     = -1;
+        int    randomScale    = -1;
+        double randomStepQn   = 0.25;   // step length in quarter notes (1/16)
+        double randomGateFrac = 0.5;
+        int    randomFrom     = 24;     // inclusive MIDI note range
+        int    randomTo       = 48;
 
         // Scale generator settings.
         int    scaleRoot      = -1;
         int    scaleScale     = -1;
         double scaleStepQn    = 0.5;    // step length in quarter notes (1/8)
+        double scaleGateFrac  = 0.5;
         double scaleRepeatQn  = 4.0;    // pattern restarts every this many qn;
                                         // <= 0 = Endless (loops back-to-back)
         int    scaleOctaves   = 1;
         int    scaleMode      = 0;      // kModeUp or kModeDown (Up/Down only)
         bool   scaleEndOnRoot = true;
 
-        // LFO generator settings.
+        // LFO generator settings. scale of kScaleOff (-2) = map chromatically.
         int    lfoRoot       = -1;
         int    lfoScale      = -1;
         double lfoStepQn     = 0.25;   // note grid in quarter notes (1/16)
+        double lfoGateFrac   = 0.5;
         double lfoCycleQn    = 4.0;    // one full shape sweep (1 bar)
         int    lfoShape      = 0;      // ModuleOptions::kLfo* shape indices
         int    lfoDepthOct   = 1;      // swing around the centre: whole octaves
@@ -228,13 +234,20 @@ public:
 
         // Shift settings. shiftScale -1 = global scale (shift in degrees),
         // >= 0 = named scale (degrees), kScaleOff (-2) = chromatic semitones.
+        // shiftRoot -1 = global root, >= 0 = named root (the degree walk's
+        // reference); ignored when the scale is Off.
         int shiftAmount = 0;
         int shiftScale  = -1;
+        int shiftRoot   = -1;
 
-        // Delay settings.
+        // Delay settings. delayScale/delayRoot follow the same model as Shift:
+        // the per-echo shift moves in scale degrees with a scale active, in
+        // chromatic semitones when the scale is Off (-2).
         double delayTimeQn   = 0.5;   // echo spacing in quarter notes (1/8)
         double delayFeedback = 0.5;   // per-echo velocity multiplier
-        int    delayShift    = 0;     // per-echo pitch shift, semitones
+        int    delayShift    = 0;     // per-echo pitch shift
+        int    delayScale    = -1;
+        int    delayRoot     = -1;
 
         // Bit (ch - 1) set = channel ch participates. inChannelMask is all-ones
         // when no MIDI In module narrows the input; outChannelMask is 0 when no

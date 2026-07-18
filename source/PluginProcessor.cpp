@@ -147,15 +147,17 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.arpGateFrac = ModuleOptions::gateFraction (engArpGate.load());
     cfg.arpRepeatQn = ModuleOptions::repeatQuarterNotes (engArpRepeat.load());
 
-    cfg.randomRoot   = engRandomRoot.load();
-    cfg.randomScale  = engRandomScale.load();
-    cfg.randomStepQn = ModuleOptions::rateQuarterNotes (engRandomRate.load());
-    cfg.randomFrom   = engRandomFrom.load();
-    cfg.randomTo     = engRandomTo.load();
+    cfg.randomRoot     = engRandomRoot.load();
+    cfg.randomScale    = engRandomScale.load();
+    cfg.randomStepQn   = ModuleOptions::rateQuarterNotes (engRandomRate.load());
+    cfg.randomGateFrac = ModuleOptions::gateFraction (engRandomGate.load());
+    cfg.randomFrom     = engRandomFrom.load();
+    cfg.randomTo       = engRandomTo.load();
 
     cfg.scaleRoot      = engScaleRoot.load();
     cfg.scaleScale     = engScaleScale.load();
     cfg.scaleStepQn    = ModuleOptions::rateQuarterNotes (engScaleRate.load());
+    cfg.scaleGateFrac  = ModuleOptions::gateFraction (engScaleGate.load());
     cfg.scaleRepeatQn  = ModuleOptions::repeatQuarterNotes (engScaleRepeat.load());
     cfg.scaleOctaves   = engScaleOctaves.load();
     cfg.scaleMode      = engScaleMode.load();
@@ -164,6 +166,7 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.lfoRoot       = engLfoRoot.load();
     cfg.lfoScale      = engLfoScale.load();
     cfg.lfoStepQn     = ModuleOptions::rateQuarterNotes (engLfoRate.load());
+    cfg.lfoGateFrac   = ModuleOptions::gateFraction (engLfoGate.load());
     cfg.lfoCycleQn    = ModuleOptions::barLengthQuarterNotes (engLfoCycle.load());
     cfg.lfoShape      = engLfoShape.load();
     cfg.lfoDepthOct   = engLfoDepthOct.load();
@@ -176,14 +179,14 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.chordType      = engChordType.load();
     cfg.chordInversion = engChordInversion.load();
     cfg.chordLengthQn  = ModuleOptions::barLengthQuarterNotes (engChordLength.load());
-    cfg.chordPeriodQn  = ModuleOptions::barLengthQuarterNotes (engChordRepeat.load());
+    cfg.chordPeriodQn  = ModuleOptions::repeatQuarterNotes (engChordRepeat.load());
 
     cfg.droneRoot     = engDroneRoot.load();
     cfg.droneScale    = engDroneScale.load();
     cfg.droneVoicing  = engDroneVoicing.load();
     cfg.droneOctave   = engDroneOctave.load();
     cfg.droneLengthQn = ModuleOptions::barLengthQuarterNotes (engDroneLength.load());
-    cfg.dronePeriodQn = ModuleOptions::barLengthQuarterNotes (engDroneRepeat.load());
+    cfg.dronePeriodQn = ModuleOptions::repeatQuarterNotes (engDroneRepeat.load());
 
     cfg.quantStepQn = ModuleOptions::rateQuarterNotes (engQuantRate.load());
     cfg.quantSwing  = ModuleOptions::swingFraction (engQuantSwing.load());
@@ -204,10 +207,13 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     cfg.shiftAmount = engShiftAmount.load();
     cfg.shiftScale  = engShiftScale.load();
+    cfg.shiftRoot   = engShiftRoot.load();
 
     cfg.delayTimeQn   = ModuleOptions::rateQuarterNotes (engDelayRate.load());
     cfg.delayFeedback = ModuleOptions::feedbackFraction (engDelayFeedback.load());
     cfg.delayShift    = engDelayShift.load();
+    cfg.delayScale    = engDelayScale.load();
+    cfg.delayRoot     = engDelayRoot.load();
 
     const int root       = (int) (rootParam  != nullptr ? rootParam->load()  : 0.0f);
     const int scaleIndex = (int) (scaleParam != nullptr ? scaleParam->load() : 0.0f);
@@ -289,6 +295,7 @@ void CurrentAudioProcessor::refreshEngineConfig()
                     engRandomRoot.store (m.settings.rootOverride);
                     engRandomScale.store (m.settings.scaleOverride);
                     engRandomRate.store (m.settings.rate);
+                    engRandomGate.store (m.settings.gate);
                     engRandomFrom.store (m.settings.rangeFrom);
                     engRandomTo.store (m.settings.rangeTo);
                 }
@@ -300,6 +307,7 @@ void CurrentAudioProcessor::refreshEngineConfig()
                     engScaleRoot.store (m.settings.rootOverride);
                     engScaleScale.store (m.settings.scaleOverride);
                     engScaleRate.store (m.settings.rate);
+                    engScaleGate.store (m.settings.gate);
                     engScaleRepeat.store (m.settings.repeat);
                     engScaleOctaves.store (m.settings.octaves);
                     engScaleMode.store (m.settings.mode);
@@ -313,6 +321,7 @@ void CurrentAudioProcessor::refreshEngineConfig()
                     engLfoRoot.store (m.settings.rootOverride);
                     engLfoScale.store (m.settings.scaleOverride);
                     engLfoRate.store (m.settings.rate);
+                    engLfoGate.store (m.settings.gate);
                     engLfoCycle.store (m.settings.lfoCycle);
                     engLfoShape.store (m.settings.lfoShape);
                     engLfoDepthOct.store (m.settings.lfoDepthOct);
@@ -383,6 +392,7 @@ void CurrentAudioProcessor::refreshEngineConfig()
                 {
                     engShiftAmount.store (m.settings.shiftAmount);
                     engShiftScale.store (m.settings.scaleOverride);
+                    engShiftRoot.store (m.settings.rootOverride);
                 }
                 shift = true;
                 break;
@@ -392,6 +402,8 @@ void CurrentAudioProcessor::refreshEngineConfig()
                     engDelayRate.store (m.settings.rate);
                     engDelayFeedback.store (m.settings.delayFeedback);
                     engDelayShift.store (m.settings.delayShift);
+                    engDelayScale.store (m.settings.scaleOverride);
+                    engDelayRoot.store (m.settings.rootOverride);
                 }
                 delay = true;
                 break;
@@ -464,8 +476,9 @@ int CurrentAudioProcessor::addModule (ModuleType type, float x, float y)
     {
         // Drones move slower than chords: 4-bar holds back to back (the
         // shared holdLength/holdRepeat default of 1 bar is chord-paced).
+        // holdLength indexes barLengthNames, holdRepeat the Repeat list.
         m.settings.holdLength = ModuleOptions::kBarsFourBars;
-        m.settings.holdRepeat = ModuleOptions::kBarsFourBars;
+        m.settings.holdRepeat = ModuleOptions::kRepeatFourBars;
     }
 
     moduleList.push_back (m);
@@ -559,7 +572,8 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen
             || m.type == ModuleType::Lfo || m.type == ModuleType::ScaleMod
             || m.type == ModuleType::Progression || m.type == ModuleType::Chord
-            || m.type == ModuleType::Drone)
+            || m.type == ModuleType::Drone || m.type == ModuleType::Shift
+            || m.type == ModuleType::Delay)
         {
             node.setProperty ("root",  m.settings.rootOverride, nullptr);
             node.setProperty ("scale", m.settings.scaleOverride, nullptr);
@@ -568,6 +582,10 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
             || m.type == ModuleType::Arp || m.type == ModuleType::Lfo
             || m.type == ModuleType::Delay || m.type == ModuleType::Quantize)
             node.setProperty ("rate", m.settings.rate, nullptr);
+        // Gate ships on every note-emitting Rate module.
+        if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen
+            || m.type == ModuleType::Lfo || m.type == ModuleType::Arp)
+            node.setProperty ("gate", m.settings.gate, nullptr);
         if (m.type == ModuleType::Quantize)
             node.setProperty ("swing", m.settings.swing, nullptr);
         if (m.type == ModuleType::Progression)
@@ -588,14 +606,10 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         }
         if (m.type == ModuleType::ScaleGen)
             node.setProperty ("endOnRoot", m.settings.endOnRoot, nullptr);
-        if (m.type == ModuleType::Arp)
-            node.setProperty ("gate", m.settings.gate, nullptr);
         if (m.type == ModuleType::Shift)
-        {
-            // "scale" doubles as Shift's chromatic/degree switch (kScaleOff).
-            node.setProperty ("scale",       m.settings.scaleOverride, nullptr);
+            // root/scale ride the shared block above (scale carries Shift's
+            // chromatic/degree switch via kScaleOff).
             node.setProperty ("shiftAmount", m.settings.shiftAmount, nullptr);
-        }
         if (m.type == ModuleType::Lfo)
         {
             node.setProperty ("lfoShape",      m.settings.lfoShape, nullptr);
@@ -701,7 +715,7 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             m.settings.holdLength     = (int) node.getProperty ("holdLength",
                                           isDrone ? ModuleOptions::kBarsFourBars : def.holdLength);
             m.settings.holdRepeat     = (int) node.getProperty ("holdRepeat",
-                                          isDrone ? ModuleOptions::kBarsFourBars : def.holdRepeat);
+                                          isDrone ? ModuleOptions::kRepeatFourBars : def.holdRepeat);
 
             moduleList.push_back (m);
         }

@@ -58,9 +58,11 @@ juce::String Canvas::shiftSublabel (const ModuleSettings& settings)
 
 juce::String Canvas::scaleModSublabel (const ModuleSettings& settings) const
 {
-    // The scale it snaps to — the module's one meaningful fact at a glance.
-    const auto scales = choicesWithGlobal (ParamIDs::scale);
-    return scales[juce::jlimit (0, scales.size() - 1, settings.scaleOverride + 1)];
+    // The scale it snaps to — the module's one meaningful fact at a glance
+    // (Off included, since the Scale modulator can pass notes through un-snapped).
+    const auto scales = scaleChoices (true);
+    return scales[juce::jlimit (0, scales.size() - 1,
+                                scaleIndexForOverride (settings.scaleOverride, true))];
 }
 
 juce::String Canvas::progressionSublabel (const ModuleSettings& settings)
@@ -103,32 +105,69 @@ juce::StringArray Canvas::choicesWithGlobal (const char* paramID) const
 // One add/read pair per shared setting, so every module's dialog presents the
 // identical control (same key, label, option list, and index mapping).
 
-void Canvas::addRootScaleControls (InlineDialog& dlg, const ModuleSettings& s)
+juce::StringArray Canvas::scaleChoices (bool offersOff) const
 {
-    // Combo index 0 = Global = override -1, so index = override + 1.
-    dlg.addComboBox ("root",  choicesWithGlobal (ParamIDs::root),  s.rootOverride + 1,  "Root");
-    dlg.addComboBox ("scale", choicesWithGlobal (ParamIDs::scale), s.scaleOverride + 1, "Scale");
+    // "Global" [+ "Off"] + the named scales, so every module's scale combo is
+    // built from one list. Off (chromatic) is inserted right after Global.
+    auto items = choicesWithGlobal (ParamIDs::scale);
+    if (offersOff)
+        items.insert (1, "Off");
+    return items;
 }
 
-void Canvas::readRootScaleControls (const InlineDialog& dlg, ModuleSettings& s)
+int Canvas::scaleIndexForOverride (int scaleOverride, bool offersOff)
+{
+    // Global (-1) -> 0. With Off offered: Off (-2) -> 1, named k -> k + 2.
+    // Without: named k -> k + 1.
+    if (scaleOverride == ModuleOptions::kScaleGlobal) return 0;
+    if (offersOff)
+        return scaleOverride == ModuleOptions::kScaleOff ? 1 : scaleOverride + 2;
+    return scaleOverride + 1;
+}
+
+int Canvas::scaleOverrideForIndex (int comboIndex, bool offersOff)
+{
+    // Inverse of scaleIndexForOverride.
+    if (comboIndex <= 0) return ModuleOptions::kScaleGlobal;
+    if (offersOff)
+        return comboIndex == 1 ? ModuleOptions::kScaleOff : comboIndex - 2;
+    return comboIndex - 1;
+}
+
+void Canvas::addRootScaleControls (InlineDialog& dlg, const ModuleSettings& s, bool scaleOffersOff)
+{
+    // Root combo index 0 = Global = override -1, so index = override + 1 (no
+    // Off — a "no root" has no meaning). Scale runs through the shared mapping.
+    dlg.addComboBox ("root",  choicesWithGlobal (ParamIDs::root), s.rootOverride + 1, "Root");
+    dlg.addComboBox ("scale", scaleChoices (scaleOffersOff),
+                     scaleIndexForOverride (s.scaleOverride, scaleOffersOff), "Scale");
+}
+
+void Canvas::readRootScaleControls (const InlineDialog& dlg, ModuleSettings& s, bool scaleOffersOff) const
 {
     s.rootOverride  = dlg.getComboBoxSelectedIndex ("root") - 1;
-    s.scaleOverride = dlg.getComboBoxSelectedIndex ("scale") - 1;
+    s.scaleOverride = scaleOverrideForIndex (dlg.getComboBoxSelectedIndex ("scale"), scaleOffersOff);
 }
 
-void Canvas::addRateControl (InlineDialog& dlg, const ModuleSettings& s, int firstRate)
+void Canvas::addRateControl (InlineDialog& dlg, const ModuleSettings& s)
 {
-    // `firstRate` trims the head of the shared rate list (the Scale generator
-    // starts at 1/16), so the combo index is the shared index minus the offset.
-    juce::StringArray rates;
-    for (int i = firstRate; i < ModuleOptions::rateNames().size(); ++i)
-        rates.add (ModuleOptions::rateNames()[i]);
-    dlg.addComboBox ("rate", rates, s.rate - firstRate, "Rate");
+    // One canonical rate list (1/32..1/1) everywhere — no module trims it.
+    dlg.addComboBox ("rate", ModuleOptions::rateNames(), s.rate, "Rate");
 }
 
-void Canvas::readRateControl (const InlineDialog& dlg, ModuleSettings& s, int firstRate)
+void Canvas::readRateControl (const InlineDialog& dlg, ModuleSettings& s)
 {
-    s.rate = dlg.getComboBoxSelectedIndex ("rate") + firstRate;
+    s.rate = dlg.getComboBoxSelectedIndex ("rate");
+}
+
+void Canvas::addGateControl (InlineDialog& dlg, const ModuleSettings& s)
+{
+    dlg.addComboBox ("gate", ModuleOptions::gateNames(), s.gate, "Gate");
+}
+
+void Canvas::readGateControl (const InlineDialog& dlg, ModuleSettings& s)
+{
+    s.gate = dlg.getComboBoxSelectedIndex ("gate");
 }
 
 void Canvas::addRepeatControl (InlineDialog& dlg, const ModuleSettings& s)
@@ -168,12 +207,12 @@ void Canvas::readOctavesControl (const InlineDialog& dlg, ModuleSettings& s)
 
 void Canvas::addHoldControls (InlineDialog& dlg, const ModuleSettings& s)
 {
-    // The Chord/Drone pacing pair: Repeat is how often a new chord/note
-    // starts, Length is how long it sounds inside that window (both bar
-    // lengths — deliberately not the shared note-length rate; these modules
-    // move in bars). Length >= Repeat plays legato back-to-back.
+    // The Chord/Drone pacing pair. Length (a finite bar length) is how long the
+    // chord/note sounds; Repeat (the shared Repeat list, so it can be Endless)
+    // is how often it restarts. Both move in bars — deliberately not the shared
+    // note-length rate. Length >= Repeat plays legato back-to-back.
     dlg.addComboBox ("holdLength", ModuleOptions::barLengthNames(), s.holdLength, "Length");
-    dlg.addComboBox ("holdRepeat", ModuleOptions::barLengthNames(), s.holdRepeat, "Repeat");
+    dlg.addComboBox ("holdRepeat", ModuleOptions::repeatNames(),    s.holdRepeat, "Repeat");
 }
 
 void Canvas::readHoldControls (const InlineDialog& dlg, ModuleSettings& s)
@@ -341,7 +380,7 @@ void Canvas::openArpDialog (ModuleComponent& node)
     addModeControl (*dlg, s, ModuleOptions::modeNames().size());
     addRateControl (*dlg, s);
     addOctavesControl (*dlg, s);
-    dlg->addComboBox ("gate", ModuleOptions::gateNames(), s.gate, "Gate");
+    addGateControl (*dlg, s);
     addRepeatControl (*dlg, s);
     dlg->addButton ("OK", 1);
     dlg->addButton ("Cancel", 0);
@@ -356,7 +395,7 @@ void Canvas::openArpDialog (ModuleComponent& node)
             readModeControl (*d, ns);
             readRateControl (*d, ns);
             readOctavesControl (*d, ns);
-            ns.gate = d->getComboBoxSelectedIndex ("gate");
+            readGateControl (*d, ns);
             readRepeatControl (*d, ns);
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
@@ -374,22 +413,31 @@ void Canvas::openRandomDialog (ModuleComponent& node)
     const auto s  = proc.getModuleSettings (id);
 
     // First module on the redesigned window: a thin menu bar (Root / Scale /
-    // Rate) over a 3x2 grid. Random's only own settings are the two range
-    // notes, so they take the top-left pair of cells and the rest stay blank —
-    // the shared frame the other modules will fill in.
+    // Rate) over a 3x2 grid. Random maps pitch, so it offers the Off (chromatic)
+    // scale choice; Gate joins the range notes as a dial (every note-emitting
+    // Rate module carries one).
     auto* win = owner.showModuleWindow ("Random");
 
-    // Menu bar. Combo index 0 = Global = override -1, so index = override + 1
-    // (matching the InlineDialog shared root/scale helpers).
-    win->setMenuCombo (0, "root",  choicesWithGlobal (ParamIDs::root),  s.rootOverride + 1,  "Root");
-    win->setMenuCombo (1, "scale", choicesWithGlobal (ParamIDs::scale), s.scaleOverride + 1, "Scale");
-    win->setMenuCombo (2, "rate",  ModuleOptions::rateNames(),          s.rate,              "Rate");
+    // Menu bar. Root index = override + 1 (Global at 0); scale runs through the
+    // shared override<->index mapping so Off lands identically to the dialogs.
+    win->setMenuCombo (0, "root",  choicesWithGlobal (ParamIDs::root), s.rootOverride + 1, "Root");
+    win->setMenuCombo (1, "scale", scaleChoices (true),
+                       scaleIndexForOverride (s.scaleOverride, true), "Scale");
+    win->setMenuCombo (2, "rate",  ModuleOptions::rateNames(), s.rate, "Rate");
 
     // Range as dials over the MIDI note span (0..127); the label carries a live
-    // note-name readout ("From: C1") since a dial has no text box.
+    // note-name readout ("From: C1") since a dial has no text box. Gate reads
+    // its percentage back the same way.
     auto noteText = [] (double v) { return ModuleOptions::midiNoteName (juce::roundToInt (v)); };
+    auto gateText = [] (double v)
+    {
+        return ModuleOptions::gateNames()[juce::jlimit (0, ModuleOptions::gateNames().size() - 1,
+                                                        juce::roundToInt (v))];
+    };
     win->setGridDial (0, "from", 0.0, 127.0, 1.0, s.rangeFrom, "From", noteText);
     win->setGridDial (1, "to",   0.0, 127.0, 1.0, s.rangeTo,   "To",   noteText);
+    win->setGridDial (2, "gate", 0.0, (double) (ModuleOptions::gateNames().size() - 1), 1.0,
+                      s.gate, "Gate", gateText);
 
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
@@ -401,9 +449,10 @@ void Canvas::openRandomDialog (ModuleComponent& node)
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            ns.rootOverride  = w->getComboSelectedIndex ("root")  - 1;
-            ns.scaleOverride = w->getComboSelectedIndex ("scale") - 1;
+            ns.rootOverride  = w->getComboSelectedIndex ("root") - 1;
+            ns.scaleOverride = scaleOverrideForIndex (w->getComboSelectedIndex ("scale"), true);
             ns.rate          = w->getComboSelectedIndex ("rate");
+            ns.gate          = juce::roundToInt (w->getDialValue ("gate"));
             ns.rangeFrom     = juce::roundToInt (w->getDialValue ("from"));
             ns.rangeTo       = juce::roundToInt (w->getDialValue ("to"));
             // A backwards range is a slip, not an intent — normalise it.
@@ -424,13 +473,16 @@ void Canvas::openScaleGenDialog (ModuleComponent& node)
     const int  id = node.moduleId();
     const auto s  = proc.getModuleSettings (id);
 
+    // A scale-walking generator, so no Off (it needs a scale to walk); one
+    // canonical Rate list; Gate like every note-emitting Rate module.
     auto* dlg = owner.showInlineDialog ("Scale settings");
-    addRootScaleControls (*dlg, s);
+    addRootScaleControls (*dlg, s, false);
     addModeControl (*dlg, s, ModuleOptions::kScaleModeCount);
     addOctavesControl (*dlg, s);
     dlg->addComboBox ("endOn", { "Root (octave)", "7th (last scale note)" },
                       s.endOnRoot ? 0 : 1, "End on");
-    addRateControl (*dlg, s, ModuleOptions::kScaleRateFirst);
+    addRateControl (*dlg, s);
+    addGateControl (*dlg, s);
     addRepeatControl (*dlg, s);
     dlg->addButton ("OK", 1);
     dlg->addButton ("Cancel", 0);
@@ -440,11 +492,12 @@ void Canvas::openScaleGenDialog (ModuleComponent& node)
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readRootScaleControls (*d, ns);
+            readRootScaleControls (*d, ns, false);
             readModeControl (*d, ns);
             readOctavesControl (*d, ns);
             ns.endOnRoot = d->getComboBoxSelectedIndex ("endOn") == 0;
-            readRateControl (*d, ns, ModuleOptions::kScaleRateFirst);
+            readRateControl (*d, ns);
+            readGateControl (*d, ns);
             readRepeatControl (*d, ns);
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
@@ -461,8 +514,10 @@ void Canvas::openLfoDialog (ModuleComponent& node)
     const int  id = node.moduleId();
     const auto s  = proc.getModuleSettings (id);
 
+    // The LFO maps pitch, so it offers Off (chromatic mapping), and it emits
+    // notes on a Rate grid, so it carries a Gate.
     auto* dlg = owner.showInlineDialog ("LFO settings");
-    addRootScaleControls (*dlg, s);
+    addRootScaleControls (*dlg, s, true);
     dlg->addComboBox ("shape", ModuleOptions::lfoShapeNames(), s.lfoShape, "Shape");
     dlg->addComboBox ("cycle", ModuleOptions::barLengthNames(), s.lfoCycle, "Cycle length");
     dlg->addComboBox ("depthOct",   { "0", "1", "2", "3", "4" },
@@ -470,6 +525,7 @@ void Canvas::openLfoDialog (ModuleComponent& node)
     dlg->addComboBox ("depthSteps", { "0", "1", "2", "3", "4", "5", "6" },
                       s.lfoDepthSteps, "Depth (scale steps)");
     addRateControl (*dlg, s);
+    addGateControl (*dlg, s);
     dlg->addComboBox ("phase", ModuleOptions::lfoPhaseNames(), s.lfoPhase,
                       "Phase (degrees)");
     dlg->addButton ("OK", 1);
@@ -482,12 +538,13 @@ void Canvas::openLfoDialog (ModuleComponent& node)
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readRootScaleControls (*d, ns);
+            readRootScaleControls (*d, ns, true);
             ns.lfoShape      = d->getComboBoxSelectedIndex ("shape");
             ns.lfoCycle      = d->getComboBoxSelectedIndex ("cycle");
             ns.lfoDepthOct   = d->getComboBoxSelectedIndex ("depthOct");
             ns.lfoDepthSteps = d->getComboBoxSelectedIndex ("depthSteps");
             readRateControl (*d, ns);
+            readGateControl (*d, ns);
             ns.lfoPhase      = d->getComboBoxSelectedIndex ("phase");
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
@@ -536,10 +593,11 @@ void Canvas::openScaleModDialog (ModuleComponent& node)
     const int  id = node.moduleId();
     const auto s  = proc.getModuleSettings (id);
 
+    // A pitch transformer, so it offers Off (pass notes through un-snapped).
     auto* dlg = owner.showInlineDialog ("Scale settings",
                                         "Notes passing through are forced onto "
-                                        "this scale.");
-    addRootScaleControls (*dlg, s);
+                                        "this scale (Off leaves them chromatic).");
+    addRootScaleControls (*dlg, s, true);
     dlg->addButton ("OK", 1);
     dlg->addButton ("Cancel", 0);
 
@@ -548,7 +606,7 @@ void Canvas::openScaleModDialog (ModuleComponent& node)
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readRootScaleControls (*d, ns);
+            readRootScaleControls (*d, ns, true);
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
                 if (n->moduleId() == id)
@@ -568,11 +626,14 @@ void Canvas::openProgressionDialog (ModuleComponent& node)
     for (int o = -ModuleOptions::kProgOctaveRange; o <= ModuleOptions::kProgOctaveRange; ++o)
         octaves.add (o > 0 ? "+" + juce::String (o) : juce::String (o));
 
+    // A pitch transformer (Off = walk degrees chromatically). Its per-step
+    // cadence is "Step Length", drawn from the bar-length list — "Rate" stays
+    // reserved for the 1/32..1/1 note flavour.
     auto* dlg = owner.showInlineDialog ("Progression settings",
                                         "Each step transposes passing notes to its "
-                                        "scale degree; Rate is one step's length.");
-    addRootScaleControls (*dlg, s);
-    dlg->addComboBox ("progRate", ModuleOptions::barLengthNames(), s.progRate, "Rate");
+                                        "scale degree; Step Length is one step's length.");
+    addRootScaleControls (*dlg, s, true);
+    dlg->addComboBox ("progRate", ModuleOptions::barLengthNames(), s.progRate, "Step Length");
 
     // One row per step: degree + octave side by side. The row set is edited
     // live by the Add/Remove buttons; combo names are indexed so OK can read
@@ -613,7 +674,7 @@ void Canvas::openProgressionDialog (ModuleComponent& node)
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readRootScaleControls (*d, ns);
+            readRootScaleControls (*d, ns, true);
             ns.progRate = d->getComboBoxSelectedIndex ("progRate");
             ns.progSteps.clear();
             for (int i = 0; i < *stepCount; ++i)
@@ -636,25 +697,19 @@ void Canvas::openShiftDialog (ModuleComponent& node)
     const int  id = node.moduleId();
     const auto s  = proc.getModuleSettings (id);
 
-    // Shift's scale list adds "Off" (work chromatically) after "Global", so
-    // the combo index maps to the override as: 0 = Global (-1), 1 = Off (-2),
-    // 2.. = the scale list.
-    auto scales = choicesWithGlobal (ParamIDs::scale);
-    scales.insert (1, "Off");
-    const int scaleIndex = s.scaleOverride == ModuleOptions::kScaleGlobal ? 0
-                         : s.scaleOverride == ModuleOptions::kScaleOff    ? 1
-                                                                          : s.scaleOverride + 2;
-
     juce::StringArray amounts;
     for (int a = -ModuleOptions::kShiftRange; a <= ModuleOptions::kShiftRange; ++a)
         amounts.add (a > 0 ? "+" + juce::String (a) : juce::String (a));
 
+    // A pitch transformer carrying the shared Root/Scale pair (Off = shift in
+    // semitones, a scale = shift in degrees). The amount stays a combo here;
+    // its live unit-label dial belongs to the ModuleWindow rollout.
     auto* dlg = owner.showInlineDialog ("Shift settings",
                                         "With a scale, the amount shifts in scale steps; "
                                         "with scale Off, in semitones.");
+    addRootScaleControls (*dlg, s, true);
     dlg->addComboBox ("amount", amounts, s.shiftAmount + ModuleOptions::kShiftRange,
                       "Amount");
-    dlg->addComboBox ("scale", scales, scaleIndex, "Scale");
     dlg->addButton ("OK", 1);
     dlg->addButton ("Cancel", 0);
 
@@ -663,11 +718,8 @@ void Canvas::openShiftDialog (ModuleComponent& node)
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
+            readRootScaleControls (*d, ns, true);
             ns.shiftAmount = d->getComboBoxSelectedIndex ("amount") - ModuleOptions::kShiftRange;
-            const int idx = d->getComboBoxSelectedIndex ("scale");
-            ns.scaleOverride = idx == 0 ? ModuleOptions::kScaleGlobal
-                             : idx == 1 ? ModuleOptions::kScaleOff
-                                        : idx - 2;
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
                 if (n->moduleId() == id)
@@ -687,14 +739,18 @@ void Canvas::openDelayDialog (ModuleComponent& node)
     for (int a = -ModuleOptions::kDelayShiftRange; a <= ModuleOptions::kDelayShiftRange; ++a)
         shifts.add (a > 0 ? "+" + juce::String (a) : juce::String (a));
 
+    // Delay maps pitch through its per-echo shift, so it carries the shared
+    // Root/Scale pair (Off = shift in semitones, a scale = shift in degrees).
     auto* dlg = owner.showInlineDialog ("Delay settings",
-                                        "Feedback sets how quickly the repeats fade; "
-                                        "a shift moves each repeat by that many semitones.");
+                                        "Feedback sets how quickly the repeats fade; a shift "
+                                        "moves each repeat (semitones with scale Off, else "
+                                        "scale steps).");
+    addRootScaleControls (*dlg, s, true);
     addRateControl (*dlg, s);
     dlg->addComboBox ("feedback", ModuleOptions::feedbackNames(), s.delayFeedback,
                       "Feedback");
     dlg->addComboBox ("shift", shifts, s.delayShift + ModuleOptions::kDelayShiftRange,
-                      "Shift (semitones)");
+                      "Shift");
     dlg->addButton ("OK", 1);
     dlg->addButton ("Cancel", 0);
 
@@ -705,6 +761,7 @@ void Canvas::openDelayDialog (ModuleComponent& node)
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
+            readRootScaleControls (*d, ns, true);
             readRateControl (*d, ns);
             ns.delayFeedback = d->getComboBoxSelectedIndex ("feedback");
             ns.delayShift    = d->getComboBoxSelectedIndex ("shift")
@@ -727,7 +784,7 @@ void Canvas::openChordDialog (ModuleComponent& node)
     auto* dlg = owner.showInlineDialog ("Chord settings",
                                         "A chord built on the scale degree, restarting "
                                         "every Repeat and sounding for Length.");
-    addRootScaleControls (*dlg, s);
+    addRootScaleControls (*dlg, s, false);   // builds a chord from the scale — no Off
     dlg->addComboBox ("degree", ModuleOptions::degreeNames(), s.chordDegree, "Degree");
     dlg->addComboBox ("type", ModuleOptions::chordTypeNames(), s.chordType, "Type");
     dlg->addComboBox ("inversion", ModuleOptions::chordInversionNames(),
@@ -743,7 +800,7 @@ void Canvas::openChordDialog (ModuleComponent& node)
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readRootScaleControls (*d, ns);
+            readRootScaleControls (*d, ns, false);
             ns.chordDegree    = d->getComboBoxSelectedIndex ("degree");
             ns.chordType      = d->getComboBoxSelectedIndex ("type");
             ns.chordInversion = d->getComboBoxSelectedIndex ("inversion");
@@ -770,7 +827,7 @@ void Canvas::openDroneDialog (ModuleComponent& node)
     auto* dlg = owner.showInlineDialog ("Drone settings",
                                         "Holds its voicing for Length, restarting every "
                                         "Repeat — and immediately when the harmony changes.");
-    addRootScaleControls (*dlg, s);
+    addRootScaleControls (*dlg, s, false);   // holds a scale voicing — no Off
     dlg->addComboBox ("voicing", ModuleOptions::droneVoicingNames(),
                       s.droneVoicing, "Voicing");
     dlg->addComboBox ("octave", octaves,
@@ -786,7 +843,7 @@ void Canvas::openDroneDialog (ModuleComponent& node)
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readRootScaleControls (*d, ns);
+            readRootScaleControls (*d, ns, false);
             ns.droneVoicing = d->getComboBoxSelectedIndex ("voicing");
             ns.droneOctave  = d->getComboBoxSelectedIndex ("octave")
                                 - ModuleOptions::kDroneOctaveRange;
