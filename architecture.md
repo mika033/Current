@@ -66,8 +66,10 @@ real double-click dialogs.
   Root, Scale, and a Rate or Length combo, unused slots left blank), a 3x2
   grid of combo/dial cells (labels above, Little Arp Monster section-box
   sizing; dials for knob-friendly values like octaves/gate), and an action-
-  button row. Random is the first module on it (see the module-catalogue
-  section); the rest still open `InlineDialog` dialogs pending conversion. The
+  button row. The five generators (Random, Scale gen, LFO, Chord, Drone) are on
+  it (see the module-catalogue section), routing shared settings through
+  `Canvas`'s `ModuleWindow` helper pairs; the eight non-generator modules still
+  open `InlineDialog` dialogs pending conversion. The
   design decisions behind the window (band-by-band rules, dial readouts, the
   roads not taken) are written up in `design/module-window.md`.
 - `tools/engine_smoketest.cpp` — headless engine test, see Testing below.

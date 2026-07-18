@@ -7,10 +7,15 @@ consistent. It is plugin-local: the cross-product UI rules (themes, typography,
 panels, modal dialogs) live in `SnorkelAudioStandards/design/`; this file only
 covers Current's module window and where it leans on those shared rules.
 
-Status: Random is the first and only module on this window. The rest still use
-the older stacked-combo `InlineDialog`; converting them is the open rollout
-(see the TODO at the end of `CLAUDE.md`). Implementation lives in
-`ModuleWindow.h/.cpp`; the dial rendering is in `CurrentLookAndFeel`.
+Status: all five generators (Random, Scale gen, LFO, Chord, Drone) are on this
+window. The eight non-generator modules still use the older stacked-combo
+`InlineDialog`; converting them is the open rollout (see the TODO at the end of
+`CLAUDE.md`). Implementation lives in `ModuleWindow.h/.cpp`; the dial rendering
+is in `CurrentLookAndFeel`. Shared controls now go through `ModuleWindow` helper
+pairs in `Canvas` (`addRootScaleMenu` / `addRateMenu` / `addHoldLengthMenu` /
+`addGateDial` / `addOctavesDial` / `addModeCombo` / `addRepeatCombo` /
+`addHoldRepeatCombo`), the twins of the `InlineDialog` helpers, so a shared
+setting is the identical control on either window.
 
 ## Goal
 
@@ -96,11 +101,12 @@ the SnorkelAudioStandards modal-dialog rule (no `juce::AlertWindow` /
   arrows too), so the module window matches the rest of the plugin rather than
   diverging on its own. Adopting no-arrow combos is a separate, plugin-wide
   change.
-- **Shared-control helpers still to come.** Random's window inlines its
-  Root/Scale/Rate mapping. The old `InlineDialog` dialogs share `add/read`
-  helper pairs so a shared setting is the *identical* control everywhere; the
-  new window needs equivalent helpers as more modules move over, or the
-  "shared setting = identical control" guarantee will drift.
+- **Shared-control helpers (done for the generators).** The `ModuleWindow`
+  now has its own `add/read` helper pairs in `Canvas`, the twins of the
+  `InlineDialog` ones, so a shared setting is the *identical* control on either
+  window. Random no longer inlines its Root/Scale/Rate/Gate — it routes through
+  the same helpers as the other generators. Extend the set as the remaining
+  modules move over (Arp already reuses the generator helpers verbatim).
 
 ## Layout constants
 

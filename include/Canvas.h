@@ -9,6 +9,7 @@
 
 class CurrentAudioProcessorEditor;
 class InlineDialog;
+class ModuleWindow;
 
 // The central drop surface. Modules dragged from the palette land here and can
 // be moved around; double-clicking one opens its settings dialog.
@@ -88,8 +89,29 @@ private:
     static void readModeControl (const InlineDialog&, ModuleSettings&);
     static void addOctavesControl (InlineDialog&, const ModuleSettings&);
     static void readOctavesControl (const InlineDialog&, ModuleSettings&);
-    static void addHoldControls (InlineDialog&, const ModuleSettings&);
-    static void readHoldControls (const InlineDialog&, ModuleSettings&);
+    // ModuleWindow counterparts of the shared controls above, so a shared
+    // setting is the identical control whichever window a module opens (the
+    // generators are on ModuleWindow, the rest still on InlineDialog). The menu
+    // helpers target the window's three fixed menu slots (Root=0, Scale=1,
+    // Rate/Length=2); the grid helpers take the 0..5 grid cell. Read helpers
+    // look the control up by name, so they need no slot. Gate and octaves are
+    // dials here (the design's knob-friendly values); the rest are combos.
+    void addRootScaleMenu (ModuleWindow&, const ModuleSettings&, bool scaleOffersOff);
+    void readRootScaleMenu (const ModuleWindow&, ModuleSettings&, bool scaleOffersOff) const;
+    static void addRateMenu (ModuleWindow&, const ModuleSettings&);
+    static void readRateMenu (const ModuleWindow&, ModuleSettings&);
+    static void addHoldLengthMenu (ModuleWindow&, const ModuleSettings&);
+    static void readHoldLengthMenu (const ModuleWindow&, ModuleSettings&);
+    static void addGateDial (ModuleWindow&, int slot, const ModuleSettings&);
+    static void readGateDial (const ModuleWindow&, ModuleSettings&);
+    static void addOctavesDial (ModuleWindow&, int slot, const ModuleSettings&);
+    static void readOctavesDial (const ModuleWindow&, ModuleSettings&);
+    static void addModeCombo (ModuleWindow&, int slot, const ModuleSettings&, int modeCount);
+    static void readModeCombo (const ModuleWindow&, ModuleSettings&);
+    static void addRepeatCombo (ModuleWindow&, int slot, const ModuleSettings&);
+    static void readRepeatCombo (const ModuleWindow&, ModuleSettings&);
+    static void addHoldRepeatCombo (ModuleWindow&, int slot, const ModuleSettings&);
+    static void readHoldRepeatCombo (const ModuleWindow&, ModuleSettings&);
 
     // "Global" followed by the choices of a global APVTS parameter — the
     // dialogs' root/scale lists, sourced from the parameter so they can't

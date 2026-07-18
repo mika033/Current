@@ -81,9 +81,13 @@ Settings-consistency alignment (2026-07) is now implemented — see the "Setting
 Module-settings UI redesign (in progress): the stacked-combo `InlineDialog`
 settings dialogs are being replaced by a shared, structured `ModuleWindow`
 (thin menu bar — Root / Scale / Rate-or-Length — over a 3x2 grid of combo/dial
-cells, dials for knob-friendly values; see `architecture.md`). Random is the
-first module converted and approved; the other twelve still open their
-`InlineDialog` dialogs and are the pending rollout.
+cells, dials for knob-friendly values; see `architecture.md`). All five
+generators are now converted — Random, Scale gen, LFO, Chord, and Drone — and
+route their Root/Scale/Rate(or Length)/Gate/Octaves/Repeat through shared
+`ModuleWindow` helper pairs in `Canvas` so a shared control is identical across
+them. The eight remaining modules (Arp, Quantize, Scale mod, Progression,
+Shift, Delay, MIDI In, Output) still open their `InlineDialog` dialogs and are
+the pending rollout (see the TODO near the end of this file).
 
 Note on phase numbering: the requirements were renumbered after the first coding session — what the phase-1 branch and its commits called "Phase 1: Canvas skeleton" is now Phase 2. Code comments follow the current numbering.
 
@@ -146,4 +150,8 @@ Deliberate-and-fine (documented so a later session doesn't "unify" them by mista
 
 ## TODO: roll the module window out to every module
 
-Random is the only module on the redesigned `ModuleWindow` (menu bar + 3x2 grid; see `design/module-window.md`). The other twelve — Scale gen, LFO, Chord, Drone, Arp, Quantize, Scale mod, Progression, Shift, Delay, MIDI In, Output — still open their old stacked-combo `InlineDialog` dialogs and all need converting to the new window, one at a time, matching the layout rules in the design doc (dials for octaves/gate, live label readouts, Rate-vs-Length in the menu bar's third slot). As part of that rollout, give the shared-setting `add/read` helpers `ModuleWindow` counterparts so a shared control stays identical across modules, and retire `InlineDialog` once nothing uses it.
+All five **generators** are now on the redesigned `ModuleWindow` (menu bar + 3x2 grid; see `design/module-window.md`): Random plus Scale gen, LFO, Chord, and Drone, converted 2026-07. The eight remaining modules — **Arp, Quantize, Scale mod, Progression, Shift, Delay, MIDI In, Output** — still open their old stacked-combo `InlineDialog` dialogs and all need converting to the new window, one at a time, matching the layout rules in the design doc (dials for octaves/gate, live label readouts, Rate-vs-Length in the menu bar's third slot). `InlineDialog` is retired once the last of them moves over.
+
+The shared-setting `add/read` helpers now have `ModuleWindow` counterparts in `Canvas` (`addRootScaleMenu`/`addRateMenu`/`addHoldLengthMenu` for the menu bar; `addGateDial`/`addOctavesDial`/`addModeCombo`/`addRepeatCombo`/`addHoldRepeatCombo` for the grid), so a shared control stays identical across modules; extend them as the remaining modules need controls the generators didn't (e.g. Arp reuses mode/rate/octaves/gate/repeat, so it needs no new helper; Shift/Delay's amount is still owed its live-unit-readout **dial** — see the deferred carve-out in the settings-consistency section). The `InlineDialog` helper pairs stay in place until the last `InlineDialog` module is gone.
+
+Carve-outs that ride along with this rollout, not yet done: Shift's and Delay's shift **amount** becomes a dial with a live unit readout (`Shift: 3 semitones` / `Shift: 3 steps`), and Progression's dynamic per-step rows need a `ModuleWindow` home (the `InlineDialog` add/remove utility-button mechanism has no grid equivalent yet — the six-cell grid may not suit a variable-length step list, so this one needs a layout decision).

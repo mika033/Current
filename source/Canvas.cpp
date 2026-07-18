@@ -205,20 +205,113 @@ void Canvas::readOctavesControl (const InlineDialog& dlg, ModuleSettings& s)
     s.octaves = dlg.getComboBoxSelectedIndex ("octaves") + 1;
 }
 
-void Canvas::addHoldControls (InlineDialog& dlg, const ModuleSettings& s)
+// --- Shared ModuleWindow controls ---------------------------------------------
+// The ModuleWindow twins of the InlineDialog helpers above. Same keys, lists,
+// and index mappings, so a shared setting reads and writes identically whether a
+// module opens the new window or the old dialog. Placement differs (the window
+// has fixed menu/grid slots), so these take a slot; the menu helpers know their
+// canonical slot (Root/Scale/Rate-or-Length) and fill it directly.
+
+void Canvas::addRootScaleMenu (ModuleWindow& win, const ModuleSettings& s, bool scaleOffersOff)
 {
-    // The Chord/Drone pacing pair. Length (a finite bar length) is how long the
-    // chord/note sounds; Repeat (the shared Repeat list, so it can be Endless)
-    // is how often it restarts. Both move in bars — deliberately not the shared
-    // note-length rate. Length >= Repeat plays legato back-to-back.
-    dlg.addComboBox ("holdLength", ModuleOptions::barLengthNames(), s.holdLength, "Length");
-    dlg.addComboBox ("holdRepeat", ModuleOptions::repeatNames(),    s.holdRepeat, "Repeat");
+    win.setMenuCombo (0, "root",  choicesWithGlobal (ParamIDs::root), s.rootOverride + 1, "Root");
+    win.setMenuCombo (1, "scale", scaleChoices (scaleOffersOff),
+                      scaleIndexForOverride (s.scaleOverride, scaleOffersOff), "Scale");
 }
 
-void Canvas::readHoldControls (const InlineDialog& dlg, ModuleSettings& s)
+void Canvas::readRootScaleMenu (const ModuleWindow& win, ModuleSettings& s, bool scaleOffersOff) const
 {
-    s.holdLength = dlg.getComboBoxSelectedIndex ("holdLength");
-    s.holdRepeat = dlg.getComboBoxSelectedIndex ("holdRepeat");
+    s.rootOverride  = win.getComboSelectedIndex ("root") - 1;
+    s.scaleOverride = scaleOverrideForIndex (win.getComboSelectedIndex ("scale"), scaleOffersOff);
+}
+
+void Canvas::addRateMenu (ModuleWindow& win, const ModuleSettings& s)
+{
+    // The Rate flavour lives in the menu bar's third slot (the note-length grid).
+    win.setMenuCombo (2, "rate", ModuleOptions::rateNames(), s.rate, "Rate");
+}
+
+void Canvas::readRateMenu (const ModuleWindow& win, ModuleSettings& s)
+{
+    s.rate = win.getComboSelectedIndex ("rate");
+}
+
+void Canvas::addHoldLengthMenu (ModuleWindow& win, const ModuleSettings& s)
+{
+    // The Length flavour takes the same third menu slot on the bar-based modules
+    // (Chord, Drone), so Rate and Length never appear together and the slot's
+    // meaning stays "the module's primary time base".
+    win.setMenuCombo (2, "holdLength", ModuleOptions::barLengthNames(), s.holdLength, "Length");
+}
+
+void Canvas::readHoldLengthMenu (const ModuleWindow& win, ModuleSettings& s)
+{
+    s.holdLength = win.getComboSelectedIndex ("holdLength");
+}
+
+void Canvas::addGateDial (ModuleWindow& win, int slot, const ModuleSettings& s)
+{
+    // Gate is a dial everywhere it appears; its label reads the active percentage
+    // back live ("Gate: 50%") since a dial has no text box.
+    auto gateText = [] (double v)
+    {
+        return ModuleOptions::gateNames()[juce::jlimit (0, ModuleOptions::gateNames().size() - 1,
+                                                        juce::roundToInt (v))];
+    };
+    win.setGridDial (slot, "gate", 0.0, (double) (ModuleOptions::gateNames().size() - 1), 1.0,
+                     s.gate, "Gate", gateText);
+}
+
+void Canvas::readGateDial (const ModuleWindow& win, ModuleSettings& s)
+{
+    s.gate = juce::roundToInt (win.getDialValue ("gate"));
+}
+
+void Canvas::addOctavesDial (ModuleWindow& win, int slot, const ModuleSettings& s)
+{
+    // The 1..4 pattern-span "Octaves" (Scale gen, Arp) — a dial, reading its
+    // count back live.
+    win.setGridDial (slot, "octaves", 1.0, 4.0, 1.0, (double) s.octaves, "Octaves",
+                     [] (double v) { return juce::String (juce::roundToInt (v)); });
+}
+
+void Canvas::readOctavesDial (const ModuleWindow& win, ModuleSettings& s)
+{
+    s.octaves = juce::roundToInt (win.getDialValue ("octaves"));
+}
+
+void Canvas::addModeCombo (ModuleWindow& win, int slot, const ModuleSettings& s, int modeCount)
+{
+    juce::StringArray modes;
+    for (int i = 0; i < modeCount && i < ModuleOptions::modeNames().size(); ++i)
+        modes.add (ModuleOptions::modeNames()[i]);
+    win.setGridCombo (slot, "mode", modes, juce::jlimit (0, modeCount - 1, s.mode), "Mode");
+}
+
+void Canvas::readModeCombo (const ModuleWindow& win, ModuleSettings& s)
+{
+    s.mode = win.getComboSelectedIndex ("mode");
+}
+
+void Canvas::addRepeatCombo (ModuleWindow& win, int slot, const ModuleSettings& s)
+{
+    win.setGridCombo (slot, "repeat", ModuleOptions::repeatNames(), s.repeat, "Repeat");
+}
+
+void Canvas::readRepeatCombo (const ModuleWindow& win, ModuleSettings& s)
+{
+    s.repeat = win.getComboSelectedIndex ("repeat");
+}
+
+void Canvas::addHoldRepeatCombo (ModuleWindow& win, int slot, const ModuleSettings& s)
+{
+    // Chord/Drone keep their Repeat on a distinct key (holdRepeat), same list.
+    win.setGridCombo (slot, "holdRepeat", ModuleOptions::repeatNames(), s.holdRepeat, "Repeat");
+}
+
+void Canvas::readHoldRepeatCombo (const ModuleWindow& win, ModuleSettings& s)
+{
+    s.holdRepeat = win.getComboSelectedIndex ("holdRepeat");
 }
 
 void Canvas::addNodeComponent (const ModuleInstance& instance)
@@ -412,32 +505,22 @@ void Canvas::openRandomDialog (ModuleComponent& node)
     const int  id = node.moduleId();
     const auto s  = proc.getModuleSettings (id);
 
-    // First module on the redesigned window: a thin menu bar (Root / Scale /
-    // Rate) over a 3x2 grid. Random maps pitch, so it offers the Off (chromatic)
-    // scale choice; Gate joins the range notes as a dial (every note-emitting
-    // Rate module carries one).
+    // The redesigned window: a thin menu bar (Root / Scale / Rate) over a 3x2
+    // grid. Random maps pitch, so it offers the Off (chromatic) scale choice;
+    // Gate joins the range notes as a dial (every note-emitting Rate module
+    // carries one). Root/Scale/Rate/Gate go through the shared ModuleWindow
+    // helpers so they stay identical to the other generators' windows.
     auto* win = owner.showModuleWindow ("Random");
 
-    // Menu bar. Root index = override + 1 (Global at 0); scale runs through the
-    // shared override<->index mapping so Off lands identically to the dialogs.
-    win->setMenuCombo (0, "root",  choicesWithGlobal (ParamIDs::root), s.rootOverride + 1, "Root");
-    win->setMenuCombo (1, "scale", scaleChoices (true),
-                       scaleIndexForOverride (s.scaleOverride, true), "Scale");
-    win->setMenuCombo (2, "rate",  ModuleOptions::rateNames(), s.rate, "Rate");
+    addRootScaleMenu (*win, s, true);
+    addRateMenu (*win, s);
 
     // Range as dials over the MIDI note span (0..127); the label carries a live
-    // note-name readout ("From: C1") since a dial has no text box. Gate reads
-    // its percentage back the same way.
+    // note-name readout ("From: C1") since a dial has no text box.
     auto noteText = [] (double v) { return ModuleOptions::midiNoteName (juce::roundToInt (v)); };
-    auto gateText = [] (double v)
-    {
-        return ModuleOptions::gateNames()[juce::jlimit (0, ModuleOptions::gateNames().size() - 1,
-                                                        juce::roundToInt (v))];
-    };
     win->setGridDial (0, "from", 0.0, 127.0, 1.0, s.rangeFrom, "From", noteText);
     win->setGridDial (1, "to",   0.0, 127.0, 1.0, s.rangeTo,   "To",   noteText);
-    win->setGridDial (2, "gate", 0.0, (double) (ModuleOptions::gateNames().size() - 1), 1.0,
-                      s.gate, "Gate", gateText);
+    addGateDial (*win, 2, s);
 
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
@@ -449,10 +532,9 @@ void Canvas::openRandomDialog (ModuleComponent& node)
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            ns.rootOverride  = w->getComboSelectedIndex ("root") - 1;
-            ns.scaleOverride = scaleOverrideForIndex (w->getComboSelectedIndex ("scale"), true);
-            ns.rate          = w->getComboSelectedIndex ("rate");
-            ns.gate          = juce::roundToInt (w->getDialValue ("gate"));
+            readRootScaleMenu (*w, ns, true);
+            readRateMenu (*w, ns);
+            readGateDial (*w, ns);
             ns.rangeFrom     = juce::roundToInt (w->getDialValue ("from"));
             ns.rangeTo       = juce::roundToInt (w->getDialValue ("to"));
             // A backwards range is a slip, not an intent — normalise it.
@@ -475,37 +557,39 @@ void Canvas::openScaleGenDialog (ModuleComponent& node)
 
     // A scale-walking generator, so no Off (it needs a scale to walk); one
     // canonical Rate list; Gate like every note-emitting Rate module.
-    auto* dlg = owner.showInlineDialog ("Scale settings");
-    addRootScaleControls (*dlg, s, false);
-    addModeControl (*dlg, s, ModuleOptions::kScaleModeCount);
-    addOctavesControl (*dlg, s);
-    dlg->addComboBox ("endOn", { "Root (octave)", "7th (last scale note)" },
-                      s.endOnRoot ? 0 : 1, "End on");
-    addRateControl (*dlg, s);
-    addGateControl (*dlg, s);
-    addRepeatControl (*dlg, s);
-    dlg->addButton ("OK", 1);
-    dlg->addButton ("Cancel", 0);
+    // Menu bar: Root / Scale / Rate. Grid: mode, octaves (dial), end-on, gate
+    // (dial), repeat.
+    auto* win = owner.showModuleWindow ("Scale");
+    addRootScaleMenu (*win, s, false);
+    addRateMenu (*win, s);
+    addModeCombo (*win, 0, s, ModuleOptions::kScaleModeCount);
+    addOctavesDial (*win, 1, s);
+    win->setGridCombo (2, "endOn", { "Root (octave)", "7th (last scale note)" },
+                       s.endOnRoot ? 0 : 1, "End on");
+    addGateDial (*win, 3, s);
+    addRepeatCombo (*win, 4, s);
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
 
-    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    win->onResult = [this, id] (int result, ModuleWindow* w)
     {
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readRootScaleControls (*d, ns, false);
-            readModeControl (*d, ns);
-            readOctavesControl (*d, ns);
-            ns.endOnRoot = d->getComboBoxSelectedIndex ("endOn") == 0;
-            readRateControl (*d, ns);
-            readGateControl (*d, ns);
-            readRepeatControl (*d, ns);
+            readRootScaleMenu (*w, ns, false);
+            readRateMenu (*w, ns);
+            readModeCombo (*w, ns);
+            readOctavesDial (*w, ns);
+            ns.endOnRoot = w->getComboSelectedIndex ("endOn") == 0;
+            readGateDial (*w, ns);
+            readRepeatCombo (*w, ns);
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (rateSublabel (ns));
         }
-        d->getParentComponent()->removeChildComponent (d);
-        delete d;
+        w->getParentComponent()->removeChildComponent (w);
+        delete w;
     };
 }
 
@@ -515,44 +599,48 @@ void Canvas::openLfoDialog (ModuleComponent& node)
     const auto s  = proc.getModuleSettings (id);
 
     // The LFO maps pitch, so it offers Off (chromatic mapping), and it emits
-    // notes on a Rate grid, so it carries a Gate.
-    auto* dlg = owner.showInlineDialog ("LFO settings");
-    addRootScaleControls (*dlg, s, true);
-    dlg->addComboBox ("shape", ModuleOptions::lfoShapeNames(), s.lfoShape, "Shape");
-    dlg->addComboBox ("cycle", ModuleOptions::barLengthNames(), s.lfoCycle, "Cycle length");
-    dlg->addComboBox ("depthOct",   { "0", "1", "2", "3", "4" },
-                      s.lfoDepthOct, "Depth (octaves)");
-    dlg->addComboBox ("depthSteps", { "0", "1", "2", "3", "4", "5", "6" },
-                      s.lfoDepthSteps, "Depth (scale steps)");
-    addRateControl (*dlg, s);
-    addGateControl (*dlg, s);
-    dlg->addComboBox ("phase", ModuleOptions::lfoPhaseNames(), s.lfoPhase,
-                      "Phase (degrees)");
-    dlg->addButton ("OK", 1);
-    dlg->addButton ("Cancel", 0);
+    // notes on a Rate grid, so it carries a Gate. Menu bar: Root / Scale / Rate.
+    // Grid (all six cells): shape, cycle length, depth-octaves (dial), depth-
+    // steps (dial), gate (dial), phase. Cycle length is the LFO's own bar-based
+    // period, distinct from the note-emission Rate in the menu bar.
+    auto* win = owner.showModuleWindow ("LFO");
+    addRootScaleMenu (*win, s, true);
+    addRateMenu (*win, s);
+
+    auto intText = [] (double v) { return juce::String (juce::roundToInt (v)); };
+    win->setGridCombo (0, "shape", ModuleOptions::lfoShapeNames(), s.lfoShape, "Shape");
+    win->setGridCombo (1, "cycle", ModuleOptions::barLengthNames(), s.lfoCycle, "Cycle length");
+    win->setGridDial  (2, "depthOct",   0.0, 4.0, 1.0, (double) s.lfoDepthOct,
+                       "Depth (oct)", intText);
+    win->setGridDial  (3, "depthSteps", 0.0, 6.0, 1.0, (double) s.lfoDepthSteps,
+                       "Depth (steps)", intText);
+    addGateDial (*win, 4, s);
+    win->setGridCombo (5, "phase", ModuleOptions::lfoPhaseNames(), s.lfoPhase, "Phase (deg)");
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
 
     // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the dialog is up (host state restore), so it is re-looked-up on OK.
-    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    // the window is up (host state restore), so it is re-looked-up on OK.
+    win->onResult = [this, id] (int result, ModuleWindow* w)
     {
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readRootScaleControls (*d, ns, true);
-            ns.lfoShape      = d->getComboBoxSelectedIndex ("shape");
-            ns.lfoCycle      = d->getComboBoxSelectedIndex ("cycle");
-            ns.lfoDepthOct   = d->getComboBoxSelectedIndex ("depthOct");
-            ns.lfoDepthSteps = d->getComboBoxSelectedIndex ("depthSteps");
-            readRateControl (*d, ns);
-            readGateControl (*d, ns);
-            ns.lfoPhase      = d->getComboBoxSelectedIndex ("phase");
+            readRootScaleMenu (*w, ns, true);
+            readRateMenu (*w, ns);
+            ns.lfoShape      = w->getComboSelectedIndex ("shape");
+            ns.lfoCycle      = w->getComboSelectedIndex ("cycle");
+            ns.lfoDepthOct   = juce::roundToInt (w->getDialValue ("depthOct"));
+            ns.lfoDepthSteps = juce::roundToInt (w->getDialValue ("depthSteps"));
+            readGateDial (*w, ns);
+            ns.lfoPhase      = w->getComboSelectedIndex ("phase");
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (rateSublabel (ns));
         }
-        d->getParentComponent()->removeChildComponent (d);
-        delete d;
+        w->getParentComponent()->removeChildComponent (w);
+        delete w;
     };
 }
 
@@ -781,37 +869,40 @@ void Canvas::openChordDialog (ModuleComponent& node)
     const int  id = node.moduleId();
     const auto s  = proc.getModuleSettings (id);
 
-    auto* dlg = owner.showInlineDialog ("Chord settings",
-                                        "A chord built on the scale degree, restarting "
-                                        "every Repeat and sounding for Length.");
-    addRootScaleControls (*dlg, s, false);   // builds a chord from the scale — no Off
-    dlg->addComboBox ("degree", ModuleOptions::degreeNames(), s.chordDegree, "Degree");
-    dlg->addComboBox ("type", ModuleOptions::chordTypeNames(), s.chordType, "Type");
-    dlg->addComboBox ("inversion", ModuleOptions::chordInversionNames(),
-                      s.chordInversion, "Inversion");
-    addHoldControls (*dlg, s);
-    dlg->addButton ("OK", 1);
-    dlg->addButton ("Cancel", 0);
+    // Builds a chord from the scale — no Off. A bar-based module, so its time
+    // base is Length (menu slot 3); holdRepeat sits in the grid. Menu bar:
+    // Root / Scale / Length. Grid: degree, type, inversion, repeat.
+    auto* win = owner.showModuleWindow ("Chord");
+    addRootScaleMenu (*win, s, false);
+    addHoldLengthMenu (*win, s);
+    win->setGridCombo (0, "degree", ModuleOptions::degreeNames(), s.chordDegree, "Degree");
+    win->setGridCombo (1, "type", ModuleOptions::chordTypeNames(), s.chordType, "Type");
+    win->setGridCombo (2, "inversion", ModuleOptions::chordInversionNames(),
+                       s.chordInversion, "Inversion");
+    addHoldRepeatCombo (*win, 3, s);
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
 
     // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the dialog is up (host state restore), so it is re-looked-up on OK.
-    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    // the window is up (host state restore), so it is re-looked-up on OK.
+    win->onResult = [this, id] (int result, ModuleWindow* w)
     {
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readRootScaleControls (*d, ns, false);
-            ns.chordDegree    = d->getComboBoxSelectedIndex ("degree");
-            ns.chordType      = d->getComboBoxSelectedIndex ("type");
-            ns.chordInversion = d->getComboBoxSelectedIndex ("inversion");
-            readHoldControls (*d, ns);
+            readRootScaleMenu (*w, ns, false);
+            readHoldLengthMenu (*w, ns);
+            ns.chordDegree    = w->getComboSelectedIndex ("degree");
+            ns.chordType      = w->getComboSelectedIndex ("type");
+            ns.chordInversion = w->getComboSelectedIndex ("inversion");
+            readHoldRepeatCombo (*w, ns);
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (chordSublabel (ns));
         }
-        d->getParentComponent()->removeChildComponent (d);
-        delete d;
+        w->getParentComponent()->removeChildComponent (w);
+        delete w;
     };
 }
 
@@ -820,41 +911,48 @@ void Canvas::openDroneDialog (ModuleComponent& node)
     const int  id = node.moduleId();
     const auto s  = proc.getModuleSettings (id);
 
-    juce::StringArray octaves;
-    for (int o = -ModuleOptions::kDroneOctaveRange; o <= ModuleOptions::kDroneOctaveRange; ++o)
-        octaves.add (o > 0 ? "+" + juce::String (o) : juce::String (o));
-
-    auto* dlg = owner.showInlineDialog ("Drone settings",
-                                        "Holds its voicing for Length, restarting every "
-                                        "Repeat — and immediately when the harmony changes.");
-    addRootScaleControls (*dlg, s, false);   // holds a scale voicing — no Off
-    dlg->addComboBox ("voicing", ModuleOptions::droneVoicingNames(),
-                      s.droneVoicing, "Voicing");
-    dlg->addComboBox ("octave", octaves,
-                      s.droneOctave + ModuleOptions::kDroneOctaveRange, "Octave");
-    addHoldControls (*dlg, s);
-    dlg->addButton ("OK", 1);
-    dlg->addButton ("Cancel", 0);
+    // Holds a scale voicing — no Off. A bar-based module: Length in the menu
+    // bar, holdRepeat in the grid. Menu bar: Root / Scale / Length. Grid:
+    // voicing, octave (dial), repeat.
+    auto* win = owner.showModuleWindow ("Drone");
+    addRootScaleMenu (*win, s, false);
+    addHoldLengthMenu (*win, s);
+    win->setGridCombo (0, "voicing", ModuleOptions::droneVoicingNames(),
+                       s.droneVoicing, "Voicing");
+    // Octave is a signed transpose offset (-2..+2) — a dial reading "+N" back,
+    // matching the design's octave-dial rule.
+    win->setGridDial (1, "octave",
+                      (double) -ModuleOptions::kDroneOctaveRange,
+                      (double)  ModuleOptions::kDroneOctaveRange, 1.0,
+                      (double) s.droneOctave, "Octave",
+                      [] (double v)
+                      {
+                          const int o = juce::roundToInt (v);
+                          return o > 0 ? "+" + juce::String (o) : juce::String (o);
+                      });
+    addHoldRepeatCombo (*win, 2, s);
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
 
     // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the dialog is up (host state restore), so it is re-looked-up on OK.
-    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    // the window is up (host state restore), so it is re-looked-up on OK.
+    win->onResult = [this, id] (int result, ModuleWindow* w)
     {
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readRootScaleControls (*d, ns, false);
-            ns.droneVoicing = d->getComboBoxSelectedIndex ("voicing");
-            ns.droneOctave  = d->getComboBoxSelectedIndex ("octave")
-                                - ModuleOptions::kDroneOctaveRange;
-            readHoldControls (*d, ns);
+            readRootScaleMenu (*w, ns, false);
+            readHoldLengthMenu (*w, ns);
+            ns.droneVoicing = w->getComboSelectedIndex ("voicing");
+            ns.droneOctave  = juce::roundToInt (w->getDialValue ("octave"));
+            readHoldRepeatCombo (*w, ns);
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (droneSublabel (ns));
         }
-        d->getParentComponent()->removeChildComponent (d);
-        delete d;
+        w->getParentComponent()->removeChildComponent (w);
+        delete w;
     };
 }
 
