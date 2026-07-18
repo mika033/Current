@@ -85,21 +85,36 @@ void ModuleWindow::setGridDial (int slot,
                                 const juce::String& name,
                                 double minValue, double maxValue, double interval,
                                 double value,
-                                const juce::String& label)
+                                const juce::String& label,
+                                std::function<juce::String (double)> valueText)
 {
     jassert (juce::isPositiveAndBelow (slot, kGridSlots));
     auto& c = gridCells[(size_t) slot];
-    c.name = name;
+    c.name       = name;
+    c.baseLabel  = label;
+    c.dialFormat = std::move (valueText);
     makeLabel (c.label, label, juce::Justification::centred);
 
     c.dial = std::make_unique<juce::Slider>();
     configureDial (*c.dial);
     c.dial->setRange (minValue, maxValue, interval);
     c.dial->setValue (value, juce::dontSendNotification);
+    // Live readout: fold the value into the label ("From: C2") on every move.
+    auto* cell = &c;
+    c.dial->onValueChange = [this, cell]() { refreshDialLabel (*cell); };
     addAndMakeVisible (c.dial.get());
+    refreshDialLabel (c);   // initial text (setValue above was silent)
 
     if (getParentComponent())
         resized();
+}
+
+void ModuleWindow::refreshDialLabel (GridCell& cell)
+{
+    if (cell.label == nullptr || ! cell.dialFormat)
+        return;
+    cell.label->setText (cell.baseLabel + ": " + cell.dialFormat (cell.dial->getValue()),
+                         juce::dontSendNotification);
 }
 
 int ModuleWindow::getComboSelectedIndex (const juce::String& name) const

@@ -385,9 +385,11 @@ void Canvas::openRandomDialog (ModuleComponent& node)
     win->setMenuCombo (1, "scale", choicesWithGlobal (ParamIDs::scale), s.scaleOverride + 1, "Scale");
     win->setMenuCombo (2, "rate",  ModuleOptions::rateNames(),          s.rate,              "Rate");
 
-    // Range as dials over the MIDI note span (0..127).
-    win->setGridDial (0, "from", 0.0, 127.0, 1.0, s.rangeFrom, "From");
-    win->setGridDial (1, "to",   0.0, 127.0, 1.0, s.rangeTo,   "To");
+    // Range as dials over the MIDI note span (0..127); the label carries a live
+    // note-name readout ("From: C1") since a dial has no text box.
+    auto noteText = [] (double v) { return ModuleOptions::midiNoteName (juce::roundToInt (v)); };
+    win->setGridDial (0, "from", 0.0, 127.0, 1.0, s.rangeFrom, "From", noteText);
+    win->setGridDial (1, "to",   0.0, 127.0, 1.0, s.rangeTo,   "To",   noteText);
 
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
