@@ -373,10 +373,6 @@ void Canvas::openRandomDialog (ModuleComponent& node)
     const int  id = node.moduleId();
     const auto s  = proc.getModuleSettings (id);
 
-    juce::StringArray noteNames;
-    for (int n = 0; n <= 127; ++n)
-        noteNames.add (ModuleOptions::midiNoteName (n));
-
     // First module on the redesigned window: a thin menu bar (Root / Scale /
     // Rate) over a 3x2 grid. Random's only own settings are the two range
     // notes, so they take the top-left pair of cells and the rest stay blank —
@@ -389,8 +385,9 @@ void Canvas::openRandomDialog (ModuleComponent& node)
     win->setMenuCombo (1, "scale", choicesWithGlobal (ParamIDs::scale), s.scaleOverride + 1, "Scale");
     win->setMenuCombo (2, "rate",  ModuleOptions::rateNames(),          s.rate,              "Rate");
 
-    win->setGridCombo (0, "from", noteNames, s.rangeFrom, "Range from");
-    win->setGridCombo (1, "to",   noteNames, s.rangeTo,   "Range to");
+    // Range as dials over the MIDI note span (0..127).
+    win->setGridDial (0, "from", 0.0, 127.0, 1.0, s.rangeFrom, "From");
+    win->setGridDial (1, "to",   0.0, 127.0, 1.0, s.rangeTo,   "To");
 
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
@@ -405,8 +402,8 @@ void Canvas::openRandomDialog (ModuleComponent& node)
             ns.rootOverride  = w->getComboSelectedIndex ("root")  - 1;
             ns.scaleOverride = w->getComboSelectedIndex ("scale") - 1;
             ns.rate          = w->getComboSelectedIndex ("rate");
-            ns.rangeFrom     = w->getComboSelectedIndex ("from");
-            ns.rangeTo       = w->getComboSelectedIndex ("to");
+            ns.rangeFrom     = juce::roundToInt (w->getDialValue ("from"));
+            ns.rangeTo       = juce::roundToInt (w->getDialValue ("to"));
             // A backwards range is a slip, not an intent — normalise it.
             if (ns.rangeFrom > ns.rangeTo)
                 std::swap (ns.rangeFrom, ns.rangeTo);
