@@ -62,12 +62,16 @@ public:
                        const juce::String& label);
 
     /** Fill a grid cell (0..5) with a rotary dial over an integer-friendly
-     *  range. Read the value back (rounded by the caller) with getDialValue. */
+     *  range. Read the value back (rounded by the caller) with getDialValue.
+     *  `valueText`, when given, formats the current value into the cell's
+     *  label so it reads e.g. "From: C2" and tracks the dial live — a dial has
+     *  no text box, so this is its only on-window readout. */
     void setGridDial (int slot,
                       const juce::String& name,
                       double minValue, double maxValue, double interval,
                       double value,
-                      const juce::String& label);
+                      const juce::String& label,
+                      std::function<juce::String (double)> valueText = {});
 
     int    getComboSelectedIndex (const juce::String& name) const;
     double getDialValue (const juce::String& name) const;
@@ -105,6 +109,11 @@ private:
         std::unique_ptr<juce::Label>    label;
         std::unique_ptr<juce::ComboBox> combo;
         std::unique_ptr<juce::Slider>   dial;
+        // For dials with a live readout: the static control name and the
+        // value formatter, so the label can be rebuilt as "name: value" on
+        // every dial move.
+        juce::String                          baseLabel;
+        std::function<juce::String (double)>  dialFormat;
         bool filled() const { return combo != nullptr || dial != nullptr; }
     };
 
@@ -121,6 +130,9 @@ private:
     juce::Label& makeLabel (std::unique_ptr<juce::Label>& holder, const juce::String& text,
                             juce::Justification just);
     void configureDial (juce::Slider& dial);
+    // Rebuild a dial cell's label as "name: value" from its formatter (no-op
+    // for a cell without one). Called on construction and on every dial move.
+    void refreshDialLabel (GridCell& cell);
 
     // Cached geometry, computed in resized(), consumed by paint() so the panel
     // frame, the menu-bar strip, and the grid box draw without recomputing.
