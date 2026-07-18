@@ -179,8 +179,10 @@ than fall silent. The node shows its rate as a sublabel.
 User settings:
 
 - Root — Global (default) or C to B.
-- Scale — Global (default) or any scale from the global list.
+- Scale — Global (default), Off (draw from all twelve chromatic notes), or any
+  scale from the global list.
 - Rate — 1/32 to 1/1 (default 1/16).
+- Gate — 25%, 50% (default), 75%, or 100% of the step.
 - Range from / to — any MIDI note (default root octave 1 to root octave 3).
 
 ### Scale (generator)
@@ -201,8 +203,8 @@ round. On Endless there is no window: the pattern loops back-to-back,
 restarting right after its last note. The defaults line up deliberately: 1/8
 steps, one octave, End on Root, repeat every bar — an eight-note run filling
 exactly one bar (Repeat's usual default is Endless; this module is the
-deliberate exception). Gate is half a step, velocity 100, and the node shows
-its rate as a sublabel.
+deliberate exception). Velocity is 100, and the node shows its rate as a
+sublabel. Scale offers no Off — a scale-walking generator needs a scale to walk.
 
 User settings:
 
@@ -211,8 +213,9 @@ User settings:
 - Mode — Up (default) or Down.
 - Octaves — 1 (default) to 4.
 - End on — Root (octave, default) or 7th.
-- Rate — 1/16 to 1/1 (default 1/8).
-- Repeat — Endless, 1/4, 1/2, 1 bar (default), 2, 3, or 4 bars.
+- Rate — 1/32 to 1/1 (default 1/8).
+- Gate — 25%, 50% (default), 75%, or 100% of the step.
+- Repeat — Endless, 1/4 bar, 1/2 bar, 1 bar (default), 2, 4, 8, or 16 bars.
 
 ### LFO (generator)
 
@@ -232,13 +235,14 @@ Square, and Random, which redraws a fresh value for every note instead of
 tracing the cycle. Phase sets where in the cycle playback starts — 0, 90,
 180, or 270 degrees — useful for offsetting two LFOs against each other or
 starting a sine at its peak. Root and scale default to Global like the other
-generators. Gate is half a step, velocity 100, and the node shows its rate
-as a sublabel.
+generators; Scale = Off maps the shape chromatically instead of in scale
+degrees. Velocity is 100, and the node shows its rate as a sublabel.
 
 User settings:
 
 - Root — Global (default) or C to B.
-- Scale — Global (default) or any scale from the global list.
+- Scale — Global (default), Off (map chromatically), or any scale from the
+  global list.
 - Shape — Sine (default), Triangle, Saw Up, Saw Down, Square, or Random.
 - Cycle length — 1/4 bar to 16 bars (default 1 bar).
 - Depth (octaves) — 0 to 4 (default 1).
@@ -272,7 +276,8 @@ User settings:
 - Type — Triad (default), 7th, Sus2, Sus4, 5th, or 6th.
 - Inversion — Root (default), 1st, or 2nd.
 - Length — 1/4 bar to 16 bars (default 1 bar); how long the chord sounds.
-- Repeat — 1/4 bar to 16 bars (default 1 bar); how often a new chord starts.
+- Repeat — Endless, 1/4 bar to 16 bars (default 1 bar); how often a new chord
+  starts (Endless sounds it once, continuously back-to-back).
 
 ### Drone (generator)
 
@@ -300,7 +305,8 @@ User settings:
 - Voicing — Root (default), Root+5th, Root+Octave, or Triad.
 - Octave — -2 to +2 (default 0), around the root at octave 3.
 - Length — 1/4 bar to 16 bars (default 4 bars); how long the hold sounds.
-- Repeat — 1/4 bar to 16 bars (default 4 bars); how often a new hold starts.
+- Repeat — Endless, 1/4 bar to 16 bars (default 4 bars); how often a new hold
+  starts (Endless holds continuously back-to-back).
 
 ### Arp (modulator)
 
@@ -326,7 +332,7 @@ User settings:
 - Rate — 1/32 to 1/1 (default 1/16).
 - Octaves — 1 (default) to 4.
 - Gate — 25%, 50% (default), 75%, or 100% of the step.
-- Repeat — Endless (default), 1/4, 1/2, 1 bar, 2, 3, or 4 bars.
+- Repeat — Endless (default), 1/4 bar, 1/2 bar, 1 bar, 2, 4, 8, or 16 bars.
 
 ### Quantize (modulator)
 
@@ -392,8 +398,9 @@ short progressions in full ("I-IV-V") and long ones as a step count.
 User settings:
 
 - Root — Global (default) or C to B.
-- Scale — Global (default) or any scale from the global list.
-- Rate — 1/4 bar to 16 bars (default 1 bar); the length of one step.
+- Scale — Global (default), Off (walk degrees chromatically), or any scale
+  from the global list.
+- Step Length — 1/4 bar to 16 bars (default 1 bar); the length of one step.
 - Steps — 1 to 8 steps (default one step, I); per step a degree I–VII
   (default I) and an octave −2 to +2 (default 0).
 
@@ -406,16 +413,18 @@ scale active — Global (the default, following the menu bar) or any named
 scale — the shift moves in scale steps: +2 in C major turns C into E, and
 out-of-scale notes snap into the scale as part of the walk, so the result is
 always in key. With the scale set to Off, the shift is plain chromatic
-semitones: +2 turns C into D regardless of key. Note-ons and note-offs shift
-together, so nothing ever hangs, and the node shows its signed amount as a
-sublabel.
+semitones: +2 turns C into D regardless of key. Root sets the reference the
+scale-step walk counts from (Global by default, following the menu bar); it is
+ignored when the scale is Off. Note-ons and note-offs shift together, so nothing
+ever hangs, and the node shows its signed amount as a sublabel.
 
 User settings:
 
+- Root — Global (default) or C to B; the reference for scale-step shifts.
+- Scale — Global (default), Off (chromatic semitones), or any scale from the
+  global list.
 - Amount — −36 to +36 (default 0); scale steps or semitones per the scale
   setting.
-- Scale — Global (default), Off (chromatic), or any scale from the global
-  list.
 
 ### Delay (modulator)
 
@@ -427,22 +436,27 @@ repeat's velocity as a share of the note before it; the chain ends when the
 repeats fade below audibility, so feedback doubles as the number of repeats —
 50% gives four, lower gives fewer, higher gives a long tail.
 
-Shift (−12 to +12 semitones, default 0) transposes each individual repeat by
-that amount relative to the repeat before it, so the chain climbs (or falls)
-as it fades — +12 turns an echo into an ascending octave cascade. The shift
-is chromatic and deliberately not re-quantized; a repeat that would leave the
-MIDI note range ends the chain rather than piling up at the edge. Echoes keep
-their note's channel, sound for half the delay time each, and follow the
-shared transport rules: on stop, pending repeats are discarded and sounding
-ones released, so nothing hangs; echoes also work while the transport is
-stopped, so live playing echoes too.
+Shift (−12 to +12, default 0) transposes each individual repeat by that amount
+relative to the repeat before it, so the chain climbs (or falls) as it fades —
++12 turns an echo into an ascending cascade. Like the Shift modulator, the unit
+follows the scale: with a scale active (Global or named) the shift moves in
+scale degrees so the cascade stays in key, and with the scale Off it moves in
+chromatic semitones (+12 = an octave). A repeat that would leave the MIDI note
+range ends the chain rather than piling up at the edge. Echoes keep their
+note's channel, sound for half the delay time each, and follow the shared
+transport rules: on stop, pending repeats are discarded and sounding ones
+released, so nothing hangs; echoes also work while the transport is stopped, so
+live playing echoes too.
 
 User settings:
 
+- Root — Global (default) or C to B; the reference for scale-step shifts.
+- Scale — Global (default), Off (chromatic semitones), or any scale from the
+  global list.
 - Rate — 1/32 to 1/1 (default 1/8); the echo spacing.
 - Feedback — 10% to 90% (default 50%); repeat decay, and thereby repeat count.
-- Shift — −12 to +12 semitones (default 0); applied to each repeat,
-  cumulatively across the chain.
+- Shift — −12 to +12 (default 0); applied to each repeat, cumulatively across
+  the chain (scale steps or semitones per the scale setting).
 
 ## Planned — speced
 

@@ -935,6 +935,9 @@ int main()
             cfg.delayTimeQn   = 0.5;   // 1/8 at 120bpm = 11025 samples
             cfg.delayFeedback = fb;
             cfg.delayShift    = shift;
+            // Scale Off = the per-echo shift moves in raw semitones, which is
+            // what these pitch checks assume (the degree mode is checked below).
+            cfg.delayScale    = ModuleOptions::kScaleOff;
 
             std::vector<std::pair<int, int>> echoes;
             int ons = 0, offs = 0;
@@ -993,6 +996,33 @@ int main()
         // An echo that would leave the MIDI range ends the chain (no clamp).
         check (delayEchoes (0.5, 12, 120, ons, offs).empty(),
                "Delay shift past 127 ends the chain instead of clamping");
+
+        // With a scale active the shift moves in degrees: +1 degree per echo in
+        // C Major from C3 climbs C3 -> D3 -> E3 -> F3 (the diatonic steps).
+        {
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasDelay      = true;
+            cfg.delayTimeQn   = 0.5;
+            cfg.delayFeedback = 0.5;
+            cfg.delayShift    = 1;
+            cfg.delayScale    = -1;   // Global = C Major here
+            std::vector<int> pitches;
+            juce::MidiBuffer midi;
+            midi.addEvent (juce::MidiMessage::noteOn  (1, 48, (juce::uint8) 100), 0);
+            midi.addEvent (juce::MidiMessage::noteOff (1, 48), 256);
+            e.process (midi, block, playing (false), 0, 0, cfg);
+            for (int i = 0; i < 600; ++i)
+            {
+                juce::MidiBuffer m;
+                e.process (m, block, playing (false), 0, 0, cfg);
+                for (const auto meta : m)
+                    if (meta.getMessage().isNoteOn())
+                        pitches.push_back (meta.getMessage().getNoteNumber());
+            }
+            check (pitches == std::vector<int> { 50, 52, 53, 55 },
+                   "Delay shift +1 with a scale climbs by scale degrees");
+        }
     }
 
     // --- 15b. Delay: transport stop discards buffered echoes -----------------

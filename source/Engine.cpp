@@ -62,7 +62,9 @@ int Engine::mapPitch (int note, int root, int scaleIndex,
                       int progIndex, const Config& cfg) const
 {
     int p = note;
-    if (cfg.hasScaleMod)
+    // Scale Off means "don't force onto a scale", so the snap is simply skipped
+    // — passing notes stay chromatic.
+    if (cfg.hasScaleMod && cfg.scaleModScale != ModuleOptions::kScaleOff)
         p = ScaleTables::snapToScale (p,
                                       cfg.scaleModRoot  >= 0 ? cfg.scaleModRoot  : root,
                                       cfg.scaleModScale >= 0 ? cfg.scaleModScale : scaleIndex);
@@ -76,10 +78,15 @@ int Engine::mapPitch (int note, int root, int scaleIndex,
         if (degree != 0 || octave != 0)
         {
             if (degree != 0)
+            {
+                // Scale Off walks degrees chromatically (Chromatic's 12 members).
+                const int pScale = cfg.progScale == ModuleOptions::kScaleOff
+                                       ? ModuleOptions::kChromaticScale
+                                       : cfg.progScale >= 0 ? cfg.progScale : scaleIndex;
                 p = ScaleTables::stepInScale (p,
-                                              cfg.progRoot  >= 0 ? cfg.progRoot  : root,
-                                              cfg.progScale >= 0 ? cfg.progScale : scaleIndex,
-                                              degree);
+                                              cfg.progRoot >= 0 ? cfg.progRoot : root,
+                                              pScale, degree);
+            }
             p = juce::jlimit (0, 127, p + 12 * octave);
         }
     }
@@ -90,7 +97,8 @@ int Engine::mapPitch (int note, int root, int scaleIndex,
         if (cfg.shiftScale == ModuleOptions::kScaleOff)
             p = juce::jlimit (0, 127, p + cfg.shiftAmount);
         else
-            p = ScaleTables::stepInScale (p, root,
+            p = ScaleTables::stepInScale (p,
+                                          cfg.shiftRoot >= 0 ? cfg.shiftRoot : root,
                                           cfg.shiftScale >= 0 ? cfg.shiftScale : scaleIndex,
                                           cfg.shiftAmount);
     }
@@ -203,7 +211,17 @@ void Engine::process (juce::MidiBuffer& midi,
         if (! cfg.hasDelay)
             return;
         const int v = juce::roundToInt ((double) srcVelocity * cfg.delayFeedback);
-        const int n = srcNote + cfg.delayShift;
+        // Per-echo shift mirrors Shift: chromatic semitones with the scale Off,
+        // scale degrees with a scale active. A zero shift is a strict no-op so
+        // an un-shifted echo is never snapped onto a scale.
+        int n = srcNote;
+        if (cfg.delayShift != 0)
+            n = cfg.delayScale == ModuleOptions::kScaleOff
+                    ? srcNote + cfg.delayShift
+                    : ScaleTables::stepInScale (srcNote,
+                                                cfg.delayRoot >= 0 ? cfg.delayRoot : root,
+                                                cfg.delayScale >= 0 ? cfg.delayScale : scaleIndex,
+                                                cfg.delayShift);
         if (v < kMinEchoVelocity || n < 0 || n > 127)
             return;
         pendingEchoes.push_back ({ n, channel, v, atSample + (int) delaySamples });
@@ -449,8 +467,12 @@ void Engine::process (juce::MidiBuffer& midi,
         if (cfg.hasRandom)
         {
             // All in-scale pitches inside the module's range; drawn uniformly.
+            // Scale Off draws from all 12 chromatic pitches (the Chromatic scale
+            // is exactly that set).
             const int rRoot  = cfg.randomRoot  >= 0 ? cfg.randomRoot  : root;
-            const int rScale = cfg.randomScale >= 0 ? cfg.randomScale : scaleIndex;
+            const int rScale = cfg.randomScale == ModuleOptions::kScaleOff
+                                   ? ModuleOptions::kChromaticScale
+                                   : cfg.randomScale >= 0 ? cfg.randomScale : scaleIndex;
             const int lo = juce::jlimit (0, 127, juce::jmin (cfg.randomFrom, cfg.randomTo));
             const int hi = juce::jlimit (0, 127, juce::jmax (cfg.randomFrom, cfg.randomTo));
 
@@ -463,7 +485,7 @@ void Engine::process (juce::MidiBuffer& midi,
             if (candidates.empty())
                 candidates.push_back (ScaleTables::snapToScale ((lo + hi) / 2, rRoot, rScale));
 
-            runSteps (cfg.randomStepQn, 0.5, [&] (juce::int64, int s, int gate)
+            runSteps (cfg.randomStepQn, cfg.randomGateFrac, [&] (juce::int64, int s, int gate)
             {
                 emitGenerated (candidates[(size_t) rng.nextInt ((int) candidates.size())], s, gate);
             });
@@ -493,7 +515,7 @@ void Engine::process (juce::MidiBuffer& midi,
             const int window = stepsPerWindow (cfg.scaleRepeatQn, cfg.scaleStepQn);
             const int stepsPerRepeat = window > 0 ? window : (int) pattern.size();
 
-            runSteps (cfg.scaleStepQn, 0.5, [&] (juce::int64 k, int s, int gate)
+            runSteps (cfg.scaleStepQn, cfg.scaleGateFrac, [&] (juce::int64 k, int s, int gate)
             {
                 // Position inside the repeat window; steps past the pattern's
                 // end are rests until the window wraps.
@@ -506,7 +528,10 @@ void Engine::process (juce::MidiBuffer& midi,
         if (cfg.hasLfo)
         {
             const int lRoot  = cfg.lfoRoot  >= 0 ? cfg.lfoRoot  : root;
-            const int lScale = cfg.lfoScale >= 0 ? cfg.lfoScale : scaleIndex;
+            // Scale Off maps chromatically (the Chromatic scale's 12 members).
+            const int lScale = cfg.lfoScale == ModuleOptions::kScaleOff
+                                   ? ModuleOptions::kChromaticScale
+                                   : cfg.lfoScale >= 0 ? cfg.lfoScale : scaleIndex;
             const int centre = 48 + juce::jlimit (0, 11, lRoot);   // root at octave 3,
                                                                    // like the Scale gen
             // Depth in scale degrees: whole octaves are one scale-length each
@@ -516,7 +541,7 @@ void Engine::process (juce::MidiBuffer& midi,
                                    + juce::jmax (0, cfg.lfoDepthSteps);
             const double cycleQn = juce::jmax (0.001, cfg.lfoCycleQn);
 
-            runSteps (cfg.lfoStepQn, 0.5, [&] (juce::int64 k, int s, int gate)
+            runSteps (cfg.lfoStepQn, cfg.lfoGateFrac, [&] (juce::int64 k, int s, int gate)
             {
                 // Position inside the cycle, from the grid position in the
                 // song plus the start-phase offset. x - floor(x) rather than
@@ -574,7 +599,12 @@ void Engine::process (juce::MidiBuffer& midi,
             // the gate one sample short of the period, so length >= period is
             // seamless legato. Emission goes through the normal generated path
             // (modulator chain, Quantize, Delay), one note per chord tone.
-            const double periodQn = juce::jmax (0.001, cfg.chordPeriodQn);
+            // Repeat Endless (period 0) re-triggers back-to-back (period =
+            // length), so the chord sounds continuously — the same "loops
+            // back-to-back" reading Endless has on the stepped generators.
+            const double periodQn = cfg.chordPeriodQn > 0.0
+                                        ? cfg.chordPeriodQn
+                                        : juce::jmax (0.001, cfg.chordLengthQn);
             const double gateFrac = juce::jlimit (0.0, 1.0, cfg.chordLengthQn / periodQn);
             runSteps (periodQn, gateFrac, [&] (juce::int64, int s, int gate)
             {
@@ -685,7 +715,10 @@ void Engine::process (juce::MidiBuffer& midi,
             // linear playback the gate ended a sample earlier anyway, but a
             // host loop wrap can land a boundary mid-hold. The drone
             // deliberately bypasses Quantize and the Delay (see Engine.h).
-            const double periodQn = juce::jmax (0.001, cfg.dronePeriodQn);
+            // Repeat Endless (period 0) re-triggers back-to-back, like the Chord.
+            const double periodQn = cfg.dronePeriodQn > 0.0
+                                        ? cfg.dronePeriodQn
+                                        : juce::jmax (0.001, cfg.droneLengthQn);
             const double gateFrac = juce::jlimit (0.0, 1.0, cfg.droneLengthQn / periodQn);
             runSteps (periodQn, gateFrac, [&] (juce::int64, int s, int gate)
             {

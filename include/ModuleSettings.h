@@ -14,8 +14,9 @@ namespace ModuleOptions
 {
     // Step rates as note lengths: the grid a generator emits on, or a modulator
     // re-times to. Values are in quarter notes so tempo math is a single
-    // multiply. Most modules offer the whole list; the Scale generator's dialog
-    // starts at 1/16 (index kScaleRateFirst).
+    // multiply. One canonical list (1/32..1/1) everywhere Rate appears — no
+    // module trims it, so the user meets the identical Rate control wherever it
+    // is (see the Rate/Length resolution in CLAUDE.md).
     inline const juce::StringArray& rateNames()
     {
         static const juce::StringArray names { "1/32", "1/16", "1/8", "1/4", "1/2", "1/1" };
@@ -30,29 +31,35 @@ namespace ModuleOptions
 
     constexpr int kRate1_16 = 1;
     constexpr int kRate1_8  = 2;
-    constexpr int kScaleRateFirst = kRate1_16;
 
-    // Repeat: when a module's pattern resets and replays from the start,
-    // counted from transport start. Endless (the normal default) means the
-    // pattern just runs on until the transport stops. Quarter-note values
-    // assume 4/4 (1 bar = 4 quarter notes) — good enough until the engine
-    // reads the host time signature. Endless maps to 0 qn, which the engine
-    // reads as "no repeat window".
+    // Repeat: the period after which a module restarts from its start,
+    // regardless of where it currently is — the single meaning shared by every
+    // module that has a Repeat (Scale gen, Arp, Chord, Drone). Endless (the
+    // normal default) = never restart; on a stepped module that means the
+    // pattern runs on until the transport stops, on a Chord/Drone it means the
+    // one chord/hold sounds once and is not re-triggered. Repeat is orthogonal
+    // to Rate/Length: a Chord with Length 2 bars + Repeat 4 bars sounds 2 bars
+    // then rests 2. One canonical list everywhere Repeat appears — Endless plus
+    // bar lengths (the Length list's finite entries, extended to 8/16 bars for
+    // long Drone holds). Quarter-note values assume 4/4; Endless maps to 0 qn,
+    // which the engine reads as "no repeat window".
     inline const juce::StringArray& repeatNames()
     {
-        static const juce::StringArray names { "Endless", "1/4", "1/2", "1 bar",
-                                               "2 bars", "3 bars", "4 bars" };
+        static const juce::StringArray names { "Endless", "1/4 bar", "1/2 bar",
+                                               "1 bar", "2 bars", "4 bars",
+                                               "8 bars", "16 bars" };
         return names;
     }
 
     inline double repeatQuarterNotes (int index)
     {
-        static const double qn[] = { 0.0, 1.0, 2.0, 4.0, 8.0, 12.0, 16.0 };
-        return qn[(size_t) juce::jlimit (0, 6, index)];
+        static const double qn[] = { 0.0, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0 };
+        return qn[(size_t) juce::jlimit (0, 7, index)];
     }
 
-    constexpr int kRepeatEndless = 0;
-    constexpr int kRepeatOneBar  = 3;
+    constexpr int kRepeatEndless  = 0;
+    constexpr int kRepeatOneBar   = 3;
+    constexpr int kRepeatFourBars = 5;
 
     // Pattern direction. The Scale generator offers the first two (its walk is
     // a fixed pattern, so Up-Down/Random add nothing a longer pattern
@@ -69,9 +76,11 @@ namespace ModuleOptions
     constexpr int kModeRandom = 3;
     constexpr int kScaleModeCount = 2;   // Scale generator's dialog: Up/Down only
 
-    // Gate: how long each emitted note sounds, as a fraction of its step. Only
-    // the Arp exposes it so far; the other stepped modules run the fixed 50%
-    // default until they grow the control.
+    // Gate: how long each emitted note sounds, as a fraction of its step.
+    // Ships on every note-emitting Rate module — the generators (Random, Scale
+    // gen, LFO) and the Arp — since only a module that originates note
+    // durations has something for a gate to act on (Quantize/Delay re-time or
+    // echo existing notes, so they carry a Rate but no Gate).
     inline const juce::StringArray& gateNames()
     {
         static const juce::StringArray names { "25%", "50%", "75%", "100%" };
@@ -86,11 +95,22 @@ namespace ModuleOptions
 
     constexpr int kGateHalf = 1;
 
-    // Scale-override sentinel shared with rootOverride/scaleOverride: -1 means
-    // "follow the global menu-bar setting". Shift adds a second sentinel, Off,
-    // meaning "no scale at all — work chromatically".
+    // Scale-override sentinels shared by scaleOverride across every pitch
+    // module: -1 = "follow the global menu-bar scale", -2 = Off = "no scale at
+    // all — work chromatically". The pitch transformers (Scale mod,
+    // Progression, Shift, Delay's per-echo shift) and the two generators whose
+    // output can be un-scaled (Random draws chromatically, LFO maps
+    // chromatically) offer Off; the scale-walking generators (Scale gen, Chord,
+    // Drone) do not, since they need a scale to generate at all. rootOverride
+    // uses only -1 (Global) and named roots — "no root" has no meaning.
     constexpr int kScaleGlobal = -1;
     constexpr int kScaleOff    = -2;
+
+    // Index of the Chromatic scale in the global scale list (kScaleNames in
+    // PluginProcessor.cpp / kScales in ScaleTables.h — keep in lock-step). The
+    // engine resolves an Off scale override to this for the generators whose
+    // "Off = chromatic" behaviour is simply the chromatic scale.
+    constexpr int kChromaticScale = 8;
 
     // Swing (Quantize): how far every second step of the rate grid is pushed
     // late, following the shared pair-based model from the standards repo's
@@ -281,24 +301,24 @@ struct ProgressionStep
     }
 };
 
-// One module's settings. Random uses root/scale/rate/range; Scale (generator)
-// uses root/scale/rate/repeat plus mode/octaves/endOnRoot; Arp uses
-// mode/rate/octaves/gate/repeat; LFO uses root/scale/rate plus its lfo*
-// fields; Quantize uses rate (its timing grid) and swing; the Scale modulator
-// uses root/scale only; Progression uses root/scale plus its prog* fields;
-// Shift uses scaleOverride (with the extra Off sentinel) and shiftAmount;
-// Delay uses rate (its delay time) plus its delay* fields; Chord uses
-// root/scale plus its chord* fields; Drone uses root/scale plus its drone*
-// fields; Chord and Drone share holdLength/holdRepeat.
-// Other module types ignore the whole struct. Root/scale
-// overrides of -1 mean "follow the global menu-bar setting" — the engine
-// resolves them per block, so a module left on Global tracks later menu-bar
-// changes.
+// One module's settings. Random uses root/scale/rate/gate/range; Scale
+// (generator) uses root/scale/rate/gate/repeat plus mode/octaves/endOnRoot;
+// Arp uses mode/rate/octaves/gate/repeat; LFO uses root/scale/rate/gate plus
+// its lfo* fields; Quantize uses rate (its timing grid) and swing; the Scale
+// modulator uses root/scale only; Progression uses root/scale plus its prog*
+// fields; Shift uses root/scale (scaleOverride carries the extra Off sentinel)
+// and shiftAmount; Delay uses root/scale (Off sentinel) plus rate and its
+// delay* fields; Chord uses root/scale plus its chord* fields; Drone uses
+// root/scale plus its drone* fields; Chord and Drone share holdLength/
+// holdRepeat. Other module types ignore the whole struct. Root/scale overrides
+// of -1 mean "follow the global menu-bar setting" — the engine resolves them
+// per block, so a module left on Global tracks later menu-bar changes.
 struct ModuleSettings
 {
     int rootOverride  = -1;   // -1 = Global, else 0..11 (C..B)
     int scaleOverride = -1;   // -1 = Global, else index into the global scale
-                              // list; Shift only: -2 (kScaleOff) = chromatic
+                              // list; -2 (kScaleOff) = chromatic on the modules
+                              // that offer Off (see kScaleOff's note above)
     int rate = ModuleOptions::kRate1_16;   // index into rateNames()
 
     // Repeat defaults to Endless per the shared-settings rule; the Scale
@@ -319,12 +339,14 @@ struct ModuleSettings
     bool endOnRoot = true;   // true = append the octave root as a final step,
                              // false = end on the scale's last degree (the 7th)
 
-    // Arp only (so far — see ModuleOptions::gateNames).
+    // Every note-emitting Rate module (Random, Scale gen, LFO, Arp) — see
+    // ModuleOptions::gateNames.
     int gate = ModuleOptions::kGateHalf;   // index into gateNames()
 
     // Shift only: transpose amount. Scale degrees when scaleOverride is Global
     // or a named scale, chromatic semitones when it is kScaleOff. 0 (the
     // default) passes notes through untouched until the user dials it in.
+    // Shift's root/scale come from the shared rootOverride/scaleOverride.
     int shiftAmount = 0;   // -kShiftRange..+kShiftRange
 
     // Quantize only: how far every second grid step is pushed late (the grid
@@ -348,10 +370,13 @@ struct ModuleSettings
     int lfoPhase      = 0;   // index into lfoPhaseNames() (quarter-cycle steps)
 
     // Delay only. The delay time itself is the shared `rate` field (defaulted
-    // to 1/8 at drop time). Each echo is shifted delayShift semitones from the
-    // note before it, so a non-zero shift climbs (or falls) across the chain.
+    // to 1/8 at drop time). Each echo is shifted delayShift from the note
+    // before it, so a non-zero shift climbs (or falls) across the chain — in
+    // chromatic semitones when scaleOverride is Off, in scale degrees when a
+    // scale is active (Global/named), mirroring Shift. Delay's root/scale come
+    // from the shared rootOverride/scaleOverride.
     int delayFeedback = ModuleOptions::kFeedbackHalf;   // index into feedbackNames()
-    int delayShift    = 0;   // -kDelayShiftRange..+kDelayShiftRange semitones
+    int delayShift    = 0;   // -kDelayShiftRange..+kDelayShiftRange
 
     // Chord only: the chord to emit, as a scale degree of its (root, scale)
     // plus a diatonic stacking and an inversion.
@@ -364,11 +389,13 @@ struct ModuleSettings
     int droneVoicing = ModuleOptions::kVoicingRoot;
     int droneOctave  = 0;   // -kDroneOctaveRange..+kDroneOctaveRange
 
-    // Chord and Drone: Repeat is how often a new chord/note starts (a bar
-    // length, counted from the song's bar 0) and Length is how long it sounds
-    // inside that window — the rest of the window is silent. Length >= Repeat
-    // plays legato back-to-back. Both indices into barLengthNames(); the
-    // Drone's drop-time default raises both to 4 bars.
+    // Chord and Drone: Repeat is how often a new chord/note starts (counted
+    // from the song's bar 0) and Length is how long it sounds inside that
+    // window — the rest of the window is silent. Length >= Repeat plays legato
+    // back-to-back. holdLength indexes barLengthNames() (a Length is always
+    // finite); holdRepeat indexes repeatNames() (the shared Repeat list, so it
+    // can be Endless = sound once, never re-trigger). The Drone's drop-time
+    // default raises both to 4 bars.
     int holdLength = ModuleOptions::kBarsOneBar;
-    int holdRepeat = ModuleOptions::kBarsOneBar;
+    int holdRepeat = ModuleOptions::kRepeatOneBar;
 };

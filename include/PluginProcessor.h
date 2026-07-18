@@ -144,15 +144,18 @@ private:
                      engArpRepeat { ModuleOptions::kRepeatEndless };
     std::atomic<int> engRandomRoot { -1 }, engRandomScale { -1 },
                      engRandomRate { ModuleOptions::kRate1_16 },
+                     engRandomGate { ModuleOptions::kGateHalf },
                      engRandomFrom { 24 }, engRandomTo { 48 };
     std::atomic<int> engScaleRoot { -1 }, engScaleScale { -1 },
                      engScaleRate { ModuleOptions::kRate1_8 },
+                     engScaleGate { ModuleOptions::kGateHalf },
                      engScaleRepeat { ModuleOptions::kRepeatOneBar },
                      engScaleOctaves { 1 },
                      engScaleMode { ModuleOptions::kModeUp };
     std::atomic<bool> engScaleEndOnRoot { true };
     std::atomic<int> engLfoRoot { -1 }, engLfoScale { -1 },
                      engLfoRate { ModuleOptions::kRate1_16 },
+                     engLfoGate { ModuleOptions::kGateHalf },
                      engLfoCycle { ModuleOptions::kBarsOneBar },
                      engLfoShape { ModuleOptions::kLfoSine },
                      engLfoDepthOct { 1 }, engLfoDepthSteps { 0 },
@@ -161,12 +164,12 @@ private:
                      engChordDegree { 0 }, engChordType { 0 },
                      engChordInversion { 0 },
                      engChordLength { ModuleOptions::kBarsOneBar },
-                     engChordRepeat { ModuleOptions::kBarsOneBar };
+                     engChordRepeat { ModuleOptions::kRepeatOneBar };
     std::atomic<int> engDroneRoot { -1 }, engDroneScale { -1 },
                      engDroneVoicing { ModuleOptions::kVoicingRoot },
                      engDroneOctave { 0 },
                      engDroneLength { ModuleOptions::kBarsFourBars },
-                     engDroneRepeat { ModuleOptions::kBarsFourBars };
+                     engDroneRepeat { ModuleOptions::kRepeatFourBars };
     std::atomic<int> engQuantRate { ModuleOptions::kRate1_16 },
                      engQuantSwing { ModuleOptions::kSwingOff };
     std::atomic<int> engScaleModRoot { -1 }, engScaleModScale { -1 };
@@ -177,10 +180,13 @@ private:
                      engProgCount { 0 };
     std::array<std::atomic<int>, ModuleOptions::kMaxProgSteps> engProgSteps {};
     std::atomic<int> engShiftAmount { 0 },
-                     engShiftScale { ModuleOptions::kScaleGlobal };
+                     engShiftScale { ModuleOptions::kScaleGlobal },
+                     engShiftRoot { ModuleOptions::kScaleGlobal };
     std::atomic<int> engDelayRate { ModuleOptions::kRate1_8 },
                      engDelayFeedback { ModuleOptions::kFeedbackHalf },
-                     engDelayShift { 0 };
+                     engDelayShift { 0 },
+                     engDelayScale { ModuleOptions::kScaleGlobal },
+                     engDelayRoot { ModuleOptions::kScaleGlobal };
 
     // Cached parameter pointers (set in the ctor, read every block).
     std::atomic<float>* rootParam  = nullptr;
