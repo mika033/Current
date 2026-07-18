@@ -4,6 +4,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "PluginProcessor.h"
 #include "InlineDialog.h"
+#include "ModuleWindow.h"
 #include "CurrentLookAndFeel.h"
 #include "MainView.h"
 
@@ -26,6 +27,13 @@ public:
      *  settings dialogs. */
     InlineDialog* showInlineDialog (const juce::String& title,
                                     const juce::String& message = {});
+
+    /** Spawn a structured module-settings window (menu bar + 3x2 grid) inside
+     *  the editor. Same overlay/disposal contract as showInlineDialog: the
+     *  caller configures it (setMenuCombo / setGridCombo / setGridDial /
+     *  addButton / onResult) and disposes of it inside its onResult callback.
+     *  The redesigned per-module settings surface. */
+    ModuleWindow* showModuleWindow (const juce::String& title);
 
     /** Re-skin the editor from the Theme parameter: pushes the active scheme into
      *  the shared LookAndFeel and repaints so paint-time theme reads take effect.
