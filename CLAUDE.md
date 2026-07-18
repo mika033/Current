@@ -78,25 +78,26 @@ Merging the session branch into `main` (and pushing `main`) is the **default, ex
 
 The basics and canvas skeleton from `generative-midi-plugin-requirements.md` are implemented, plus the two I/O modules (MIDI In / Output) with per-module channel settings, a reworked Random generator (rate, root/scale override, note range), a new Scale generator (root/scale override, up/down, octaves, end-on, rate, repeat), and an LFO generator (root/scale override, shape, cycle length in bars, depth in octaves + scale steps, rate, phase) — all with full settings dialogs. Settings that recur across modules (root/scale override, rate, repeat, mode, octaves, gate) are shared: one option table + settings blob in `ModuleSettings.h`, one dialog-control helper pair per setting in `Canvas`, documented in the "Shared settings" section of `modules.md`. The Arp is a modulator (not a generator) with full settings (mode, rate, octaves, gate, repeat); Shift has its settings too (amount ±36, scale Global/Off/named — degrees vs. chromatic), and the Delay — the first stateful time modulator — is in with rate, feedback, and a cumulative per-echo semitone shift. The global Quantize checkbox is gone; in its place Quantize is a timing modulator (rate grid + pair-based swing per the standards repo's `swing-timing.md`, LAM-style), pitch-snapping moved to a new Scale modulator (root/scale, default Global), and a Progression modulator walks a user-defined step list (degree I–VII + octave ±2 per step, 1–8 steps, bar-length rate) transposing everything through it. Two slow generators arrived after that: the Chord (a diatonic stack — degree I–VII, type Triad/7th/Sus2/Sus4/5th/6th, inversion — emitted on a bar-based Length/Repeat window) and the Drone (holds a voicing — root / root+5th / root+octave / triad, octave ±2 — on the same window model, defaulting to 4 bars, re-triggering immediately when its harmony changes mid-hold; bypasses Quantize and Delay by design). Their Length/Repeat pair joined the shared settings (the bar-length list, which gained a 16-bars entry). Every module in the palette now has a real settings dialog (`InlineDialog` grew same-row combo pairs, post-show add/remove, and non-closing utility buttons for the Progression's dynamic step rows). The plugin builds and runs on Linux (VST3 + Standalone); macOS/Windows/iPad targets are not yet ported. An architecture/code review lives in `code-review-2026-07.md`; the two transport findings it originally opened with — the engine ignoring host song position, and the Standalone having no transport so generators were silent — are now fixed, copying LAM's approach: every engine grid is re-derived each block from the host ppq position (no freewheeling counters — see "Transport and clocks" in `architecture.md`), and the Standalone/playhead-less hosts get a synthesized internal transport with a Play toggle and Tempo stepper in the menu bar. The review's remaining findings are still open.
 
-Settings-consistency alignment (2026-07) is now implemented — see the "Settings-consistency alignment" section below for the decisions and carve-outs. In short: every pitch module now carries the Root/Scale pair with a shared Global/Off/named control (Off = chromatic on the transformers plus Random/LFO; the scale-walking generators omit it); Random/Scale gen/LFO gained a real Gate (the fixed-50% engine stub is retired); one canonical Rate list (1/32–1/1) everywhere; Shift gained a Root and Delay gained Root+Scale (its per-echo shift now moves in degrees with a scale, semitones with Off); Progression's per-step cadence is relabelled "Step Length"; and one canonical Repeat list (Endless + bar lengths to 16) is shared by Scale gen/Arp/Chord/Drone. The Shift/Delay amount **dial** with a live unit readout, and the `ModuleWindow` rollout, were the two carve-outs left for later; both are now done for every module except Progression (see the redesign paragraph above).
+Settings-consistency alignment (2026-07) is now implemented — see the "Settings-consistency alignment" section below for the decisions and carve-outs. In short: every pitch module now carries the Root/Scale pair with a shared Global/Off/named control (Off = chromatic on the transformers plus Random/LFO; the scale-walking generators omit it); Random/Scale gen/LFO gained a real Gate (the fixed-50% engine stub is retired); one canonical Rate list (1/32–1/1) everywhere; Shift gained a Root and Delay gained Root+Scale (its per-echo shift now moves in degrees with a scale, semitones with Off); Progression's per-step cadence is labelled "Length" (the length of one step); and one canonical Repeat list (Endless + bar lengths to 16) is shared by Scale gen/Arp/Chord/Drone. The Shift/Delay amount **dial** with a live unit readout, and the `ModuleWindow` rollout, were the two carve-outs left for later; both are now done for every module (see the redesign paragraph above).
 
-Module-settings UI redesign (nearly complete): the stacked-combo `InlineDialog`
+Module-settings UI redesign (complete): the stacked-combo `InlineDialog`
 settings dialogs have been replaced by a shared, structured `ModuleWindow`
 (thin menu bar — Root / Scale / Rate-or-Length — over a 3x2 grid of combo/dial
-cells, dials for knob-friendly values; see `architecture.md`) for twelve of the
-thirteen modules. All five generators plus seven of the eight modulators/IO —
-Arp, Quantize, Scale mod, Shift, Delay, MIDI In, Output — now route their shared
-settings through `ModuleWindow` helper pairs in `Canvas` so a shared control is
-identical across them. Shift and Delay's shift **amount** is now the promised
-**dial with a live unit readout** (`Shift: +3 steps` with a scale, `+3
-semitones` with Scale = Off); the unit word tracks the Scale combo live via
-`ModuleWindow`'s new `setComboChangeCallback`/`refreshDial`, wrapped in a shared
-`Canvas::addAmountDial`/`readAmountDial` pair so Shift and Delay's one identical
-control can't drift. Only **Progression**
-remains on `InlineDialog` — its variable-length step list (1–8 add/remove step
-rows) has no home in the fixed 6-cell grid, a layout decision deferred by the
-user. `InlineDialog` therefore stays alive solely for Progression (see the TODO
-near the end of this file).
+cells, dials for knob-friendly values; see `architecture.md`) for all thirteen
+modules. Every generator and modulator/IO routes its shared settings through
+`ModuleWindow` helper pairs in `Canvas` so a shared control is identical across
+them. Shift and Delay's shift **amount** is the **dial with a live unit readout**
+(`Shift: +3 steps` with a scale, `+3 semitones` with Scale = Off); the unit word
+tracks the Scale combo live via `ModuleWindow`'s `setComboChangeCallback`/
+`refreshDial`, wrapped in a shared `Canvas::addAmountDial`/`readAmountDial` pair
+so Shift and Delay's one identical control can't drift. **Progression** — whose
+variable-length step list (1–8 steps) has no home in the fixed 6-cell grid — uses
+`ModuleWindow`'s custom-body escape hatch (`setCustomBody`), which swaps the grid
+for a caller-supplied component while keeping the shared title / menu bar /
+section frame / OK-Cancel chrome; its body is `ProgressionStepList`, an
+arranger-style step row (see below and `design/module-window.md`). `InlineDialog`
+now backs only the generic fallback for a module type that has no dedicated
+window yet.
 
 ## Naming
 
@@ -126,11 +127,11 @@ See `modules.md`: manual-style docs for the implemented modules plus the planned
 
 ## Settings-consistency alignment (IMPLEMENTED 2026-07)
 
-A settings-consistency audit across all 13 modules' dialogs (2026-07) turned up the items below; they were **implemented in the 2026-07 alignment session** and are kept here as the design record (the resolutions still describe the intended behaviour). The `ModuleWindow` rollout is a separate, still-open task (see the TODO further down) — this alignment was done on top of the current mix (Random on `ModuleWindow`, the other twelve on `InlineDialog`).
+A settings-consistency audit across all 13 modules' dialogs (2026-07) turned up the items below; they were **implemented in the 2026-07 alignment session** and are kept here as the design record (the resolutions still describe the intended behaviour). The `ModuleWindow` rollout that followed is now complete for all thirteen modules.
 
 **Architecture approach chosen.** Kept the existing shared-helper model rather than building a heavyweight per-setting class. The option lists were already the single source of truth (`ModuleOptions`) and the dialog controls already had one add/read helper pair per setting (`Canvas`), so those were extended, not replaced. The one structural win taken: the Root/Scale-with-Off index↔override mapping is centralized in shared helpers (`scaleChoices` / `scaleIndexForOverride` / `scaleOverrideForIndex`) that *both* the `InlineDialog` path and Random's `ModuleWindow` use, so Shift and Delay no longer hand-roll it and no module can diverge on what "Global / Off / named" means. A full `SharedSetting` abstraction (owning persistence + engine mapping too) was judged over-engineering against the per-module edge cases and the pending `ModuleWindow` re-touch; revisit alongside that rollout.
 
-**Two carve-outs were deferred to the `ModuleWindow` rollout** (they are UI-layout work, out of scope for the alignment) and are now **both done except for Progression**: Shift's and Delay's shift amount is now the live-unit-readout **dial** the Shift resolution describes; and the per-module `ModuleWindow` conversions are complete for twelve of thirteen modules (Progression is the lone holdout — see the TODO).
+**Two carve-outs were deferred to the `ModuleWindow` rollout** (they are UI-layout work, out of scope for the alignment) and are now **both done**: Shift's and Delay's shift amount is the live-unit-readout **dial** the Shift resolution describes; and the per-module `ModuleWindow` conversions are complete for all thirteen modules (Progression via the custom-body escape hatch — see the redesign paragraph in Status).
 
 **Off on generators.** Resolved as "Off = chromatic where it makes sense": the pitch transformers (Scale mod, Progression, Shift, Delay) and the two generators whose output can be un-scaled (Random draws chromatically, LFO maps chromatically) offer Off; the scale-walking generators (Scale gen, Chord, Drone) do not, since they need a scale to generate at all. In the engine an Off scale override resolves to the Chromatic scale for Random/LFO/Progression, and simply skips the snap for the Scale modulator.
 
@@ -143,7 +144,7 @@ A settings-consistency audit across all 13 modules' dialogs (2026-07) turned up 
     - **Rate** — short, repeating intervals from **1/32 to 1/1**, for modules that fire repeatedly (Scale gen, Random, LFO, Arp, Quantize, Delay). On **note-emitting** modules (the generators + Arp) a Rate control **always carries a Gate control too** — Rate and Gate ship as a pair there (this pre-answers the "Gate exposed only on Arp" item below). Modules that carry a Rate but do **not** originate note durations — Quantize (re-times passing notes, keeping their played duration) and Delay (echoes the source note) — have a Rate with **no Gate**, since a gate would have nothing to act on.
     - **Length** — a single long note/window, for modules that naturally hold one long note (Chord, Drone). **No Gate** — the user shortens the note simply by picking a shorter Length.
     - The option lists must be **consistent across the whole app**: one canonical Rate list (1/32…1/1) everywhere Rate appears, one canonical Length list everywhere Length appears. (This subsumes the "Scale generator's Rate list starts at 1/16" item below.)
-    - **Progression's timing — RESOLVED (2026-07):** its bar-length per-step cadence (currently mislabelled "Rate") is renamed **"Step Length"** — a distinct third label drawn from the shared bar-length list. "Rate" stays reserved strictly for the 1/32–1/1 note flavour. (Name is "for now"; revisit if a better word turns up.)
+    - **Progression's timing — RESOLVED (2026-07):** its bar-length per-step cadence (once mislabelled "Rate") sits in the menu bar's third slot labelled **"Length"** — the length of one progression step, drawn from the shared bar-length list. "Rate" stays reserved strictly for the 1/32–1/1 note flavour.
   - **"Repeat" — RESOLVED (2026-07): one meaning everywhere.** Repeat is the period (in bar-lengths, e.g. 1 bar / 4 bars; Endless/Off = never restart) after which a module **restarts from its start**, regardless of where it currently is — the scale walk jumps back to step 1, the arp restarts its pattern, and so on. It is **orthogonal to Rate/Length** and may sit alongside either, or be absent (Random and LFO legitimately still have none). On a Length module the two combine literally: a Chord with **Length 2 bars + Repeat 4 bars** sounds for 2 bars, then rests for 2 bars (the `Repeat − Length` remainder is silence), then re-triggers. This retires the old split meaning (note-length reset window on Scale/Arp vs. bar-length hold-repeat on Chord/Drone) — both become this single definition, and Chord/Drone keep both Length and Repeat with no conflict. Implementation choices settled: (1) one canonical Repeat list — Endless plus bar lengths extended to 8/16 bars — is used by all four modules that have a Repeat (Scale gen, Arp, Chord, Drone), so `holdRepeat` moved from the Length/bar-length list onto it; (2) Endless on Chord/Drone re-triggers back-to-back (period = Length), so the chord/hold sounds continuously — the same "loops back-to-back" reading Endless already has on the stepped generators, and it avoids a runSteps int overflow that a huge sentinel period would cause; (3) Repeat < Length is handled by runSteps capping the gate one sample short of the period, so the note is cut at Repeat.
   - **"Octaves" vs "Octave" — RESOLVED (2026-07): keep both, no rename.** They name two genuinely different, conventional concepts and each is used consistently: **"Octaves"** (1–4 range span, on Scale gen and Arp) is the traditional arp/pattern span — how many octaves the walk repeats up through; **"Octave"** (−2…+2 transpose offset, on Drone and per-step in Progression) sets/shifts which octave the voicing sits in. Renaming would fight established language (an arp's "Octaves" span is standard), so both words stay. The near-identical spelling is disambiguated by the `ModuleWindow` live-label readout, e.g. Arp reads `Octaves: 2` (spans two octaves) while Drone reads `Octave: +1` (up one).
 
@@ -155,92 +156,34 @@ A settings-consistency audit across all 13 modules' dialogs (2026-07) turned up 
 
 Deliberate-and-fine (documented so a later session doesn't "unify" them by mistake): Arp / Quantize / I/O legitimately have no root/scale (Delay now does — see above); Random and LFO legitimately have no Repeat (Random is stochastic, LFO is cyclic by its Cycle length).
 
-## TODO: the last module window holdout — Progression
+## Progression's step-list body (the `ModuleWindow` custom-body escape hatch)
 
-Twelve of the thirteen modules are on the redesigned `ModuleWindow` (menu bar + 3x2 grid; see `design/module-window.md`): all five generators plus Arp, Quantize, Scale mod, Shift, Delay, MIDI In, and Output, converted 2026-07. **Progression** is the only module still on the old stacked-combo `InlineDialog`, so `InlineDialog` stays alive solely for it.
+All thirteen modules are on `ModuleWindow`. Progression was the last to move
+over, because its **variable-length step list** (1–8 steps, each a degree + an
+octave offset) has no home in `ModuleWindow`'s fixed 3x2 grid. It rides the
+window's **custom-body escape hatch** instead: `ModuleWindow::setCustomBody`
+swaps the grid for a caller-supplied component and sizes the panel to it, keeping
+the shared title, menu bar, recessed section frame, and OK/Cancel row. The hatch
+is a first-class (if narrow) part of `ModuleWindow`'s surface, not a
+Progression-only hack — any future module with a body the six cells can't hold
+can reuse it.
 
-Why Progression is deferred: its settings include a **variable-length step list** (1–8 steps, each a degree + octave, with Add step / Remove buttons), and the `ModuleWindow` grid is a **fixed 3x2 of six cells** with no equivalent of `InlineDialog`'s post-show add/remove + utility-button mechanism. A six-cell grid does not obviously fit a growable step list, so this needs a **layout decision** before converting (a "Steps" count in the menu bar driving the six cells and capping at 6 steps? a bespoke scrollable step-list body replacing the grid for this one module?). The user chose to leave it as-is for now. When it moves over, `InlineDialog` and its remaining `addRootScaleControls`/`readRootScaleControls` helper pair (all that Progression still uses) are retired.
+Progression's body is **`ProgressionStepList`** (`include/`, `source/`), an
+arranger-style step row borrowed in feel from Little Sequencer's arranger tab
+(`mika033/LittleSequencer`): a left-to-right run of step cells (the scale degree
+drawn big, the octave offset as a corner tag), a trailing **append cell** whose
+two halves are action arrows — a right arrow (top) that adds a step and a left
+arrow (bottom) that removes the last one — and, below the row, **Degree** and
+**Octave** combos that edit whichever cell is selected. Cells are hit-tested
+against cached rects (no child component per cell). The list holds a working copy
+of the steps; the dialog reads it back with `getSteps()` on OK. A progression
+always keeps at least one step and never grows past `kMaxProgSteps` (8). The
+menu bar carries Root, Scale, and **Length** (one step's length, the `progRate`
+bar-length list) in the three shared slots via the usual menu helpers.
 
-The shared-setting `add/read` helpers have `ModuleWindow` counterparts in `Canvas` (`addRootScaleMenu`/`addRateMenu`/`addHoldLengthMenu` for the menu bar; `addGateDial`/`addOctavesDial`/`addModeCombo`/`addRepeatCombo`/`addHoldRepeatCombo` for the grid), plus `ModuleWindow`'s `setComboChangeCallback`/`refreshDial` for the Shift/Delay amount dial's live unit label. Whatever Progression needs (a Step-Length menu combo it can reuse `addHoldLengthMenu` for; a step-row mechanism it can't) extends this set.
-
-### Direction agreed 2026-07-18 (borrow from Little Sequencer's arranger) — NOT YET IMPLEMENTED
-
-This session we settled the layout question above **and** decided to expand what a
-Progression step can do, taking the interaction pattern from a different Snorkel
-plugin, **Little Sequencer** (`mika033/LittleSequencer`,
-https://github.com/mika033/LittleSequencer), specifically its **arranger tab**.
-No code was written — the next session should start here.
-
-**Reference access is the first blocker.** LittleSequencer is not in this
-workspace's repo scope. In this session `add_repo` kept returning "requires
-approval" and the approvals never registered on the backend (retried many times),
-and a direct `git clone` fails because the session's git proxy only authorises
-repos in scope. So the next session must get the repo in first: either the
-`add_repo`/source-add flow actually goes through (the user was granting GitHub App
-access to the repo and will retry from a fresh session), or the repo is added as a
-session **source** in the web-app environment config before the session starts.
-The GitHub MCP server (`mcp__github__get_file_contents` / `search_code`) uses the
-App token and may reach it even when the git proxy can't — worth trying as a
-fallback to read the arranger code. **Do not design the borrowed interaction from
-memory — read the arranger tab first.** We want its *feel* (how steps are added,
-removed, reordered, and edited in a row-based list), which is exactly the part
-prose can't capture.
-
-**What to borrow, and what to leave.** Little Sequencer's arranger is more
-complex than Current needs. It has **scenes** — Current does **not**; drop them
-entirely. What we keep is the **step-list arranger**: a user-editable series of
-steps the user grows and shrinks by adding/removing, laid out as a row list.
-
-**The expanded Progression step model the user asked for** (this supersedes the
-current "degree I–VII + octave ±2, one global Step Length" model — remember the
-Pre-release rule: no migration shims, an old dev save loading with defaults is
-fine, so restructure `ProgressionStep` / persisted state freely):
-
-- A Progression is a **series of steps**; the arrangement length is whatever the
-  user builds by **adding / removing steps** (keep a sensible max — today's cap is
-  `kMaxProgSteps` = 8; revisit whether to raise it once the row-list layout is in).
-- **Per-step length.** Each step now carries **its own length** (default **1
-  bar**), replacing the single global "Step Length" combo that applied to every
-  step. So a step is length + shift, and the arranger walks step to step, each
-  held for its own length. (Open: does the module-window menu bar still carry a
-  global Step-Length combo as a default/fallback, or does length move entirely
-  onto the per-step row? Leaning per-step-row only, since that's the whole point
-  of borrowing the arranger — confirm against how Little Sequencer does it.)
-- **Per-step shift, expressed in one of four ways.** Each step defines how much
-  the incoming MIDI is shifted, and the *kind* of shift is one of **four modes**:
-  **shift**, **note**, **degree**, **chroma**. (These four are the user's words
-  from Little Sequencer's arranger — their exact semantics must be read off the
-  reference, not guessed. Working interpretation to verify: *degree* = move by
-  scale degrees through the active Root/Scale, i.e. today's Progression behaviour;
-  *chroma* = move by raw semitones/chromatic; *note* = force to / target an
-  absolute note; *shift* = a plain transpose amount. Confirm and pin down each,
-  and how the per-step Root/Scale interacts with them, when the repo is readable.)
-
-**Recommended layout for the `ModuleWindow` port** (my recommendation this
-session, user has not yet ratified the visual details — ratify against the
-arranger once it's visible): keep Progression **inside the shared `ModuleWindow`
-frame** so it stays in the family — the **title** and the **menu bar** (Root /
-Scale, and a global time-base slot if we keep one) reuse the existing menu-bar
-helpers unchanged. **Replace the fixed 3x2 grid body** with a **bespoke,
-scrollable step-list body** for this one module: one **row per step** (its length
-control + its shift-mode selector + the shift value), with **Add step / Remove**
-affordances, modelled on the arranger's row interaction. This preserves the full
-variable-length capability (the reason the grid never fit) while keeping the
-shared chrome. The alternative — capping steps to fit six static cells — is a
-feature regression and is rejected.
-
-**Implementation consequence.** This needs a **new escape hatch on `ModuleWindow`**:
-a way for one module to supply a custom body component in place of the 3x2 grid,
-while keeping the shared title / menu bar / OK-Cancel contract. Add that as a
-first-class (if narrow) part of `ModuleWindow`'s surface rather than a
-Progression-only hack, so the step-list body is a clean sub-component. Once
-Progression is off `InlineDialog`, retire `InlineDialog` and the
-`addRootScaleControls`/`readRootScaleControls` pair as noted above.
-
-**Open questions to close in the next session (with the reference open):** the
-four shift modes' exact semantics and UI (one combo picking the mode + one
-value control that re-labels per mode, à la the Shift/Delay live-unit dial? or a
-different control per mode?); whether a global Step-Length stays in the menu bar
-or length is purely per-step; the max step count and whether the body scrolls or
-paginates; and how per-step Root/Scale (if retained) reads against the four
-modes.
+The per-step data model stayed **degree + octave** and its persistence is
+unchanged, so old dev saves load as-is. The shared `ModuleWindow` helpers in
+`Canvas` (`addRootScaleMenu`/`addRateMenu`/`addHoldLengthMenu` for the menu bar;
+`addGateDial`/`addOctavesDial`/`addModeCombo`/`addRepeatCombo`/`addHoldRepeatCombo`
+for the grid; `setComboChangeCallback`/`refreshDial` for the amount dial) are
+unchanged by this work.

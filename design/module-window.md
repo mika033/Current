@@ -7,17 +7,17 @@ consistent. It is plugin-local: the cross-product UI rules (themes, typography,
 panels, modal dialogs) live in `SnorkelAudioStandards/design/`; this file only
 covers Current's module window and where it leans on those shared rules.
 
-Status: twelve of the thirteen modules are on this window — all five generators
+Status: all thirteen modules are on this window — all five generators
 (Random, Scale gen, LFO, Chord, Drone) plus Arp, Quantize, Scale mod, Shift,
-Delay, MIDI In, and Output. Only **Progression** still uses the older
-stacked-combo `InlineDialog`, because its variable-length step list has no home
-in the fixed six-cell grid (see the TODO at the end of `CLAUDE.md`).
+Delay, MIDI In, Output, and **Progression**. Progression's variable-length step
+list has no home in the fixed six-cell grid, so it rides the **custom-body
+escape hatch** (see "Custom body" below) rather than the grid.
 Implementation lives in `ModuleWindow.h/.cpp`; the dial rendering is in
 `CurrentLookAndFeel`. Shared controls go through `ModuleWindow` helper pairs in
 `Canvas` (`addRootScaleMenu` / `addRateMenu` / `addHoldLengthMenu` /
 `addGateDial` / `addOctavesDial` / `addModeCombo` / `addRepeatCombo` /
-`addHoldRepeatCombo`), the twins of the `InlineDialog` helpers, so a shared
-setting is the identical control on either window.
+`addHoldRepeatCombo`), so a shared setting is the identical control across
+modules.
 
 ## Goal
 
@@ -78,6 +78,28 @@ the SnorkelAudioStandards modal-dialog rule (no `juce::AlertWindow` /
   module looking a little airy, which we accept for the cross-module
   alignment.
 
+## Custom body (the escape hatch)
+
+- **When the six cells can't hold a module's controls**, `setCustomBody` swaps
+  the grid for a caller-supplied component and sizes the panel to it. The rest of
+  the window is unchanged — same title, menu bar, recessed section frame, and
+  OK/Cancel row — so the module still reads as the shared window. This is a
+  first-class (if narrow) part of `ModuleWindow`'s surface, not a one-off hack;
+  any future module with an odd body reuses it.
+- **Progression is the one user today.** Its settings are a **variable-length
+  step list** (1–8 steps), which a fixed six-cell grid can't grow. The body is
+  `ProgressionStepList`: a left-to-right row of step cells (the scale degree
+  drawn big, the octave offset as a corner tag), a trailing **append cell** whose
+  two halves are action arrows — right/top adds a step, left/bottom removes the
+  last — and, below the row, **Degree** and **Octave** combos that edit the
+  selected cell. The interaction *feel* (row of cells, append/remove at the end,
+  select-then-edit) is borrowed from Little Sequencer's arranger tab; the scenes
+  the arranger carries are dropped (Progression has no scenes). The menu bar
+  still carries Root / Scale / Length above it through the usual helpers.
+- **Rejected alternative:** capping steps to fit six static cells. That would be
+  a feature regression (the point of the step list is that it grows), so the
+  custom body won over shrinking the data to the grid.
+
 ## Dials
 
 - **Flat-dot rotary**, ported from LAM (`CurrentLookAndFeel::drawRotarySlider`):
@@ -112,10 +134,11 @@ the SnorkelAudioStandards modal-dialog rule (no `juce::AlertWindow` /
   change.
 - **Shared-control helpers.** The `ModuleWindow` has its own `add/read` helper
   pairs in `Canvas`, the twins of the `InlineDialog` ones, so a shared setting is
-  the *identical* control on either window. Every converted module routes its
+  the *identical* control on either window. Every module routes its
   Root/Scale/Rate/Length/Gate/Octaves/Mode/Repeat through them — Arp, for
-  instance, reuses the generator helpers verbatim and needed no new code. Only
-  Progression's step-list rows still lack a helper (they lack a home).
+  instance, reuses the generator helpers verbatim and needed no new code.
+  Progression uses the menu-bar helpers for Root/Scale/Length; its step rows are
+  bespoke to `ProgressionStepList` (a growable list has no shared-helper form).
 
 ## Layout constants
 
