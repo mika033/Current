@@ -106,6 +106,14 @@ private:
     static void readRepeatCombo (const ModuleWindow&, ModuleSettings&);
     static void addHoldRepeatCombo (ModuleWindow&, int slot, const ModuleSettings&);
     static void readHoldRepeatCombo (const ModuleWindow&, ModuleSettings&);
+    // Shift and Delay share a signed transpose-amount dial whose unit label
+    // reads off the Scale combo (semitones with Scale = Off, steps otherwise).
+    // Both the dial and the Scale-combo callback are wired here so the two
+    // modules' one genuinely identical control can't drift. `name` is the dial's
+    // lookup key (they differ so nothing else has to); `range` is the ± span.
+    static void addAmountDial (ModuleWindow&, int slot, const juce::String& name,
+                               int value, int range);
+    static int  readAmountDial (const ModuleWindow&, const juce::String& name);
 
     // "Global" followed by the choices of a global APVTS parameter — the
     // dialogs' root/scale lists, sourced from the parameter so they can't

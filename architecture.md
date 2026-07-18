@@ -72,8 +72,9 @@ real double-click dialogs.
   shared settings through `Canvas`'s `ModuleWindow` helper pairs; only
   Progression still opens an `InlineDialog` (its step list has no grid home).
   Two hooks let one cell react to another: `setComboChangeCallback` and
-  `refreshDial`, used so Shift/Delay's amount dial rewords its unit
-  ("steps"/"semitones") when the Scale combo flips. The design decisions behind
+  `refreshDial`, wrapped in `Canvas`'s shared `addAmountDial`/`readAmountDial`
+  pair so Shift/Delay's amount dial rewords its unit ("steps"/"semitones") when
+  the Scale combo flips, identically in both. The design decisions behind
   the window (band-by-band rules, dial readouts, the roads not taken) are
   written up in `design/module-window.md`.
 - `tools/engine_smoketest.cpp` — headless engine test, see Testing below.

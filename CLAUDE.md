@@ -90,7 +90,9 @@ settings through `ModuleWindow` helper pairs in `Canvas` so a shared control is
 identical across them. Shift and Delay's shift **amount** is now the promised
 **dial with a live unit readout** (`Shift: +3 steps` with a scale, `+3
 semitones` with Scale = Off); the unit word tracks the Scale combo live via
-`ModuleWindow`'s new `setComboChangeCallback`/`refreshDial`. Only **Progression**
+`ModuleWindow`'s new `setComboChangeCallback`/`refreshDial`, wrapped in a shared
+`Canvas::addAmountDial`/`readAmountDial` pair so Shift and Delay's one identical
+control can't drift. Only **Progression**
 remains on `InlineDialog` — its variable-length step list (1–8 add/remove step
 rows) has no home in the fixed 6-cell grid, a layout decision deferred by the
 user. `InlineDialog` therefore stays alive solely for Progression (see the TODO

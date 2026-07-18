@@ -258,6 +258,32 @@ void Canvas::readHoldRepeatCombo (const ModuleWindow& win, ModuleSettings& s)
     s.holdRepeat = win.getComboSelectedIndex ("holdRepeat");
 }
 
+void Canvas::addAmountDial (ModuleWindow& win, int slot, const juce::String& name,
+                            int value, int range)
+{
+    // The formatter reads the live Scale choice so the unit word matches the
+    // shift mode; the Scale-combo callback re-runs it so the word flips the
+    // moment Scale changes, not only on a dial turn. Both modules label it
+    // "Shift".
+    auto* w = &win;
+    auto unitText = [w] (double v)
+    {
+        const int n = juce::roundToInt (v);
+        const bool off = scaleOverrideForIndex (w->getComboSelectedIndex ("scale"), true)
+                             == ModuleOptions::kScaleOff;
+        return (n > 0 ? "+" + juce::String (n) : juce::String (n))
+                 + (off ? " semitones" : " steps");
+    };
+    win.setGridDial (slot, name, (double) -range, (double) range, 1.0,
+                     (double) value, "Shift", unitText);
+    win.setComboChangeCallback ("scale", [w, name]() { w->refreshDial (name); });
+}
+
+int Canvas::readAmountDial (const ModuleWindow& win, const juce::String& name)
+{
+    return juce::roundToInt (win.getDialValue (name));
+}
+
 void Canvas::addNodeComponent (const ModuleInstance& instance)
 {
     auto node = std::make_unique<ModuleComponent> (instance.id, instance.type);
@@ -735,25 +761,11 @@ void Canvas::openShiftDialog (ModuleComponent& node)
 
     // A pitch transformer carrying the shared Root/Scale pair. Scale = Off means
     // the amount shifts in raw semitones; a scale (Global/named) means it shifts
-    // in scale steps. The amount is a dial whose live label reads the active
-    // unit back ("Shift: +3 semitones" / "Shift: +3 steps") and reword when the
-    // Scale combo flips Off/on.
+    // in scale steps. The amount is a dial whose live label reads the active unit
+    // back ("Shift: +3 semitones" / "Shift: +3 steps"), shared with Delay.
     auto* win = owner.showModuleWindow ("Shift");
     addRootScaleMenu (*win, s, true);
-
-    auto* w = win;   // captured by the formatter to read the live Scale choice
-    auto amountText = [w] (double v)
-    {
-        const int n = juce::roundToInt (v);
-        const bool off = scaleOverrideForIndex (w->getComboSelectedIndex ("scale"), true)
-                             == ModuleOptions::kScaleOff;
-        return (n > 0 ? "+" + juce::String (n) : juce::String (n))
-                 + (off ? " semitones" : " steps");
-    };
-    win->setGridDial (0, "amount",
-                      -ModuleOptions::kShiftRange, ModuleOptions::kShiftRange, 1.0,
-                      (double) s.shiftAmount, "Shift", amountText);
-    win->setComboChangeCallback ("scale", [w]() { w->refreshDial ("amount"); });
+    addAmountDial (*win, 0, "amount", s.shiftAmount, ModuleOptions::kShiftRange);
 
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
@@ -764,7 +776,7 @@ void Canvas::openShiftDialog (ModuleComponent& node)
         {
             auto ns = proc.getModuleSettings (id);
             readRootScaleMenu (*w2, ns, true);
-            ns.shiftAmount = juce::roundToInt (w2->getDialValue ("amount"));
+            ns.shiftAmount = readAmountDial (*w2, "amount");
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
                 if (n->moduleId() == id)
@@ -783,26 +795,12 @@ void Canvas::openDelayDialog (ModuleComponent& node)
     // Delay maps pitch through its per-echo shift, so it carries the shared
     // Root/Scale pair (Off = shift in semitones, a scale = shift in degrees).
     // Menu bar: Root / Scale / Rate. Grid: feedback, plus the per-echo shift as
-    // a dial whose live label reads the active unit back and rewords when Scale
-    // flips Off/on.
+    // the same live-unit amount dial Shift uses.
     auto* win = owner.showModuleWindow ("Delay");
     addRootScaleMenu (*win, s, true);
     addRateMenu (*win, s);
     win->setGridCombo (0, "feedback", ModuleOptions::feedbackNames(), s.delayFeedback, "Feedback");
-
-    auto* w = win;   // captured by the formatter to read the live Scale choice
-    auto shiftText = [w] (double v)
-    {
-        const int n = juce::roundToInt (v);
-        const bool off = scaleOverrideForIndex (w->getComboSelectedIndex ("scale"), true)
-                             == ModuleOptions::kScaleOff;
-        return (n > 0 ? "+" + juce::String (n) : juce::String (n))
-                 + (off ? " semitones" : " steps");
-    };
-    win->setGridDial (1, "shift",
-                      -ModuleOptions::kDelayShiftRange, ModuleOptions::kDelayShiftRange, 1.0,
-                      (double) s.delayShift, "Shift", shiftText);
-    win->setComboChangeCallback ("scale", [w]() { w->refreshDial ("shift"); });
+    addAmountDial (*win, 1, "shift", s.delayShift, ModuleOptions::kDelayShiftRange);
 
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
@@ -817,7 +815,7 @@ void Canvas::openDelayDialog (ModuleComponent& node)
             readRootScaleMenu (*w2, ns, true);
             readRateMenu (*w2, ns);
             ns.delayFeedback = w2->getComboSelectedIndex ("feedback");
-            ns.delayShift    = juce::roundToInt (w2->getDialValue ("shift"));
+            ns.delayShift    = readAmountDial (*w2, "shift");
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
                 if (n->moduleId() == id)
