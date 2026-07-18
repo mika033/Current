@@ -3,14 +3,10 @@
 #include "Theme.h"
 #include "CurrentLookAndFeel.h"
 
-MenuBar::MenuBar (juce::AudioProcessorValueTreeState& apvts,
+MenuBar::MenuBar (CurrentAudioProcessor& processor,
                   std::function<void()> onThemeChanged)
-    : state (apvts), themeChanged (std::move (onThemeChanged))
+    : state (processor.apvts()), themeChanged (std::move (onThemeChanged))
 {
-    titleLabel.setText ("Current", juce::dontSendNotification);
-    titleLabel.setFont (juce::Font (juce::FontOptions (18.0f, juce::Font::bold)));
-    addAndMakeVisible (titleLabel);
-
     auto configLabel = [this] (juce::Label& l, const juce::String& text)
     {
         l.setText (text, juce::dontSendNotification);
@@ -21,15 +17,39 @@ MenuBar::MenuBar (juce::AudioProcessorValueTreeState& apvts,
     configLabel (rootLabel,  "Root");
     configLabel (scaleLabel, "Scale");
 
+    // Standalone-only internal transport (the LAM approach): no host
+    // transport exists, so Play and Tempo live here. The button text swaps
+    // Play<->Stop with the toggle state so it reads correctly even where the
+    // pressed state isn't visually obvious.
+    showTransport = processor.isStandalone();
+    if (showTransport)
+    {
+        playButton.setClickingTogglesState (true);
+        playButton.onClick = [this, &processor]()
+        {
+            const bool on = playButton.getToggleState();
+            processor.setStandalonePlay (on);
+            playButton.setButtonText (on ? "Stop" : "Play");
+        };
+        addAndMakeVisible (playButton);
+
+        // 20 BPM floor matches LAM's Tempo stepper (safe for anything sized
+        // from a beat length); 300 is the musically useful ceiling.
+        bpmStepper.setRange (20.0, 300.0, 1.0);
+        bpmStepper.setValue (processor.getInternalBpm(), juce::dontSendNotification);
+        bpmStepper.onValueChange = [&processor] (double v)
+        {
+            processor.setInternalBpm (v);
+        };
+        addAndMakeVisible (bpmStepper);
+    }
+
     addAndMakeVisible (rootCombo);
     addAndMakeVisible (scaleCombo);
     populateFromChoiceParam (rootCombo,  ParamIDs::root);
     populateFromChoiceParam (scaleCombo, ParamIDs::scale);
     rootAtt  = std::make_unique<ComboAttachment> (state, ParamIDs::root,  rootCombo);
     scaleAtt = std::make_unique<ComboAttachment> (state, ParamIDs::scale, scaleCombo);
-
-    addAndMakeVisible (quantizeToggle);
-    quantizeAtt = std::make_unique<ButtonAttachment> (state, ParamIDs::quantize, quantizeToggle);
 
     configLabel (themeLabel, "Theme");
     addAndMakeVisible (themeCombo);
@@ -56,20 +76,29 @@ void MenuBar::paint (juce::Graphics& g)
     g.fillRoundedRectangle (b, 6.0f);
     g.setColour (s.panelBorder);
     g.drawRoundedRectangle (b.reduced (0.5f), 6.0f, 1.0f);
-
-    titleLabel.setColour (juce::Label::textColourId, s.text);
 }
 
 void MenuBar::resized()
 {
     auto area = getLocalBounds().reduced (12, 0);
 
-    titleLabel.setBounds (area.removeFromLeft (110).withSizeKeepingCentre (110, 24));
-
     constexpr int comboW = 92;
     constexpr int labelW = 46;
     constexpr int gap    = 8;
     const int rowH = 26;
+
+    // In the Standalone the transport leads the bar: Play first, then the BPM
+    // stepper, ahead of the global Root / Scale combos.
+    if (showTransport)
+    {
+        auto playSlot = area.removeFromLeft (56).withSizeKeepingCentre (56, rowH);
+        playButton.setBounds (playSlot);
+        area.removeFromLeft (gap);
+
+        auto bpmSlot = area.removeFromLeft (104).withSizeKeepingCentre (104, rowH);
+        bpmStepper.setBounds (bpmSlot);
+        area.removeFromLeft (gap);
+    }
 
     auto place = [&] (juce::Label& lbl, juce::Component& ctl, int w)
     {
@@ -83,10 +112,6 @@ void MenuBar::resized()
 
     place (rootLabel,  rootCombo,  comboW);
     place (scaleLabel, scaleCombo, comboW);
-
-    // Quantize toggle stands alone (its own caption is the toggle text).
-    quantizeToggle.setBounds (area.removeFromLeft (110).withSizeKeepingCentre (110, rowH));
-    area.removeFromLeft (gap);
 
     // Theme sits at the far right.
     auto rightSlot = area.removeFromRight (labelW + 90 + gap);

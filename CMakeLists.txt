@@ -65,10 +65,12 @@ target_sources(Current PRIVATE
     source/Engine.cpp
     source/MainView.cpp
     source/MenuBar.cpp
+    source/StepperControl.cpp
     source/Canvas.cpp
     source/ModuleComponent.cpp
     source/PaletteBar.cpp
     source/InlineDialog.cpp
+    source/ModuleWindow.cpp
 )
 
 target_include_directories(Current PRIVATE include)

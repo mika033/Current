@@ -9,15 +9,19 @@ phases. File references are relative to the repo root; headers live in
 ## What the plugin is right now
 
 A JUCE MIDI-effect plugin (VST3 + Standalone, Linux build only so far). The
-editor shows a menu bar (global root / scale / quantize + theme switch), a
-canvas that modules can be dragged onto from a palette of seven (generators
-Arp, Random, and Scale, modulators Quantize and Shift, I/O modules MIDI In and
-Output), and an engine that actually runs those modules — but as a fixed
-implicit chain, because there is no port wiring yet. The I/O modules carry a
-per-module MIDI channel and the Random / Scale generators carry full settings
-(root/scale override, rate, and their type-specific fields), all edited
-through real double-click dialogs; Arp, Quantize, and Shift still run
-baked-in defaults behind a settings placeholder.
+editor shows a menu bar (global root / scale + theme switch), a canvas that
+modules can be dragged onto from a palette of thirteen (generators Random,
+Scale, LFO, Chord, and Drone, modulators Arp, Quantize, Scale, Progression,
+Shift, and Delay, I/O modules MIDI In and Output), and an engine that actually runs
+those modules — but as a fixed implicit chain, because there is no port
+wiring yet. The I/O modules carry a per-module MIDI channel; every other
+module carries full settings (drawn from the shared settings pool —
+root/scale override, rate, repeat, mode, octaves, gate, plus their
+type-specific fields such as the LFO's shape/cycle/depth/phase, Quantize's
+swing, the Progression's step list, Shift's amount + chromatic-or-degrees
+scale, the Delay's feedback + per-echo shift, the Chord's
+degree/type/inversion, and the Drone's voicing/octave), all edited through
+real double-click dialogs.
 
 ## Component map
 
@@ -33,9 +37,11 @@ baked-in defaults behind a settings placeholder.
   `applyTheme()`.
 - `MainView` (MainView.h/.cpp) — pure layout: `MenuBar` top, `Canvas` middle,
   `PaletteBar` bottom.
-- `MenuBar` (MenuBar.h/.cpp) — global-settings combos and the Quantize toggle,
-  bound to the APVTS via attachments, plus the Theme combo. Edit and Load/Save
-  menus are deferred phases.
+- `MenuBar` (MenuBar.h/.cpp) — global-settings combos (root, scale), bound to
+  the APVTS via attachments, plus the Theme combo. In the Standalone it also
+  carries the internal transport's Play toggle and Tempo stepper (see
+  Transport and clocks below); plugin wrappers never show them. Edit and
+  Load/Save menus are deferred phases.
 - `Canvas` (Canvas.h/.cpp) — the drop surface and the bridge between on-screen
   nodes and the processor's module model.
 - `ModuleComponent` (ModuleComponent.h/.cpp) — one draggable node. Square for
@@ -49,8 +55,28 @@ baked-in defaults behind a settings placeholder.
   JUCE widgets.
 - `InlineDialog` (InlineDialog.h/.cpp) — the in-editor modal helper (the
   SnorkelAudioStandards rule forbids `juce::AlertWindow` / `DialogWindow`).
-  Backs the settings placeholder and the I/O channel dialog; it supports text
-  fields, combo boxes, and multiple buttons so real dialogs can grow on it.
+  Now backs only the **Progression** settings dialog (every other module has
+  migrated to `ModuleWindow`); it survives for Progression's variable-length
+  step list, which needs its same-row combo pairs and post-show add/remove
+  utility buttons — features the fixed `ModuleWindow` grid has no equivalent
+  for yet. It also supports text fields and closing action buttons.
+- `ModuleWindow` (ModuleWindow.h/.cpp) — the redesigned per-module settings
+  surface every module will eventually share (same modal-overlay and disposal
+  contract as `InlineDialog`, so both obey the modal-dialog rule). Fixed
+  structure: a title, a thin menu bar echoing the global one (three slots —
+  Root, Scale, and a Rate or Length combo, unused slots left blank), a 3x2
+  grid of combo/dial cells (labels above, Little Arp Monster section-box
+  sizing; dials for knob-friendly values like octaves/gate), and an action-
+  button row. Twelve of the thirteen modules are on it — all five generators
+  plus Arp, Quantize, Scale mod, Shift, Delay, MIDI In, and Output — routing
+  shared settings through `Canvas`'s `ModuleWindow` helper pairs; only
+  Progression still opens an `InlineDialog` (its step list has no grid home).
+  Two hooks let one cell react to another: `setComboChangeCallback` and
+  `refreshDial`, wrapped in `Canvas`'s shared `addAmountDial`/`readAmountDial`
+  pair so Shift/Delay's amount dial rewords its unit ("steps"/"semitones") when
+  the Scale combo flips, identically in both. The design decisions behind
+  the window (band-by-band rules, dial readouts, the roads not taken) are
+  written up in `design/module-window.md`.
 - `tools/engine_smoketest.cpp` — headless engine test, see Testing below.
 
 ## The canvas model and who owns it
@@ -91,14 +117,15 @@ reads a lock-free snapshot.
   types are present as `std::atomic<bool>` flags, two atomic 16-bit channel
   masks carrying the I/O modules' settings (input filter, output stamp —
   semantics documented on `Engine::Config`), and a set of atomic ints/bools
-  carrying the first Random / Scale module's generator settings (the implicit
-  chain runs one of each; extra copies share the first one's settings).
+  carrying each settings-bearing module type's first instance (the implicit
+  chain runs one of each; extra copies share the first one's settings). The
+  Progression's step list rides in a fixed array of atomics, one packed int
+  per step (degree + biased octave) plus a count.
 - `processBlock` reads those atomics plus the raw parameter values (root,
-  scale, quantize — themselves atomics via APVTS) and hands the `Engine` a
-  plain `Engine::Config` by value. No locks anywhere. Each field is
-  independently atomic; a block seeing a half-updated combination is
-  indistinguishable from the edit landing one block later, so no seqlock is
-  needed.
+  scale — themselves atomics via APVTS) and hands the `Engine` a plain
+  `Engine::Config` by value. No locks anywhere. Each field is independently
+  atomic; a block seeing a half-updated combination is indistinguishable from
+  the edit landing one block later, so no seqlock is needed.
 
 Presence flags and two masks are enough only because position never affects
 the sound and there is exactly one implicit chain. When wiring lands and the audio thread
@@ -106,6 +133,35 @@ needs real graph topology, this handoff must grow into an immutable graph
 snapshot that is swapped in atomically (build on message thread, publish via
 atomic pointer / RCU-style), not per-field atomics. That is the single biggest
 known seam in the design.
+
+## Transport and clocks
+
+Every grid the engine plays on — the stepped modules' step clocks, the
+Arp/Scale repeat windows, the LFO cycle, the Progression playhead, Quantize's
+swung boundaries — is re-derived each block from the host's ppq position (the
+LAM master-clock model): a boundary fires when it falls inside the block's
+half-open `[blockStart, blockEnd)` quarter-note range. There are no
+freewheeling counters, so pressing play mid-bar lands the first step on the
+song's next real grid point, host loop wraps put the pattern exactly where the
+song is, and tempo automation cannot accumulate drift. Floor/ceil/mod are the
+mathematical versions, so a negative position (host pre-roll) stays on the
+same grid.
+
+Hosts that give the engine nothing to sync to get an internal transport,
+synthesized in `processBlock` before the engine runs, so the engine keeps a
+single code path:
+
+- The Standalone's playhead reports `isPlaying == false` forever (there is no
+  host transport), so the menu bar's Play toggle and Tempo stepper drive a
+  processor-owned position instead: ppq accumulates across blocks and rewinds
+  to 0 on every Play press, so playback always starts at the top of bar 1.
+  Tempo is a runtime preference (not patch content, not an APVTS parameter)
+  and resets to 120 each launch.
+- A plugin host with no playhead at all free-runs the same way with
+  `isPlaying` always true.
+- A host playhead that merely lacks a ppq value keeps its own
+  `isPlaying`/BPM; the engine falls back to counting quarter notes from
+  transport start for that host (`Engine::fallbackQn`).
 
 ## The engine: fixed implicit chain
 
@@ -117,19 +173,58 @@ semantics) is at the top of `Engine.h`. Summary:
   across modules; "All" = everything). With none placed, the implicit input
   accepts all channels. Filtered events are dropped before they reach anything
   — including the Arp's held-note tracking.
-- Generators fire only while the host transport is playing, each on its own
-  step clock (they have independent rates now), gate of half its step. Arp
-  cycles ascending through currently held host notes on a fixed 1/16 grid (and
-  swallows those notes, since they are its input); Random draws uniformly from
-  its scale within its note range at its rate; Scale walks its scale from the
-  root at octave 3 across its octave span, up or down, restarting every repeat
-  interval (a step counter from transport start — longer patterns truncate,
-  shorter ones rest). Root/scale overrides of -1 fall back to the globals, so
-  the shared option tables live in `GeneratorSettings.h` (GUI-free), used by
-  the engine config, the processor, and the canvas dialogs alike.
-- Modulators apply as pure pitch mapping (`mapPitch`): Quantize snaps to the
-  global root/scale (also applied when the global quantize toggle is on), then
-  Shift transposes +12.
+- The stepped modules (Arp, Random, Scale, LFO, Chord, Drone) fire only while
+  the transport is playing, each on its own step grid anchored to the song's
+  bar 0 (see Transport and clocks). Arp walks the currently
+  held host notes per its mode (Up / Down / Up-Down / Random) across its
+  octave span at its rate and gate, swallowing those notes since they are its
+  input; Random draws uniformly from its scale within its note range at its
+  rate; Scale walks its scale from the root at octave 3 across its octave
+  span, up or down; the LFO evaluates its shape at the current position
+  inside its bar-length cycle (plus the start-phase offset) and maps the
+  bipolar value to scale degrees around the root at octave 3, swinging ± its
+  depth (octaves + scale steps); the Chord emits its diatonic stack (degree +
+  type + inversion on its root/scale) on a bar-based period/length grid; the
+  Drone holds its voicing on the same period/length model, re-triggering
+  immediately when the mapped pitch set changes mid-hold (drone-flagged
+  entries in `activeGen`) — it bypasses Quantize and the Delay by design (see
+  `Engine.h`). Arp and Scale reset their pattern every
+  repeat interval (windows counted on the grid from the song's bar 0 — longer
+  patterns truncate, shorter ones rest); a repeat of Endless publishes as 0 qn,
+  meaning no window (the Arp walk never resets, the Scale pattern loops
+  back-to-back). Root/scale overrides of -1 fall back to the globals. The
+  shared option tables and the per-module settings blob live in
+  `ModuleSettings.h` (GUI-free), used by the engine config, the processor,
+  and the canvas dialogs alike.
+- Pitch modulators apply as a mapping chain (`mapPitch`): the Scale modulator
+  snaps to its (root, scale); the Progression transposes to its current step
+  (degree via `ScaleTables::stepInScale`, octave chromatic — the step is
+  looked up per note-on from the quarter-note position the note will sound
+  at, and note-offs stay safe because they release from the activeGen /
+  activePass bookkeeping, not from re-mapping); then Shift transposes by its
+  amount — scale degrees via `stepInScale` when its scale is Global/named,
+  chromatic semitones when Off (`ModuleOptions::kScaleOff`, stored in the
+  shared `scaleOverride` field).
+- Quantize is the second stateful time modulator: while playing, every
+  note-on leaving the chain is deferred to the next point of its rate grid
+  (`pendingQuant`), with swing pushing odd grid points late by swing/2 of a
+  step (pair-based model, `swing-timing.md`). Generated notes keep their
+  gate; host-held notes register in `activePass` when they finally sound, and
+  a host note-off that beats its own deferred note-on converts the entry to a
+  fixed duration instead. The queue is discarded on transport stop; when
+  stopped, Quantize passes everything through (no grid). The grid (and the
+  swing parity) is derived from the song position, so a module dropped
+  mid-play joins the song's grid — and the shuffle sits on the song's bars,
+  not on wherever play was pressed.
+- The Delay is the exception to pure mapping — it is the first stateful time
+  modulator. Every emitted note-on (pass-through and generated) books an echo
+  in `pendingEchoes` (velocity × feedback, pitch + per-echo shift, one delay
+  time later); fired echoes book their successors until the velocity decays
+  below a floor or the pitch leaves the MIDI range. Echoes derive from the
+  final emitted stream (post Quantize/Shift/Output), live in `activeGen` for
+  their gate-timed release, run regardless of transport, and the pending
+  queue is discarded on transport stop (the requirements' shared transport
+  rule for stateful time modules).
 - Output modules stamp everything leaving the engine with their channel; with
   several, the stream is duplicated once per channel (the implicit chain's
   fan-out). With none placed, events keep their own channel.
@@ -162,13 +257,38 @@ pick the new module up from the catalogue without further changes. All three
 kinds are in the palette: generators square, modulators circle, I/O triangles
 (MIDI In points right, Output left, toward their single port). Per-module
 settings live on `ModuleInstance`: the I/O modules' MIDI channel and the
-Random / Scale generators' `GeneratorSettings` blob, each edited via a real
-settings dialog in `Canvas` (`openChannelDialog`, `openRandomDialog`,
-`openScaleGenDialog`), reflected in a node sublabel (channel or rate), and
-persisted with the canvas state. The dialogs' root/scale lists are sourced
-from the APVTS choice parameters ("Global" prepended), so they can't drift
-from the menu bar. Settings for Arp, Quantize, and Shift are still a later
-phase.
+shared `ModuleSettings` blob (used by every other type), each edited via a
+real settings dialog in `Canvas` (`openChannelDialog`, `openArpDialog`,
+`openRandomDialog`, `openScaleGenDialog`, `openLfoDialog`,
+`openQuantizeDialog`, `openScaleModDialog`, `openProgressionDialog`,
+`openShiftDialog`, `openDelayDialog`, `openChordDialog`, `openDroneDialog`),
+reflected in a node sublabel (channel, rate, Shift's signed amount, the
+Scale modulator's scale, the Progression's degrees, the Chord's degree +
+type, or the Drone's voicing), and persisted with the canvas state. The dialogs
+build their controls through `Canvas`'s shared add/read helper pairs
+(root+scale, rate, repeat, mode, octaves, gate, hold length+repeat) so a shared setting is the
+identical control in every module — modules.md's "Shared settings" section is
+the product-level rule. The root/scale lists are sourced from the APVTS
+choice parameters ("Global" prepended), so they can't drift from the menu
+bar; Shift's dialog inserts its extra "Off" entry into that same list. The
+Progression dialog is the first dynamic one: its step rows (degree + octave
+side by side via `InlineDialog`'s same-row combos) are added and removed live
+by non-closing utility buttons, and the panel re-lays itself out.
+
+The settings UI has migrated from these stacked `InlineDialog` dialogs to the
+structured `ModuleWindow` (see the component map) for all modules but
+Progression. Each converted `open*Dialog` builds a `ModuleWindow` via
+`editor.showModuleWindow`, fills the menu bar (Root / Scale / Rate-or-Length)
+and grid cells through `Canvas`'s `ModuleWindow` helper pairs — the twins of
+the `InlineDialog` helpers, so a shared control stays identical across modules —
+and reads the controls back by name (`getComboSelectedIndex` / `getDialValue`)
+on OK. Modules with a value that reads well as a knob (octaves, gate, and
+Shift/Delay's amount) use grid **dials**, rendered through
+`CurrentLookAndFeel::drawRotarySlider`, with the value folded into the cell
+label; the amount dial's unit label is refreshed off the Scale combo via
+`setComboChangeCallback`/`refreshDial`. The only `InlineDialog` shared helper
+still live is `addRootScaleControls`, which Progression uses until it too moves
+over (its step list has no grid home — see CLAUDE.md's TODO).
 
 ## Theming
 

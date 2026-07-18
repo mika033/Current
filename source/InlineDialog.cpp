@@ -67,10 +67,12 @@ juce::String InlineDialog::getTextEditorContents (const juce::String& name) cons
 void InlineDialog::addComboBox (const juce::String& name,
                                 const juce::StringArray& items,
                                 int selectedIndex,
-                                const juce::String& label)
+                                const juce::String& label,
+                                bool sameRow)
 {
     auto* entry = new ComboEntry();
     entry->name = name;
+    entry->sameRow = sameRow && ! combos.isEmpty();
 
     entry->labelComp = std::make_unique<juce::Label> ("", label);
     entry->labelComp->setColour (juce::Label::textColourId,
@@ -87,7 +89,26 @@ void InlineDialog::addComboBox (const juce::String& name,
     combos.add (entry);
 
     if (getParentComponent())
+    {
         resized();
+        repaint();   // the panel rectangle grew
+    }
+}
+
+void InlineDialog::removeComboBox (const juce::String& name)
+{
+    for (int i = 0; i < combos.size(); ++i)
+    {
+        if (combos[i]->name != name)
+            continue;
+        combos.remove (i);
+        if (getParentComponent())
+        {
+            resized();
+            repaint();   // the panel rectangle shrank
+        }
+        return;
+    }
 }
 
 int InlineDialog::getComboBoxSelectedIndex (const juce::String& name) const
@@ -115,6 +136,28 @@ void InlineDialog::addButton (const juce::String& text, int returnValue)
 
     if (getParentComponent())
         resized();
+}
+
+void InlineDialog::addUtilityButton (const juce::String& text, std::function<void()> onClick)
+{
+    auto* entry = new ButtonEntry();
+    entry->button = std::make_unique<juce::TextButton> (text);
+    entry->button->onClick = std::move (onClick);
+
+    addAndMakeVisible (entry->button.get());
+    utilityButtons.add (entry);
+
+    if (getParentComponent())
+        resized();
+}
+
+int InlineDialog::comboRowCount() const
+{
+    int rows = 0;
+    for (auto* entry : combos)
+        if (! entry->sameRow)
+            ++rows;
+    return rows;
 }
 
 juce::TextLayout InlineDialog::layoutMessage (int width) const
@@ -154,7 +197,7 @@ int InlineDialog::calculatePanelHeight() const
     if (messageText.isNotEmpty() && textFields.isEmpty() && combos.isEmpty())
         h += messageButtonGap;
 
-    for (int i = 0; i < textFields.size() + combos.size(); ++i)
+    for (int i = 0; i < textFields.size() + comboRowCount(); ++i)
         h += fieldLabelHeight + fieldHeight + fieldSpacing;
 
     h += buttonHeight + padding;
@@ -197,7 +240,10 @@ void InlineDialog::resized()
 {
     const int panelH  = calculatePanelHeight();
     const int centreX = getLocalBounds().getCentreX();
-    const int panelY  = (getHeight() - panelH) / 2;
+    // Clamp to the top edge when the panel is taller than the editor (the
+    // biggest dialogs at the minimum window size): the title and every control
+    // stay reachable and only bottom padding can clip.
+    const int panelY  = juce::jmax (0, (getHeight() - panelH) / 2);
 
     panelBounds = juce::Rectangle<int> (centreX - panelWidth / 2, panelY,
                                         panelWidth, panelH);
@@ -217,12 +263,26 @@ void InlineDialog::resized()
         y += fieldHeight + fieldSpacing;
     }
 
-    for (auto* entry : combos)
+    // Combos are laid out row-wise: a run of sameRow entries shares its
+    // predecessor's row, the row's width split evenly with a small gutter.
+    for (int i = 0; i < combos.size();)
     {
-        entry->labelComp->setBounds (contentX, y, contentW, fieldLabelHeight);
-        y += fieldLabelHeight;
-        entry->combo->setBounds (contentX, y, contentW, fieldHeight);
-        y += fieldHeight + fieldSpacing;
+        int runEnd = i + 1;
+        while (runEnd < combos.size() && combos[runEnd]->sameRow)
+            ++runEnd;
+
+        const int n       = runEnd - i;
+        const int gutter  = 10;
+        const int cellW   = (contentW - gutter * (n - 1)) / n;
+        for (int k = 0; k < n; ++k)
+        {
+            auto* entry = combos[i + k];
+            const int x = contentX + k * (cellW + gutter);
+            entry->labelComp->setBounds (x, y, cellW, fieldLabelHeight);
+            entry->combo->setBounds (x, y + fieldLabelHeight, cellW, fieldHeight);
+        }
+        y += fieldLabelHeight + fieldHeight + fieldSpacing;
+        i = runEnd;
     }
 
     const int btnW = 80;
@@ -237,6 +297,17 @@ void InlineDialog::resized()
     {
         entry->button->setBounds (bx, by, btnW, buttonHeight);
         bx += btnW + buttonSpacing;
+    }
+
+    // Utility buttons sit bottom-left, clear of the action buttons on the
+    // right (same width as the action buttons — two of each fit side by side
+    // without colliding at the fixed panel width).
+    const int ubW = 80;
+    int ux = panelBounds.getX() + padding;
+    for (auto* entry : utilityButtons)
+    {
+        entry->button->setBounds (ux, by, ubW, buttonHeight);
+        ux += ubW + buttonSpacing;
     }
 
     if (! textFields.isEmpty())

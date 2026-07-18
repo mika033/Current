@@ -18,12 +18,19 @@ enum class ModuleKind
 enum class ModuleType
 {
     // Generators
-    Arp,
     Random,
     ScaleGen,   // the "Scale" module — suffixed to avoid reading as a scale type
-    // Modulators
+    Lfo,
+    Chord,
+    Drone,
+    // Modulators (Arp transforms held input notes into an arpeggio, so it is a
+    // modulator, not a generator)
+    Arp,
     Quantize,
+    ScaleMod,      // the "Scale" modulator — forces passing notes onto a scale
+    Progression,
     Shift,
+    Delay,
     // I/O
     MidiIn,
     Output
@@ -34,7 +41,9 @@ enum class ModuleType
 // sources, Output is the one sink, modulators have both.
 inline bool moduleHasInputPort (ModuleType t)
 {
-    return t == ModuleType::Quantize || t == ModuleType::Shift
+    return t == ModuleType::Arp || t == ModuleType::Quantize
+        || t == ModuleType::ScaleMod || t == ModuleType::Progression
+        || t == ModuleType::Shift || t == ModuleType::Delay
         || t == ModuleType::Output;
 }
 
@@ -62,17 +71,26 @@ struct ModuleDescriptor
     }
 };
 
-// The palette, in display order: generators, modulators, I/O.
-inline const std::array<ModuleDescriptor, 7>& moduleCatalogue()
+// The palette, in display order: generators, modulators, I/O. The Scale
+// modulator shares its display name with the Scale generator on purpose (the
+// user asked for a "scale modulator"); shape and colour keep them apart, and
+// their persistence ids differ ("Scale" vs "ScaleMod").
+inline const std::array<ModuleDescriptor, 13>& moduleCatalogue()
 {
-    static const std::array<ModuleDescriptor, 7> kCatalogue = {{
-        { ModuleType::Arp,      ModuleKind::Generator, "Arp"      },
-        { ModuleType::Random,   ModuleKind::Generator, "Random"   },
-        { ModuleType::ScaleGen, ModuleKind::Generator, "Scale"    },
-        { ModuleType::Quantize, ModuleKind::Modulator, "Quantize" },
-        { ModuleType::Shift,    ModuleKind::Modulator, "Shift"    },
-        { ModuleType::MidiIn,   ModuleKind::IO,        "MIDI In"  },
-        { ModuleType::Output,   ModuleKind::IO,        "Output"   }
+    static const std::array<ModuleDescriptor, 13> kCatalogue = {{
+        { ModuleType::Random,      ModuleKind::Generator, "Random"      },
+        { ModuleType::ScaleGen,    ModuleKind::Generator, "Scale"       },
+        { ModuleType::Lfo,         ModuleKind::Generator, "LFO"         },
+        { ModuleType::Chord,       ModuleKind::Generator, "Chord"       },
+        { ModuleType::Drone,       ModuleKind::Generator, "Drone"       },
+        { ModuleType::Arp,         ModuleKind::Modulator, "Arp"         },
+        { ModuleType::Quantize,    ModuleKind::Modulator, "Quantize"    },
+        { ModuleType::ScaleMod,    ModuleKind::Modulator, "Scale"       },
+        { ModuleType::Progression, ModuleKind::Modulator, "Progression" },
+        { ModuleType::Shift,       ModuleKind::Modulator, "Shift"       },
+        { ModuleType::Delay,       ModuleKind::Modulator, "Delay"       },
+        { ModuleType::MidiIn,      ModuleKind::IO,        "MIDI In"     },
+        { ModuleType::Output,      ModuleKind::IO,        "Output"      }
     }};
     return kCatalogue;
 }
@@ -94,10 +112,16 @@ inline juce::String moduleTypeToString (ModuleType type)
         case ModuleType::Arp:      return "Arp";
         case ModuleType::Random:   return "Random";
         case ModuleType::ScaleGen: return "Scale";
-        case ModuleType::Quantize: return "Quantize";
-        case ModuleType::Shift:    return "Shift";
-        case ModuleType::MidiIn:   return "MidiIn";
-        case ModuleType::Output:   return "Output";
+        case ModuleType::Lfo:      return "LFO";
+        case ModuleType::Chord:    return "Chord";
+        case ModuleType::Drone:    return "Drone";
+        case ModuleType::Quantize:    return "Quantize";
+        case ModuleType::ScaleMod:    return "ScaleMod";
+        case ModuleType::Progression: return "Progression";
+        case ModuleType::Shift:       return "Shift";
+        case ModuleType::Delay:       return "Delay";
+        case ModuleType::MidiIn:      return "MidiIn";
+        case ModuleType::Output:      return "Output";
     }
     return "Arp";
 }
@@ -106,8 +130,14 @@ inline ModuleType moduleTypeFromString (const juce::String& s)
 {
     if (s == "Random")   return ModuleType::Random;
     if (s == "Scale")    return ModuleType::ScaleGen;
+    if (s == "LFO")      return ModuleType::Lfo;
+    if (s == "Chord")    return ModuleType::Chord;
+    if (s == "Drone")    return ModuleType::Drone;
     if (s == "Quantize") return ModuleType::Quantize;
+    if (s == "ScaleMod") return ModuleType::ScaleMod;
+    if (s == "Progression") return ModuleType::Progression;
     if (s == "Shift")    return ModuleType::Shift;
+    if (s == "Delay")    return ModuleType::Delay;
     if (s == "MidiIn")   return ModuleType::MidiIn;
     if (s == "Output")   return ModuleType::Output;
     return ModuleType::Arp;
