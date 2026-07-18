@@ -67,7 +67,9 @@ real double-click dialogs.
   grid of combo/dial cells (labels above, Little Arp Monster section-box
   sizing; dials for knob-friendly values like octaves/gate), and an action-
   button row. Random is the first module on it (see the module-catalogue
-  section); the rest still open `InlineDialog` dialogs pending conversion.
+  section); the rest still open `InlineDialog` dialogs pending conversion. The
+  design decisions behind the window (band-by-band rules, dial readouts, the
+  roads not taken) are written up in `design/module-window.md`.
 - `tools/engine_smoketest.cpp` — headless engine test, see Testing below.
 
 ## The canvas model and who owns it

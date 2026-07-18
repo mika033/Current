@@ -126,3 +126,7 @@ A settings-consistency audit across all 13 modules' dialogs (2026-07) turned up 
 - **Delay's per-echo Shift is chromatic-only** (semitones), whereas the Shift module can move in scale steps — an asymmetry, arguably a feature rather than a bug.
 
 Deliberate-and-fine (documented so a later session doesn't "unify" them by mistake): Arp / Quantize / Delay / I/O legitimately have no root/scale; Random and LFO legitimately have no Repeat (Random is stochastic, LFO is cyclic by its Cycle length).
+
+## TODO: roll the module window out to every module
+
+Random is the only module on the redesigned `ModuleWindow` (menu bar + 3x2 grid; see `design/module-window.md`). The other twelve — Scale gen, LFO, Chord, Drone, Arp, Quantize, Scale mod, Progression, Shift, Delay, MIDI In, Output — still open their old stacked-combo `InlineDialog` dialogs and all need converting to the new window, one at a time, matching the layout rules in the design doc (dials for octaves/gate, live label readouts, Rate-vs-Length in the menu bar's third slot). As part of that rollout, give the shared-setting `add/read` helpers `ModuleWindow` counterparts so a shared control stays identical across modules, and retire `InlineDialog` once nothing uses it.
