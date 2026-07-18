@@ -55,10 +55,11 @@ real double-click dialogs.
   JUCE widgets.
 - `InlineDialog` (InlineDialog.h/.cpp) — the in-editor modal helper (the
   SnorkelAudioStandards rule forbids `juce::AlertWindow` / `DialogWindow`).
-  Backs the settings dialogs not yet migrated to `ModuleWindow`; it supports
-  text fields, combo boxes (including same-row pairs and post-show add/remove
-  for dynamic dialogs like the Progression's step list), closing action
-  buttons, and non-closing utility buttons.
+  Now backs only the **Progression** settings dialog (every other module has
+  migrated to `ModuleWindow`); it survives for Progression's variable-length
+  step list, which needs its same-row combo pairs and post-show add/remove
+  utility buttons — features the fixed `ModuleWindow` grid has no equivalent
+  for yet. It also supports text fields and closing action buttons.
 - `ModuleWindow` (ModuleWindow.h/.cpp) — the redesigned per-module settings
   surface every module will eventually share (same modal-overlay and disposal
   contract as `InlineDialog`, so both obey the modal-dialog rule). Fixed
@@ -66,12 +67,15 @@ real double-click dialogs.
   Root, Scale, and a Rate or Length combo, unused slots left blank), a 3x2
   grid of combo/dial cells (labels above, Little Arp Monster section-box
   sizing; dials for knob-friendly values like octaves/gate), and an action-
-  button row. The five generators (Random, Scale gen, LFO, Chord, Drone) are on
-  it (see the module-catalogue section), routing shared settings through
-  `Canvas`'s `ModuleWindow` helper pairs; the eight non-generator modules still
-  open `InlineDialog` dialogs pending conversion. The
-  design decisions behind the window (band-by-band rules, dial readouts, the
-  roads not taken) are written up in `design/module-window.md`.
+  button row. Twelve of the thirteen modules are on it — all five generators
+  plus Arp, Quantize, Scale mod, Shift, Delay, MIDI In, and Output — routing
+  shared settings through `Canvas`'s `ModuleWindow` helper pairs; only
+  Progression still opens an `InlineDialog` (its step list has no grid home).
+  Two hooks let one cell react to another: `setComboChangeCallback` and
+  `refreshDial`, used so Shift/Delay's amount dial rewords its unit
+  ("steps"/"semitones") when the Scale combo flips. The design decisions behind
+  the window (band-by-band rules, dial readouts, the roads not taken) are
+  written up in `design/module-window.md`.
 - `tools/engine_smoketest.cpp` — headless engine test, see Testing below.
 
 ## The canvas model and who owns it
@@ -260,8 +264,8 @@ real settings dialog in `Canvas` (`openChannelDialog`, `openArpDialog`,
 reflected in a node sublabel (channel, rate, Shift's signed amount, the
 Scale modulator's scale, the Progression's degrees, the Chord's degree +
 type, or the Drone's voicing), and persisted with the canvas state. The dialogs
-build their combos through `Canvas`'s shared add/read helper pairs
-(root+scale, rate, repeat, mode, octaves, hold length+repeat) so a shared setting is the
+build their controls through `Canvas`'s shared add/read helper pairs
+(root+scale, rate, repeat, mode, octaves, gate, hold length+repeat) so a shared setting is the
 identical control in every module — modules.md's "Shared settings" section is
 the product-level rule. The root/scale lists are sourced from the APVTS
 choice parameters ("Global" prepended), so they can't drift from the menu
@@ -270,15 +274,20 @@ Progression dialog is the first dynamic one: its step rows (degree + octave
 side by side via `InlineDialog`'s same-row combos) are added and removed live
 by non-closing utility buttons, and the panel re-lays itself out.
 
-The settings UI is migrating from these stacked `InlineDialog` dialogs to the
-structured `ModuleWindow` (see the component map). `openRandomDialog` is the
-first converted: it builds a `ModuleWindow` (menu bar Root / Scale / Rate,
-grid From / To dials) via `editor.showModuleWindow`, reading the controls
-back by name (`getComboSelectedIndex` / `getDialValue`) on OK. The Random
-wiring inlines its root/scale/rate mapping; when more modules move over, the
-shared-setting helper pairs above should get `ModuleWindow` counterparts so a
-shared control stays identical across modules (see modules.md "Shared
-settings"). The dials render through `CurrentLookAndFeel::drawRotarySlider`.
+The settings UI has migrated from these stacked `InlineDialog` dialogs to the
+structured `ModuleWindow` (see the component map) for all modules but
+Progression. Each converted `open*Dialog` builds a `ModuleWindow` via
+`editor.showModuleWindow`, fills the menu bar (Root / Scale / Rate-or-Length)
+and grid cells through `Canvas`'s `ModuleWindow` helper pairs — the twins of
+the `InlineDialog` helpers, so a shared control stays identical across modules —
+and reads the controls back by name (`getComboSelectedIndex` / `getDialValue`)
+on OK. Modules with a value that reads well as a knob (octaves, gate, and
+Shift/Delay's amount) use grid **dials**, rendered through
+`CurrentLookAndFeel::drawRotarySlider`, with the value folded into the cell
+label; the amount dial's unit label is refreshed off the Scale combo via
+`setComboChangeCallback`/`refreshDial`. The only `InlineDialog` shared helper
+still live is `addRootScaleControls`, which Progression uses until it too moves
+over (its step list has no grid home — see CLAUDE.md's TODO).
 
 ## Theming
 

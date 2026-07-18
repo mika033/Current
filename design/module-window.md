@@ -7,12 +7,14 @@ consistent. It is plugin-local: the cross-product UI rules (themes, typography,
 panels, modal dialogs) live in `SnorkelAudioStandards/design/`; this file only
 covers Current's module window and where it leans on those shared rules.
 
-Status: all five generators (Random, Scale gen, LFO, Chord, Drone) are on this
-window. The eight non-generator modules still use the older stacked-combo
-`InlineDialog`; converting them is the open rollout (see the TODO at the end of
-`CLAUDE.md`). Implementation lives in `ModuleWindow.h/.cpp`; the dial rendering
-is in `CurrentLookAndFeel`. Shared controls now go through `ModuleWindow` helper
-pairs in `Canvas` (`addRootScaleMenu` / `addRateMenu` / `addHoldLengthMenu` /
+Status: twelve of the thirteen modules are on this window — all five generators
+(Random, Scale gen, LFO, Chord, Drone) plus Arp, Quantize, Scale mod, Shift,
+Delay, MIDI In, and Output. Only **Progression** still uses the older
+stacked-combo `InlineDialog`, because its variable-length step list has no home
+in the fixed six-cell grid (see the TODO at the end of `CLAUDE.md`).
+Implementation lives in `ModuleWindow.h/.cpp`; the dial rendering is in
+`CurrentLookAndFeel`. Shared controls go through `ModuleWindow` helper pairs in
+`Canvas` (`addRootScaleMenu` / `addRateMenu` / `addHoldLengthMenu` /
 `addGateDial` / `addOctavesDial` / `addModeCombo` / `addRepeatCombo` /
 `addHoldRepeatCombo`), the twins of the `InlineDialog` helpers, so a shared
 setting is the identical control on either window.
@@ -90,6 +92,13 @@ the SnorkelAudioStandards modal-dialog rule (no `juce::AlertWindow` /
   line. `setGridDial` takes an optional value formatter, so each dial supplies
   its own text — note names for a note range, "2" for octaves, "50%" for gate.
   A dial without a formatter just shows its plain label.
+- **A readout can depend on another control.** Shift and Delay's shift amount is
+  a dial whose unit word is read off the Scale combo — `+3 steps` with a scale,
+  `+3 semitones` with Scale = Off. The formatter captures the window and queries
+  the Scale combo, and `setComboChangeCallback ("scale", …)` re-runs
+  `refreshDial` when Scale flips, so the unit tracks live and not just on a dial
+  turn. This is the general hook for one control reacting to another; keep such
+  cross-cell coupling to genuinely linked settings so the window stays legible.
 
 ## Decisions we took (and the roads not taken)
 
@@ -101,12 +110,12 @@ the SnorkelAudioStandards modal-dialog rule (no `juce::AlertWindow` /
   arrows too), so the module window matches the rest of the plugin rather than
   diverging on its own. Adopting no-arrow combos is a separate, plugin-wide
   change.
-- **Shared-control helpers (done for the generators).** The `ModuleWindow`
-  now has its own `add/read` helper pairs in `Canvas`, the twins of the
-  `InlineDialog` ones, so a shared setting is the *identical* control on either
-  window. Random no longer inlines its Root/Scale/Rate/Gate — it routes through
-  the same helpers as the other generators. Extend the set as the remaining
-  modules move over (Arp already reuses the generator helpers verbatim).
+- **Shared-control helpers.** The `ModuleWindow` has its own `add/read` helper
+  pairs in `Canvas`, the twins of the `InlineDialog` ones, so a shared setting is
+  the *identical* control on either window. Every converted module routes its
+  Root/Scale/Rate/Length/Gate/Octaves/Mode/Repeat through them — Arp, for
+  instance, reuses the generator helpers verbatim and needed no new code. Only
+  Progression's step-list rows still lack a helper (they lack a home).
 
 ## Layout constants
 

@@ -149,62 +149,6 @@ void Canvas::readRootScaleControls (const InlineDialog& dlg, ModuleSettings& s, 
     s.scaleOverride = scaleOverrideForIndex (dlg.getComboBoxSelectedIndex ("scale"), scaleOffersOff);
 }
 
-void Canvas::addRateControl (InlineDialog& dlg, const ModuleSettings& s)
-{
-    // One canonical rate list (1/32..1/1) everywhere — no module trims it.
-    dlg.addComboBox ("rate", ModuleOptions::rateNames(), s.rate, "Rate");
-}
-
-void Canvas::readRateControl (const InlineDialog& dlg, ModuleSettings& s)
-{
-    s.rate = dlg.getComboBoxSelectedIndex ("rate");
-}
-
-void Canvas::addGateControl (InlineDialog& dlg, const ModuleSettings& s)
-{
-    dlg.addComboBox ("gate", ModuleOptions::gateNames(), s.gate, "Gate");
-}
-
-void Canvas::readGateControl (const InlineDialog& dlg, ModuleSettings& s)
-{
-    s.gate = dlg.getComboBoxSelectedIndex ("gate");
-}
-
-void Canvas::addRepeatControl (InlineDialog& dlg, const ModuleSettings& s)
-{
-    dlg.addComboBox ("repeat", ModuleOptions::repeatNames(), s.repeat, "Repeat");
-}
-
-void Canvas::readRepeatControl (const InlineDialog& dlg, ModuleSettings& s)
-{
-    s.repeat = dlg.getComboBoxSelectedIndex ("repeat");
-}
-
-void Canvas::addModeControl (InlineDialog& dlg, const ModuleSettings& s, int modeCount)
-{
-    // `modeCount` trims the tail of the shared mode list (the Scale generator
-    // offers Up/Down only).
-    juce::StringArray modes;
-    for (int i = 0; i < modeCount && i < ModuleOptions::modeNames().size(); ++i)
-        modes.add (ModuleOptions::modeNames()[i]);
-    dlg.addComboBox ("mode", modes, juce::jlimit (0, modeCount - 1, s.mode), "Mode");
-}
-
-void Canvas::readModeControl (const InlineDialog& dlg, ModuleSettings& s)
-{
-    s.mode = dlg.getComboBoxSelectedIndex ("mode");
-}
-
-void Canvas::addOctavesControl (InlineDialog& dlg, const ModuleSettings& s)
-{
-    dlg.addComboBox ("octaves", { "1", "2", "3", "4" }, s.octaves - 1, "Octaves");
-}
-
-void Canvas::readOctavesControl (const InlineDialog& dlg, ModuleSettings& s)
-{
-    s.octaves = dlg.getComboBoxSelectedIndex ("octaves") + 1;
-}
-
 // --- Shared ModuleWindow controls ---------------------------------------------
 // The ModuleWindow twins of the InlineDialog helpers above. Same keys, lists,
 // and index mappings, so a shared setting reads and writes identically whether a
@@ -437,19 +381,21 @@ void Canvas::openChannelDialog (ModuleComponent& node)
     for (int ch = 1; ch <= 16; ++ch)
         items.add (juce::String (ch));
 
-    auto* dlg = owner.showInlineDialog (juce::String (descriptorFor (type).name) + " settings");
-    dlg->addComboBox ("channel", items, isIn ? chan : chan - 1,
-                      isIn ? "Input channel" : "Output channel");
-    dlg->addButton ("OK", 1);
-    dlg->addButton ("Cancel", 0);
+    // No pitch and no time base, so the menu bar stays blank; the channel is the
+    // module's one control, a grid combo.
+    auto* win = owner.showModuleWindow (juce::String (descriptorFor (type).name));
+    win->setGridCombo (0, "channel", items, isIn ? chan : chan - 1,
+                       isIn ? "Input channel" : "Output channel");
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
 
     // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the dialog is up (host state restore), so it is re-looked-up on OK.
-    dlg->onResult = [this, id, isIn] (int result, InlineDialog* d)
+    // the window is up (host state restore), so it is re-looked-up on OK.
+    win->onResult = [this, id, isIn] (int result, ModuleWindow* w)
     {
         if (result == 1)
         {
-            const int idx = d->getComboBoxSelectedIndex ("channel");
+            const int idx = w->getComboSelectedIndex ("channel");
             if (idx >= 0)
             {
                 const int newChannel = isIn ? idx : idx + 1;
@@ -459,8 +405,8 @@ void Canvas::openChannelDialog (ModuleComponent& node)
                         n->setSublabel (channelSublabel (n->moduleType(), newChannel));
             }
         }
-        d->getParentComponent()->removeChildComponent (d);
-        delete d;
+        w->getParentComponent()->removeChildComponent (w);
+        delete w;
     };
 }
 
@@ -469,34 +415,37 @@ void Canvas::openArpDialog (ModuleComponent& node)
     const int  id = node.moduleId();
     const auto s  = proc.getModuleSettings (id);
 
-    auto* dlg = owner.showInlineDialog ("Arp settings");
-    addModeControl (*dlg, s, ModuleOptions::modeNames().size());
-    addRateControl (*dlg, s);
-    addOctavesControl (*dlg, s);
-    addGateControl (*dlg, s);
-    addRepeatControl (*dlg, s);
-    dlg->addButton ("OK", 1);
-    dlg->addButton ("Cancel", 0);
+    // A note-emitting Rate modulator with no pitch mapping: Root/Scale stay
+    // blank, Rate sits in the menu bar. Grid: mode, octaves (dial), gate (dial),
+    // repeat.
+    auto* win = owner.showModuleWindow ("Arp");
+    addRateMenu (*win, s);
+    addModeCombo (*win, 0, s, ModuleOptions::modeNames().size());
+    addOctavesDial (*win, 1, s);
+    addGateDial (*win, 2, s);
+    addRepeatCombo (*win, 3, s);
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
 
     // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the dialog is up (host state restore), so it is re-looked-up on OK.
-    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    // the window is up (host state restore), so it is re-looked-up on OK.
+    win->onResult = [this, id] (int result, ModuleWindow* w)
     {
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readModeControl (*d, ns);
-            readRateControl (*d, ns);
-            readOctavesControl (*d, ns);
-            readGateControl (*d, ns);
-            readRepeatControl (*d, ns);
+            readModeCombo (*w, ns);
+            readRateMenu (*w, ns);
+            readOctavesDial (*w, ns);
+            readGateDial (*w, ns);
+            readRepeatCombo (*w, ns);
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (rateSublabel (ns));
         }
-        d->getParentComponent()->removeChildComponent (d);
-        delete d;
+        w->getParentComponent()->removeChildComponent (w);
+        delete w;
     };
 }
 
@@ -649,30 +598,30 @@ void Canvas::openQuantizeDialog (ModuleComponent& node)
     const int  id = node.moduleId();
     const auto s  = proc.getModuleSettings (id);
 
-    auto* dlg = owner.showInlineDialog ("Quantize settings",
-                                        "Notes are moved onto the rate grid; "
-                                        "swing pushes every second grid step late.");
-    addRateControl (*dlg, s);
-    dlg->addComboBox ("swing", ModuleOptions::swingNames(), s.swing, "Swing");
-    dlg->addButton ("OK", 1);
-    dlg->addButton ("Cancel", 0);
+    // Re-times passing notes onto the Rate grid (no pitch, no gate — it keeps
+    // the played duration). Menu bar: Rate only. Grid: swing.
+    auto* win = owner.showModuleWindow ("Quantize");
+    addRateMenu (*win, s);
+    win->setGridCombo (0, "swing", ModuleOptions::swingNames(), s.swing, "Swing");
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
 
     // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the dialog is up (host state restore), so it is re-looked-up on OK.
-    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    // the window is up (host state restore), so it is re-looked-up on OK.
+    win->onResult = [this, id] (int result, ModuleWindow* w)
     {
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readRateControl (*d, ns);
-            ns.swing = d->getComboBoxSelectedIndex ("swing");
+            readRateMenu (*w, ns);
+            ns.swing = w->getComboSelectedIndex ("swing");
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (rateSublabel (ns));
         }
-        d->getParentComponent()->removeChildComponent (d);
-        delete d;
+        w->getParentComponent()->removeChildComponent (w);
+        delete w;
     };
 }
 
@@ -681,27 +630,26 @@ void Canvas::openScaleModDialog (ModuleComponent& node)
     const int  id = node.moduleId();
     const auto s  = proc.getModuleSettings (id);
 
-    // A pitch transformer, so it offers Off (pass notes through un-snapped).
-    auto* dlg = owner.showInlineDialog ("Scale settings",
-                                        "Notes passing through are forced onto "
-                                        "this scale (Off leaves them chromatic).");
-    addRootScaleControls (*dlg, s, true);
-    dlg->addButton ("OK", 1);
-    dlg->addButton ("Cancel", 0);
+    // A pitch transformer whose only settings are the Root/Scale pair (Off =
+    // leave notes chromatic). Those live in the menu bar, so the grid is empty.
+    auto* win = owner.showModuleWindow ("Scale");
+    addRootScaleMenu (*win, s, true);
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
 
-    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    win->onResult = [this, id] (int result, ModuleWindow* w)
     {
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readRootScaleControls (*d, ns, true);
+            readRootScaleMenu (*w, ns, true);
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (scaleModSublabel (ns));
         }
-        d->getParentComponent()->removeChildComponent (d);
-        delete d;
+        w->getParentComponent()->removeChildComponent (w);
+        delete w;
     };
 }
 
@@ -785,36 +733,45 @@ void Canvas::openShiftDialog (ModuleComponent& node)
     const int  id = node.moduleId();
     const auto s  = proc.getModuleSettings (id);
 
-    juce::StringArray amounts;
-    for (int a = -ModuleOptions::kShiftRange; a <= ModuleOptions::kShiftRange; ++a)
-        amounts.add (a > 0 ? "+" + juce::String (a) : juce::String (a));
+    // A pitch transformer carrying the shared Root/Scale pair. Scale = Off means
+    // the amount shifts in raw semitones; a scale (Global/named) means it shifts
+    // in scale steps. The amount is a dial whose live label reads the active
+    // unit back ("Shift: +3 semitones" / "Shift: +3 steps") and reword when the
+    // Scale combo flips Off/on.
+    auto* win = owner.showModuleWindow ("Shift");
+    addRootScaleMenu (*win, s, true);
 
-    // A pitch transformer carrying the shared Root/Scale pair (Off = shift in
-    // semitones, a scale = shift in degrees). The amount stays a combo here;
-    // its live unit-label dial belongs to the ModuleWindow rollout.
-    auto* dlg = owner.showInlineDialog ("Shift settings",
-                                        "With a scale, the amount shifts in scale steps; "
-                                        "with scale Off, in semitones.");
-    addRootScaleControls (*dlg, s, true);
-    dlg->addComboBox ("amount", amounts, s.shiftAmount + ModuleOptions::kShiftRange,
-                      "Amount");
-    dlg->addButton ("OK", 1);
-    dlg->addButton ("Cancel", 0);
+    auto* w = win;   // captured by the formatter to read the live Scale choice
+    auto amountText = [w] (double v)
+    {
+        const int n = juce::roundToInt (v);
+        const bool off = scaleOverrideForIndex (w->getComboSelectedIndex ("scale"), true)
+                             == ModuleOptions::kScaleOff;
+        return (n > 0 ? "+" + juce::String (n) : juce::String (n))
+                 + (off ? " semitones" : " steps");
+    };
+    win->setGridDial (0, "amount",
+                      -ModuleOptions::kShiftRange, ModuleOptions::kShiftRange, 1.0,
+                      (double) s.shiftAmount, "Shift", amountText);
+    win->setComboChangeCallback ("scale", [w]() { w->refreshDial ("amount"); });
 
-    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
+
+    win->onResult = [this, id] (int result, ModuleWindow* w2)
     {
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readRootScaleControls (*d, ns, true);
-            ns.shiftAmount = d->getComboBoxSelectedIndex ("amount") - ModuleOptions::kShiftRange;
+            readRootScaleMenu (*w2, ns, true);
+            ns.shiftAmount = juce::roundToInt (w2->getDialValue ("amount"));
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (shiftSublabel (ns));
         }
-        d->getParentComponent()->removeChildComponent (d);
-        delete d;
+        w2->getParentComponent()->removeChildComponent (w2);
+        delete w2;
     };
 }
 
@@ -823,44 +780,51 @@ void Canvas::openDelayDialog (ModuleComponent& node)
     const int  id = node.moduleId();
     const auto s  = proc.getModuleSettings (id);
 
-    juce::StringArray shifts;
-    for (int a = -ModuleOptions::kDelayShiftRange; a <= ModuleOptions::kDelayShiftRange; ++a)
-        shifts.add (a > 0 ? "+" + juce::String (a) : juce::String (a));
-
     // Delay maps pitch through its per-echo shift, so it carries the shared
     // Root/Scale pair (Off = shift in semitones, a scale = shift in degrees).
-    auto* dlg = owner.showInlineDialog ("Delay settings",
-                                        "Feedback sets how quickly the repeats fade; a shift "
-                                        "moves each repeat (semitones with scale Off, else "
-                                        "scale steps).");
-    addRootScaleControls (*dlg, s, true);
-    addRateControl (*dlg, s);
-    dlg->addComboBox ("feedback", ModuleOptions::feedbackNames(), s.delayFeedback,
-                      "Feedback");
-    dlg->addComboBox ("shift", shifts, s.delayShift + ModuleOptions::kDelayShiftRange,
-                      "Shift");
-    dlg->addButton ("OK", 1);
-    dlg->addButton ("Cancel", 0);
+    // Menu bar: Root / Scale / Rate. Grid: feedback, plus the per-echo shift as
+    // a dial whose live label reads the active unit back and rewords when Scale
+    // flips Off/on.
+    auto* win = owner.showModuleWindow ("Delay");
+    addRootScaleMenu (*win, s, true);
+    addRateMenu (*win, s);
+    win->setGridCombo (0, "feedback", ModuleOptions::feedbackNames(), s.delayFeedback, "Feedback");
+
+    auto* w = win;   // captured by the formatter to read the live Scale choice
+    auto shiftText = [w] (double v)
+    {
+        const int n = juce::roundToInt (v);
+        const bool off = scaleOverrideForIndex (w->getComboSelectedIndex ("scale"), true)
+                             == ModuleOptions::kScaleOff;
+        return (n > 0 ? "+" + juce::String (n) : juce::String (n))
+                 + (off ? " semitones" : " steps");
+    };
+    win->setGridDial (1, "shift",
+                      -ModuleOptions::kDelayShiftRange, ModuleOptions::kDelayShiftRange, 1.0,
+                      (double) s.delayShift, "Shift", shiftText);
+    win->setComboChangeCallback ("scale", [w]() { w->refreshDial ("shift"); });
+
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
 
     // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the dialog is up (host state restore), so it is re-looked-up on OK.
-    dlg->onResult = [this, id] (int result, InlineDialog* d)
+    // the window is up (host state restore), so it is re-looked-up on OK.
+    win->onResult = [this, id] (int result, ModuleWindow* w2)
     {
         if (result == 1)
         {
             auto ns = proc.getModuleSettings (id);
-            readRootScaleControls (*d, ns, true);
-            readRateControl (*d, ns);
-            ns.delayFeedback = d->getComboBoxSelectedIndex ("feedback");
-            ns.delayShift    = d->getComboBoxSelectedIndex ("shift")
-                                 - ModuleOptions::kDelayShiftRange;
+            readRootScaleMenu (*w2, ns, true);
+            readRateMenu (*w2, ns);
+            ns.delayFeedback = w2->getComboSelectedIndex ("feedback");
+            ns.delayShift    = juce::roundToInt (w2->getDialValue ("shift"));
             proc.setModuleSettings (id, ns);
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (rateSublabel (ns));
         }
-        d->getParentComponent()->removeChildComponent (d);
-        delete d;
+        w2->getParentComponent()->removeChildComponent (w2);
+        delete w2;
     };
 }
 

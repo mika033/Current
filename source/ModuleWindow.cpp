@@ -136,6 +136,24 @@ double ModuleWindow::getDialValue (const juce::String& name) const
     return 0.0;
 }
 
+void ModuleWindow::refreshDial (const juce::String& name)
+{
+    for (auto& c : gridCells)
+        if (c.dial != nullptr && c.name == name)
+        {
+            refreshDialLabel (c);
+            return;
+        }
+}
+
+void ModuleWindow::setComboChangeCallback (const juce::String& name, std::function<void()> cb)
+{
+    for (auto& s : menuSlots)
+        if (s.filled() && s.name == name) { s.combo->onChange = cb; return; }
+    for (auto& c : gridCells)
+        if (c.combo != nullptr && c.name == name) { c.combo->onChange = cb; return; }
+}
+
 void ModuleWindow::addButton (const juce::String& text, int returnValue)
 {
     auto* entry = new ButtonEntry();

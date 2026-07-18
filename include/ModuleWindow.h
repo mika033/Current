@@ -76,6 +76,17 @@ public:
     int    getComboSelectedIndex (const juce::String& name) const;
     double getDialValue (const juce::String& name) const;
 
+    /** Re-run a dial cell's value formatter to rebuild its label. Public so a
+     *  caller can refresh a dial whose readout depends on another control — e.g.
+     *  Shift's amount reads "semitones" or "steps" off the Scale combo. No-op
+     *  for an unknown name or a dial without a formatter. */
+    void refreshDial (const juce::String& name);
+
+    /** Install a callback fired when the named combo's selection changes, so one
+     *  control can react to another (Shift/Delay use it to reword the amount
+     *  dial's unit when Scale flips to/from Off). */
+    void setComboChangeCallback (const juce::String& name, std::function<void()> cb);
+
     /** Add an action button. The first button added is the affirmative one
      *  (Return triggers it), conventionally OK. */
     void addButton (const juce::String& text, int returnValue);

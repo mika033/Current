@@ -77,18 +77,12 @@ private:
     // that support it (the pitch transformers plus Random/LFO); the
     // scale-walking generators pass false. `modeCount` narrows the mode list
     // (the Scale generator offers Up/Down only).
+    // Only Progression still opens an InlineDialog, and it needs just the
+    // Root/Scale pair (its Step-Length combo and dynamic step rows are built
+    // inline). The other InlineDialog shared helpers were retired as their
+    // modules moved to ModuleWindow.
     void addRootScaleControls (InlineDialog&, const ModuleSettings&, bool scaleOffersOff);
     void readRootScaleControls (const InlineDialog&, ModuleSettings&, bool scaleOffersOff) const;
-    static void addRateControl (InlineDialog&, const ModuleSettings&);
-    static void readRateControl (const InlineDialog&, ModuleSettings&);
-    static void addGateControl (InlineDialog&, const ModuleSettings&);
-    static void readGateControl (const InlineDialog&, ModuleSettings&);
-    static void addRepeatControl (InlineDialog&, const ModuleSettings&);
-    static void readRepeatControl (const InlineDialog&, ModuleSettings&);
-    static void addModeControl (InlineDialog&, const ModuleSettings&, int modeCount);
-    static void readModeControl (const InlineDialog&, ModuleSettings&);
-    static void addOctavesControl (InlineDialog&, const ModuleSettings&);
-    static void readOctavesControl (const InlineDialog&, ModuleSettings&);
     // ModuleWindow counterparts of the shared controls above, so a shared
     // setting is the identical control whichever window a module opens (the
     // generators are on ModuleWindow, the rest still on InlineDialog). The menu
