@@ -39,45 +39,69 @@ playhead jump the buffer simply empties as normal.
 
 ## Shared settings
 
-Some settings recur across many modules. Each shared setting is one control —
-the same UI element and the same underlying code everywhere it appears — so
-the user meets an identical, recognisable element in every module that has
-it. The list will grow as modules gain settings; today it is:
+Some settings recur across many modules. The governing rule is that a shared
+setting **behaves identically wherever it appears** — the same control, the
+same option list, the same meaning — so the user learns it once and always
+knows what to expect. Each shared setting is meant to be one piece of code
+that every module references, not a per-module reimplementation. (Several of
+the points below are the *agreed* model that a later session rolls out
+module-by-module alongside the `ModuleWindow` conversion; where today's code
+still differs it is being brought into line, not left as an exception. See the
+decision log in `CLAUDE.md`.)
 
-- **Root and scale** — where a module's notes live. Both default to Global,
-  borrowed live from the menu bar (so a module left on Global tracks later
-  menu-bar changes), or can be overridden locally: root C to B, the same
-  scale list as the menu bar. Used by the Random, Scale, and LFO generators
-  and the Scale and Progression modulators. Shift carries a variant of the
-  scale half: its list adds an Off choice (work chromatically, no scale at
-  all) after Global.
-- **Rate** — the step grid a module works on, as a note length (1/32 to 1/1)
-  locked to host tempo: the grid a generator emits its MIDI on, or the grid a
-  modulator re-times passing MIDI to. Used by Arp, Random, Scale, and LFO;
-  Quantize uses it as its timing grid, and Delay uses the same control as its
-  echo spacing. (Progression's Rate is deliberately a different control — a
-  bar length, shared with the LFO's cycle length — because progressions move
-  in bars, not subdivisions.)
-- **Repeat** — when a module's pattern is reset and replayed from the start,
-  counted from the song's bar 0 (so the pattern sits identically on every
-  host loop pass): 1/4, 1/2, or 1 to 4 bars (assuming 4/4), or
-  Endless — the normal default — meaning the pattern just runs on until the
-  transport stops. Example: a Scale generator at rate 1/8 with repeat 1/2
-  generates only the first four scale notes, then repeats them. Used by Arp
-  (default Endless) and Scale (default 1 bar).
-- **Gate** — how long each emitted note sounds, as a share of its step (25%
-  to 100%, default 50%). Exposed by Arp so far; Random and Scale still run
-  the fixed 50% default and will grow the control as it proves useful.
+- **Root and scale — always a pair.** Every module that maps pitch carries
+  *both* a Root and a Scale override — never one without the other. Each
+  offers the same three kinds of choice: **Global** (the default — track the
+  menu bar live, so a module left on Global follows later menu-bar changes),
+  **Off** (do not force the module's output onto a scale), or a **named**
+  value (root C to B, scale from the menu-bar list). "Off" reads according to
+  what the module does with pitch: on Shift and on the Delay's per-echo shift,
+  Scale = Off means the move is in raw semitones, while Scale on (Global or
+  named) means the move is in scale steps. Used by the Random, Scale, and LFO
+  generators, the Chord and Drone generators, and the Scale, Progression,
+  Shift, and Delay modulators. Modules that don't touch pitch (Arp, Quantize,
+  MIDI In, Output) carry neither.
+- **Rate — with Gate on note-emitting modules.** Rate is the note-length grid
+  a module works on, **1/32 to 1/1**, locked to host tempo (the same canonical
+  list everywhere Rate appears): the grid a generator emits on, or the grid a
+  modulator re-times passing MIDI to. A module has **either Rate or Length, or
+  neither — never both.** On the note-emitting Rate modules — the Random,
+  Scale, and LFO generators and the Arp — Rate always ships **paired with
+  Gate** (below). Quantize uses a Rate as its timing grid and Delay uses one
+  as its echo spacing, but neither has a Gate: they re-time or echo existing
+  notes rather than originating durations, so a gate would have nothing to act
+  on.
+- **Gate** — how long each *emitted* note sounds, as a share of its step (25%
+  to 100%, default 50%). Ships on every note-emitting Rate module (the
+  generators and the Arp); it does not appear on Quantize or Delay.
+- **Length** — a single held note or chord, for the slow generators that
+  naturally produce one long note (Chord, Drone). Drawn from the shared
+  bar-length list (1/4 bar to 16 bars). A Length module has no Gate — the user
+  shortens the note simply by choosing a shorter Length.
+- **Repeat — one meaning everywhere.** Repeat is the period after which a
+  module **restarts from its start**, regardless of where it currently is: the
+  scale walk jumps back to step 1, the arp restarts its pattern, a held chord
+  re-triggers. It is counted from the song's bar 0 (so the pattern sits
+  identically on every host loop pass), drawn from the shared bar-length list
+  plus an **Endless** entry (never restart — the usual default for stepped
+  emitters). Repeat is independent of Rate/Length and may sit alongside either
+  or be absent (Random and LFO have none — Random is stochastic, the LFO is
+  cyclic by its own Cycle length). On a Length module the two combine
+  literally: a Chord with Length 2 bars and Repeat 4 bars sounds for 2 bars,
+  then rests for 2 bars (the `Repeat − Length` remainder is silence), then
+  re-triggers; Length equal to or above Repeat plays legato back-to-back.
 - **Mode** (Up, Down, …) and **Octaves** — pattern direction and octave span,
   shared by the modules that walk a pattern (Arp, Scale; Scale offers Up and
-  Down only).
-- **Length and Repeat (bar-based)** — the pacing pair of the slow generators
-  (Chord, Drone). Repeat is how often a new chord/note starts, Length how
-  long it sounds inside that window; both use the shared bar-length list
-  (1/4 bar to 16 bars — the same list as the LFO's cycle length and the
-  Progression's rate), and both windows are anchored to the song's bar 0.
-  Length equal to or above Repeat plays legato back-to-back; a Length below
-  Repeat leaves silence between hits.
+  Down only). "Octaves" here (a 1–4 range span) is a different concept from
+  the per-module "Octave" transpose offset (−2 to +2, on Drone and on each
+  Progression step); both words are kept because each is the conventional term
+  for its concept, and the module-window label readout makes the meaning
+  unambiguous (`Octaves: 2` spans two octaves; `Octave: +1` shifts up one).
+- **Bar-length list** — the single canonical list of bar durations (1/4 bar
+  to 16 bars) that every bar-based control draws from: Length, Repeat (plus
+  Endless), the LFO's Cycle length, and the Progression's **Step Length** (the
+  per-step duration, renamed from "Rate" so that "Rate" stays reserved for the
+  1/32–1/1 note grid).
 
 Also planned as a shared setting: an active-from/to bar range that limits a
 module to part of the arrangement (not yet implemented anywhere).
