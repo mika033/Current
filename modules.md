@@ -538,8 +538,41 @@ open details, where any, are flagged.
 
 - **Ratchet / Repeat** — subdivides or retriggers a note into a burst
   (settings: subdivision count and, likely, a velocity ramp).
-- **Strum** — spreads the notes of a chord out over a short time window, like
-  a strummed guitar (settings: spread time, direction).
+- **Strum** — spreads the notes of a chord out over a short time window, like a
+  strummed guitar: notes that arrive together are delayed by a growing offset so
+  they fan out instead of hitting at once. It re-times and re-shapes the chord's
+  own notes and maps no pitch, so it carries no Root/Scale. Like every timing
+  modulator here it can only delay (a real-time MIDI effect can't play a note
+  earlier than it arrived), so the first note stays on the beat and the rest
+  spread late; a true "strum ahead of the beat" would need host-latency
+  reporting and is out of scope, the same carve-out lay-back has in Humanize.
+  Which note-ons count as one chord is decided by a small automatic grouping
+  window, not a user control. Its six controls fill the settings grid over a
+  blank menu bar; Direction and Repeat are the shared controls, so they read
+  identically to the rest of the plugin.
+
+  Planned settings:
+
+  - Spread — the total fan-out time from the first strummed note to the last (a
+    short window, on the order of a few up to ~100 ms); a dial. 0 = the chord
+    hits together (an effective bypass).
+  - Direction — the shared Mode control: Up (low→high, a downstroke), Down
+    (high→low, an upstroke), Up-Down (alternating strokes on successive strums,
+    the way a real player alternates), Random (shuffled note order).
+  - Curve — how the inter-note spacing is shaped across the fan: Even,
+    Accelerate (notes bunch toward the end, the natural pick-stroke feel), or
+    Decelerate.
+  - Velocity — a signed tilt across the strum (−100%…+100%, default 0): negative
+    starts loud and fades away (a bass-note accent), positive swells up, 0 is
+    flat.
+  - Jitter — looseness: a random per-note variation in each note's timing (and a
+    touch of velocity) so repeated strums don't land identically. Deterministic
+    from the song position like the Humanize module, so a looped part strums the
+    same way on every pass instead of shimmering.
+  - Repeat — the shared Repeat control (Endless plus bar lengths to 16). Endless
+    (never restart) strums the held chord once; a bar length re-strums it every
+    that period, turning Strum into a bar-based comping engine — set Direction to
+    Up-Down for authentic alternating strokes across the repeats.
 - **Note Length / Legato** — overrides or scales gate length, from staccato
   through fully legato.
 
