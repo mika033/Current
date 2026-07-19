@@ -3,6 +3,7 @@
 #include "ModuleSettings.h"   // ModuleOptions::kMode* — the shared mode indices
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace
 {
@@ -39,6 +40,60 @@ namespace
         const juce::int64 m = i % (juce::int64) n;
         return (int) (m < 0 ? m + n : m);
     }
+
+    // Pair-based swing (swing-timing.md): the straight grid boundary at index j
+    // is pushed late by swingQn when j is odd; even boundaries — the pair starts
+    // — stay put. The one source of the swing model, shared by Quantize (which
+    // snaps note-ons to the next of these boundaries) and Humanize (which warps
+    // through them continuously, see swingWarpQn).
+    double swungBoundaryQn (juce::int64 j, double stepQn, double swingQn)
+    {
+        return (double) j * stepQn + ((j & 1) != 0 ? swingQn : 0.0);
+    }
+
+    // Continuous swing warp: map an arbitrary song position through the
+    // piecewise-linear time-warp the pair-based model defines (each straight
+    // step [j, j+1] is stretched/shrunk onto its swung span). Monotonic, so
+    // event order is preserved, and — because pair starts are fixed and the
+    // interior only ever moves late — the result is always >= qn. That is what
+    // lets Humanize apply swing as a forward-only nudge without snapping to the
+    // grid (a real-time MIDI FX can only delay a note, never advance it).
+    double swingWarpQn (double qn, double stepQn, double swingQn)
+    {
+        if (stepQn <= 0.0)
+            return qn;
+        const juce::int64 j = (juce::int64) std::floor (qn / stepQn);
+        const double a    = swungBoundaryQn (j,     stepQn, swingQn);
+        const double b    = swungBoundaryQn (j + 1, stepQn, swingQn);
+        const double frac = qn / stepQn - (double) j;
+        return a + frac * (b - a);
+    }
+
+    // A stable pseudo-random value in [0, 1) from integer inputs, so Humanize's
+    // "random" jitter is a deterministic function of song position (grid index)
+    // and note — the humanized feel then repeats identically on every host loop
+    // pass instead of shimmering. `salt` separates the independent draws (timing
+    // vs. velocity vs. length). A finalizer-style integer hash (splitmix64-ish).
+    double hash01 (juce::int64 gridIndex, int noteKey, int salt)
+    {
+        std::uint64_t h = (std::uint64_t) gridIndex * 0x9E3779B97F4A7C15ULL;
+        h ^= (std::uint64_t) (noteKey + 1) * 0xC2B2AE3D27D4EB4FULL;
+        h ^= (std::uint64_t) (salt + 1)    * 0x165667B19E3779F9ULL;
+        h ^= h >> 30; h *= 0xBF58476D1CE4E5B9ULL;
+        h ^= h >> 27; h *= 0x94D049BB133111EBULL;
+        h ^= h >> 31;
+        return (double) (h >> 11) * (1.0 / 9007199254740992.0);   // 53-bit mantissa
+    }
+
+    // Humanize maxima, as fractions of its groove step (timing) or velocity
+    // units, reached at the 100% control setting. Chosen so full jitter is
+    // clearly audible but stays musical.
+    constexpr double kHumanizeLaybackFrac = 0.5;   // full lay-back = half a step behind
+    constexpr double kHumanizeTimeJitFrac = 0.5;   // full timing jitter = up to half a step late
+    constexpr double kHumanizeLenJitFrac  = 0.5;   // full length jitter = up to half a step longer
+    constexpr double kHumanizeAccentDepth = 0.4;   // full accent = +/-40% velocity on strong/weak
+    constexpr double kHumanizeVelRange    = 48.0;  // full velocity jitter = +/-48
+    constexpr int    kSaltTime = 1, kSaltVel = 2, kSaltLen = 3;
 }
 
 void Engine::prepare (double sampleRate)
@@ -54,6 +109,8 @@ void Engine::reset()
     activePass.clear();
     pendingEchoes.clear();
     pendingQuant.clear();
+    pendingHuman.clear();
+    humanHeld.clear();
     fallbackQn = 0.0;
     wasPlaying = false;
 }
@@ -138,6 +195,8 @@ void Engine::process (juce::MidiBuffer& midi,
         held.fill (false);
         pendingEchoes.clear();
         pendingQuant.clear();
+        pendingHuman.clear();
+        humanHeld.clear();
         wasPlaying = false;
         return;
     }
@@ -189,6 +248,31 @@ void Engine::process (juce::MidiBuffer& midi,
     // note-offs (a live key is released independently of the transport).
     if (! isPlaying && wasPlaying)
     {
+        // Humanize first, before the generated-note flush below, so on/off stay
+        // exactly balanced across the stop. A note whose humanized note-on is
+        // still buffered never reached the synth, so cancel its pending gate in
+        // activeGen (otherwise the flush would emit a note-off the synth never
+        // got an on for); a buffered note-off is releasing a note the synth IS
+        // sounding, so emit it now (its activeGen entry is already gone). The
+        // flush then releases everything still genuinely held.
+        for (const auto& hev : pendingHuman)
+        {
+            if (hev.msg.isNoteOn())
+            {
+                for (auto it = activeGen.begin(); it != activeGen.end(); ++it)
+                    if (it->channel == hev.msg.getChannel()
+                        && it->note == hev.msg.getNoteNumber())
+                    {
+                        activeGen.erase (it);
+                        break;
+                    }
+            }
+            else if (hev.msg.isNoteOff())
+                midi.addEvent (hev.msg, 0);
+        }
+        pendingHuman.clear();
+        humanHeld.clear();
+
         flushGeneratedNotes (midi, 0);
         pendingEchoes.clear();
         pendingQuant.clear();
@@ -251,9 +335,9 @@ void Engine::process (juce::MidiBuffer& midi,
         for (auto j = (juce::int64) std::floor (atQn / quantStepQn) - 1; ; ++j)
         {
             // (j & 1) is 1 for negative odd values too, so pre-roll
-            // boundaries keep the same parity rule.
-            const double swungQn = (double) j * quantStepQn
-                                 + ((j & 1) != 0 ? quantSwingQn : 0.0);
+            // boundaries keep the same parity rule. Shared swing helper — the
+            // one place the pair-based model lives (Humanize warps through it).
+            const double swungQn = swungBoundaryQn (j, quantStepQn, quantSwingQn);
             if (swungQn >= atQn)
                 return juce::jmax (s, (int) std::llround ((swungQn - blockStartQn)
                                                               * samplesPerQn));
@@ -810,6 +894,127 @@ void Engine::process (juce::MidiBuffer& midi,
             it->samplesLeft -= numSamples;
             ++it;
         }
+    }
+
+    // --- Humanize: final-stage feel warp over the whole outgoing stream -------
+    // Runs last, so it shapes everything already in the buffer: pass-through,
+    // generated, quantized, and delayed notes alike. Only warps while playing —
+    // stopped (or with the module removed) it passes events straight through for
+    // immediate live feel, but still flushes any buffered note-offs at sample 0
+    // so a note whose off was in flight can't hang.
+    const bool humanizeActive = cfg.hasHumanize && isPlaying;
+    if (! humanizeActive)
+    {
+        if (! pendingHuman.empty())
+        {
+            for (const auto& e : pendingHuman)
+                if (! e.msg.isNoteOn())   // release / CC — dropping these could hang a note
+                    midi.addEvent (e.msg, 0);
+            pendingHuman.clear();
+        }
+        humanHeld.clear();
+    }
+    else
+    {
+        const double stepQn  = juce::jmax (0.001, cfg.humanizeStepQn);
+        const double swingQn = cfg.humanizeSwing * 0.5 * stepQn;
+        const double layQn   = cfg.humanizeLayback * kHumanizeLaybackFrac * stepQn;
+
+        // Pull the block's straight output aside and rebuild it warped.
+        juce::MidiBuffer straight;
+        straight.swapWith (midi);
+
+        auto emitOrDefer = [&] (const juce::MidiMessage& msg, int newSample)
+        {
+            if (newSample < numSamples)
+                midi.addEvent (msg, juce::jmax (0, newSample));
+            else
+                pendingHuman.push_back ({ msg, newSample });
+        };
+
+        // 1) Fire buffered events whose warped time lands in this block; the
+        //    rest are decremented at the end (like pendingEchoes / pendingQuant).
+        for (auto& e : pendingHuman)
+            if (e.samplesUntil < numSamples)
+            {
+                midi.addEvent (e.msg, juce::jmax (0, e.samplesUntil));
+                e.samplesUntil = std::numeric_limits<int>::min();   // mark fired
+            }
+        pendingHuman.erase (std::remove_if (pendingHuman.begin(), pendingHuman.end(),
+                                            [] (const HumanEvent& e)
+                                            { return e.samplesUntil == std::numeric_limits<int>::min(); }),
+                            pendingHuman.end());
+
+        // 2) Warp this block's fresh events. The swing + lay-back offset is a
+        //    pure function of song position (applied to every note event, on and
+        //    off, so durations follow the groove); note-ons additionally take a
+        //    random late nudge and velocity shaping, note-offs a random
+        //    lengthening — all delay-only, so nothing ever moves before it
+        //    arrived. A note-off reuses its on's timing jitter (kept in
+        //    humanHeld) so the jitter never changes the note's length.
+        for (const auto meta : straight)
+        {
+            const auto msg = meta.getMessage();
+            const int  s   = meta.samplePosition;
+            const double qn       = blockStartQn + (double) s / samplesPerQn;
+            const double warpedQn = swingWarpQn (qn, stepQn, swingQn) + layQn;
+            const juce::int64 gi  = (juce::int64) std::floor (qn / stepQn);
+            auto sampleForQn = [&] (double targetQn)
+            {
+                return juce::jmax (s, (int) std::llround ((targetQn - blockStartQn) * samplesPerQn));
+            };
+
+            if (msg.isNoteOn())
+            {
+                const int chan  = msg.getChannel();
+                const int pitch = msg.getNoteNumber();
+                const int key   = pitch * 16 + chan;
+
+                const double jitterQn = hash01 (gi, key, kSaltTime)
+                                            * cfg.humanizeTimeJit * kHumanizeTimeJitFrac * stepQn;
+
+                // Accent: strong beats (even step of the swing pair) louder,
+                // weak beats softer; then a symmetric random touch on top.
+                const bool   strong = (gi & 1) == 0;
+                const double accent = 1.0 + cfg.humanizeAccent * kHumanizeAccentDepth
+                                                * (strong ? 1.0 : -1.0);
+                const double velJit = (hash01 (gi, key, kSaltVel) * 2.0 - 1.0)
+                                          * cfg.humanizeVelJit * kHumanizeVelRange;
+                const int newVel = juce::jlimit (1, 127,
+                                                 (int) std::llround ((double) msg.getVelocity() * accent + velJit));
+
+                humanHeld.push_back ({ chan, pitch, jitterQn });
+                emitOrDefer (juce::MidiMessage::noteOn (chan, pitch, (juce::uint8) newVel),
+                             sampleForQn (warpedQn + jitterQn));
+            }
+            else if (msg.isNoteOff())
+            {
+                // Reuse the matching on's timing jitter so the note keeps its
+                // length; add an independent one-sided lengthening on top.
+                double onJitterQn = 0.0;
+                for (auto it = humanHeld.begin(); it != humanHeld.end(); ++it)
+                    if (it->channel == msg.getChannel() && it->note == msg.getNoteNumber())
+                    {
+                        onJitterQn = it->jitterQn;
+                        humanHeld.erase (it);
+                        break;
+                    }
+                const double lenQn = hash01 (gi, msg.getNoteNumber() * 16 + msg.getChannel(), kSaltLen)
+                                         * cfg.humanizeLenJit * kHumanizeLenJitFrac * stepQn;
+                emitOrDefer (msg, sampleForQn (warpedQn + onJitterQn + lenQn));
+            }
+            else
+            {
+                // CC / pitch-bend / clock / sysex: left on their original sample
+                // (shifting a controller or clock off its note would do more harm
+                // than the groove is worth).
+                midi.addEvent (msg, s);
+            }
+        }
+
+        // 3) Age the still-buffered events into the next block.
+        for (auto& e : pendingHuman)
+            e.samplesUntil -= numSamples;
     }
 
 }

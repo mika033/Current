@@ -60,6 +60,7 @@ private:
     void openProgressionDialog (ModuleComponent& node);
     void openShiftDialog (ModuleComponent& node);
     void openDelayDialog (ModuleComponent& node);
+    void openHumanizeDialog (ModuleComponent& node);
     void openChordDialog (ModuleComponent& node);
     void openDroneDialog (ModuleComponent& node);
     static juce::String channelSublabel (ModuleType type, int channel);

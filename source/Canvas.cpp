@@ -279,7 +279,8 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
         node->setSublabel (channelSublabel (instance.type, instance.channel));
     else if (instance.type == ModuleType::Random || instance.type == ModuleType::ScaleGen
              || instance.type == ModuleType::Arp || instance.type == ModuleType::Lfo
-             || instance.type == ModuleType::Delay || instance.type == ModuleType::Quantize)
+             || instance.type == ModuleType::Delay || instance.type == ModuleType::Quantize
+             || instance.type == ModuleType::Humanize)
         node->setSublabel (rateSublabel (instance.settings));
     else if (instance.type == ModuleType::Shift)
         node->setSublabel (shiftSublabel (instance.settings));
@@ -349,6 +350,11 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
         if (n.moduleType() == ModuleType::Delay)
         {
             openDelayDialog (n);
+            return;
+        }
+        if (n.moduleType() == ModuleType::Humanize)
+        {
+            openHumanizeDialog (n);
             return;
         }
         if (n.moduleType() == ModuleType::Chord)
@@ -774,6 +780,52 @@ void Canvas::openDelayDialog (ModuleComponent& node)
         }
         w2->getParentComponent()->removeChildComponent (w2);
         delete w2;
+    };
+}
+
+void Canvas::openHumanizeDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    // A final-stage performance-feel modulator: no pitch (Root/Scale blank), and
+    // Rate is the groove grid swing & accent lock to. The grid is laid out in
+    // signal-flow order — top row = the structured groove (Swing, Lay-back,
+    // Accent), bottom row = the random touch (Timing, Velocity, Length). Every
+    // amount is a 0..100% dial reading its percent back live.
+    auto pct = [] (double v) { return juce::String (juce::roundToInt (v) * 10) + "%"; };
+    auto* win = owner.showModuleWindow ("Humanize");
+    addRateMenu (*win, s);
+    win->setGridDial (0, "swing",   0.0, 10.0, 1.0, (double) s.swing,           "Swing",    pct);
+    win->setGridDial (1, "layback", 0.0, 10.0, 1.0, (double) s.humanizeLayback, "Lay-back", pct);
+    win->setGridDial (2, "accent",  0.0, 10.0, 1.0, (double) s.humanizeAccent,  "Accent",   pct);
+    win->setGridDial (3, "timeJit", 0.0, 10.0, 1.0, (double) s.humanizeTimeJit, "Timing",   pct);
+    win->setGridDial (4, "velJit",  0.0, 10.0, 1.0, (double) s.humanizeVelJit,  "Velocity", pct);
+    win->setGridDial (5, "lenJit",  0.0, 10.0, 1.0, (double) s.humanizeLenJit,  "Length",   pct);
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
+
+    // Captures the id, not the node — the node can be deleted or rebuilt while
+    // the window is up (host state restore), so it is re-looked-up on OK.
+    win->onResult = [this, id] (int result, ModuleWindow* w)
+    {
+        if (result == 1)
+        {
+            auto ns = proc.getModuleSettings (id);
+            readRateMenu (*w, ns);
+            ns.swing           = juce::roundToInt (w->getDialValue ("swing"));
+            ns.humanizeLayback = juce::roundToInt (w->getDialValue ("layback"));
+            ns.humanizeAccent  = juce::roundToInt (w->getDialValue ("accent"));
+            ns.humanizeTimeJit = juce::roundToInt (w->getDialValue ("timeJit"));
+            ns.humanizeVelJit  = juce::roundToInt (w->getDialValue ("velJit"));
+            ns.humanizeLenJit  = juce::roundToInt (w->getDialValue ("lenJit"));
+            proc.setModuleSettings (id, ns);
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (rateSublabel (ns));
+        }
+        w->getParentComponent()->removeChildComponent (w);
+        delete w;
     };
 }
 

@@ -187,6 +187,14 @@ private:
                      engDelayShift { 0 },
                      engDelayScale { ModuleOptions::kScaleGlobal },
                      engDelayRoot { ModuleOptions::kScaleGlobal };
+    // Humanize: the groove grid (rate) + swing + the five feel amounts, each a
+    // 0..10 UI index converted to a 0..1 fraction in processBlock.
+    std::atomic<bool> engHasHumanize { false };
+    std::atomic<int> engHumanizeRate { ModuleOptions::kRate1_16 },
+                     engHumanizeSwing { ModuleOptions::kSwingOff },
+                     engHumanizeLayback { 0 }, engHumanizeAccent { 0 },
+                     engHumanizeTimeJit { 0 }, engHumanizeVelJit { 0 },
+                     engHumanizeLenJit { 0 };
 
     // Cached parameter pointers (set in the ctor, read every block).
     std::atomic<float>* rootParam  = nullptr;

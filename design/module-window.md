@@ -7,9 +7,9 @@ consistent. It is plugin-local: the cross-product UI rules (themes, typography,
 panels, modal dialogs) live in `SnorkelAudioStandards/design/`; this file only
 covers Current's module window and where it leans on those shared rules.
 
-Status: all thirteen modules are on this window — all five generators
+Status: all fourteen modules are on this window — all five generators
 (Random, Scale gen, LFO, Chord, Drone) plus Arp, Quantize, Scale mod, Shift,
-Delay, MIDI In, Output, and **Progression**. Progression's variable-length step
+Delay, Humanize, MIDI In, Output, and **Progression**. Progression's variable-length step
 list has no home in the fixed six-cell grid, so it rides the **custom-body
 escape hatch** (see "Custom body" below) rather than the grid.
 Implementation lives in `ModuleWindow.h/.cpp`; the dial rendering is in
