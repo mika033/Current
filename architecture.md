@@ -10,9 +10,9 @@ phases. File references are relative to the repo root; headers live in
 
 A JUCE MIDI-effect plugin (VST3 + Standalone, Linux build only so far). The
 editor shows a menu bar (global root / scale + theme switch), a canvas that
-modules can be dragged onto from a palette of fourteen (generators Random,
+modules can be dragged onto from a palette of fifteen (generators Random,
 Scale, LFO, Chord, and Drone, modulators Arp, Quantize, Scale, Progression,
-Shift, Delay, and Humanize, I/O modules MIDI In and Output), and an engine that actually runs
+Shift, Delay, Strum, and Humanize, I/O modules MIDI In and Output), and an engine that actually runs
 those modules — but as a fixed implicit chain, because there is no port
 wiring yet. The I/O modules carry a per-module MIDI channel; every other
 module carries full settings (drawn from the shared settings pool —
@@ -66,7 +66,7 @@ real double-click dialogs.
   a thin menu bar echoing the global one (three slots — Root, Scale, and a Rate
   or Length combo, unused slots left blank), a 3x2 grid of combo/dial cells
   (labels above, Little Arp Monster section-box sizing; dials for knob-friendly
-  values like octaves/gate), and an action-button row. All fourteen modules are
+  values like octaves/gate), and an action-button row. All fifteen modules are
   on it, routing shared settings through `Canvas`'s `ModuleWindow` helper pairs.
   For a module whose body the six cells can't hold, `setCustomBody` swaps the
   grid for a caller-supplied component and sizes the panel to it, keeping the
@@ -228,8 +228,26 @@ semantics) is at the top of `Engine.h`. Summary:
 - Output modules stamp everything leaving the engine with their channel; with
   several, the stream is duplicated once per channel (the implicit chain's
   fan-out). With none placed, events keep their own channel.
+- Strum is a stateful time modulator that runs as a post-pass after the
+  generated-note releases and before Humanize. Note-ons arriving within a small
+  fixed detection window (`kStrumGroupWindowSec`) are collected into `strumGroup`
+  and withheld until the window closes — the fan order needs the whole chord, so
+  this window is the module's added latency. On finalize the chord is sorted by
+  pitch, ordered per Direction (`strumMode`; Up-Down alternates by the strum
+  counter, Random shuffles via `rng`), and each note is released delayed by its
+  curve position over the spread (`strumCurve` shapes the spacing) with a
+  velocity ramp (`strumVelTilt`) and a deterministic per-note jitter (hashed from
+  song position, so loops repeat). Every note-off is delayed by the same amount
+  as its note-on — recorded in `strumHeld` — so lengths and ordering are
+  preserved and nothing hangs; events landing past the block wait in
+  `pendingStrum` (block-relative, aged like the Delay/Quantize/Humanize buffers).
+  `strumRepeatQn > 0` re-strums the sounding chord on the bar grid (releasing the
+  old instance, re-striking with a fresh strum index). Spread 0 with no reshaping
+  is a zero-latency bypass (each note becomes its own one-note group). It maps no
+  pitch, so it has no root/scale; on a transport stop its buffers are discarded
+  and sounding notes released, mirroring the Humanize/Delay contract.
 - Humanize is the last stage: a post-pass over the whole finished `midi` buffer
-  (pass-through, generated, quantized, and delayed alike). It re-times every
+  (pass-through, generated, quantized, delayed, and strummed alike). It re-times every
   note event through a continuous, delay-only warp — pair-based swing (the same
   `swungBoundaryQn` the Quantize path uses, applied via `swingWarpQn` as a nudge
   rather than a snap) plus a constant lay-back — and shapes note-ons' velocity
@@ -274,11 +292,12 @@ shared `ModuleSettings` blob (used by every other type), each edited via a
 real settings dialog in `Canvas` (`openChannelDialog`, `openArpDialog`,
 `openRandomDialog`, `openScaleGenDialog`, `openLfoDialog`,
 `openQuantizeDialog`, `openScaleModDialog`, `openProgressionDialog`,
-`openShiftDialog`, `openDelayDialog`, `openHumanizeDialog`, `openChordDialog`,
-`openDroneDialog`),
+`openShiftDialog`, `openDelayDialog`, `openStrumDialog`, `openHumanizeDialog`,
+`openChordDialog`, `openDroneDialog`),
 reflected in a node sublabel (channel, rate, Shift's signed amount, the
 Scale modulator's scale, the Progression's degrees, the Chord's degree +
-type, or the Drone's voicing), and persisted with the canvas state. The dialogs
+type, the Drone's voicing, or the Strum's spread in ms), and persisted with the
+canvas state. The dialogs
 build their controls through `Canvas`'s shared add/read helper pairs
 (root+scale, rate, repeat, mode, octaves, gate, hold length+repeat) so a shared setting is the
 identical control in every module — modules.md's "Shared settings" section is
@@ -287,7 +306,7 @@ choice parameters ("Global" prepended), so they can't drift from the menu
 bar; Shift's dialog inserts its extra "Off" entry into that same list.
 
 The settings UI is fully on the structured `ModuleWindow` (see the component
-map) for all fourteen modules. Each `open*Dialog` builds a `ModuleWindow` via
+map) for all fifteen modules. Each `open*Dialog` builds a `ModuleWindow` via
 `editor.showModuleWindow`, fills the menu bar (Root / Scale / Rate-or-Length)
 and grid cells through `Canvas`'s `ModuleWindow` helper pairs, and reads the
 controls back by name (`getComboSelectedIndex` / `getDialValue`) on OK. Modules

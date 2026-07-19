@@ -94,6 +94,13 @@ juce::String Canvas::droneSublabel (const ModuleSettings& settings)
         0, ModuleOptions::droneVoicingNames().size() - 1, settings.droneVoicing)];
 }
 
+juce::String Canvas::strumSublabel (const ModuleSettings& settings)
+{
+    // The spread in ms — the module's headline setting (0 ms = bypass).
+    const int ms = juce::jlimit (0, ModuleOptions::kStrumSpreadSteps, settings.strumSpread) * 10;
+    return juce::String (ms) + " ms";
+}
+
 juce::StringArray Canvas::choicesWithGlobal (const char* paramID) const
 {
     juce::StringArray items { "Global" };
@@ -288,6 +295,8 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
         node->setSublabel (chordSublabel (instance.settings));
     else if (instance.type == ModuleType::Drone)
         node->setSublabel (droneSublabel (instance.settings));
+    else if (instance.type == ModuleType::Strum)
+        node->setSublabel (strumSublabel (instance.settings));
     else if (instance.type == ModuleType::ScaleMod)
         node->setSublabel (scaleModSublabel (instance.settings));
     else if (instance.type == ModuleType::Progression)
@@ -350,6 +359,11 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
         if (n.moduleType() == ModuleType::Delay)
         {
             openDelayDialog (n);
+            return;
+        }
+        if (n.moduleType() == ModuleType::Strum)
+        {
+            openStrumDialog (n);
             return;
         }
         if (n.moduleType() == ModuleType::Humanize)
@@ -780,6 +794,64 @@ void Canvas::openDelayDialog (ModuleComponent& node)
         }
         w2->getParentComponent()->removeChildComponent (w2);
         delete w2;
+    };
+}
+
+void Canvas::openStrumDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    // A time modulator with no pitch and no single time base, so the menu bar
+    // stays blank; its six controls fill the grid. Direction and Repeat are the
+    // shared controls (identical to the Arp's), so they read the same everywhere.
+    // Layout follows the strum gesture: Spread / Direction / Curve on top, then
+    // the shaping row Velocity / Jitter / Repeat.
+    auto* win = owner.showModuleWindow ("Strum");
+
+    // Spread: 0..10 dial reading milliseconds (0 = bypass), 10 ms per step.
+    win->setGridDial (0, "spread", 0.0, (double) ModuleOptions::kStrumSpreadSteps, 1.0,
+                      (double) s.strumSpread, "Spread",
+                      [] (double v) { return juce::String (juce::roundToInt (v) * 10) + " ms"; });
+    addModeCombo (*win, 1, s, ModuleOptions::modeNames().size());   // Direction (shared Mode)
+    win->setGridCombo (2, "curve", ModuleOptions::strumCurveNames(), s.strumCurve, "Curve");
+    // Velocity tilt: signed dial reading a signed percent (− fades, + swells).
+    win->setGridDial (3, "velTilt",
+                      (double) -ModuleOptions::kStrumVelTiltRange,
+                      (double)  ModuleOptions::kStrumVelTiltRange, 1.0,
+                      (double) s.strumVelTilt, "Velocity",
+                      [] (double v)
+                      {
+                          const int p = juce::roundToInt (v) * 10;
+                          return (p > 0 ? "+" + juce::String (p) : juce::String (p)) + "%";
+                      });
+    win->setGridDial (4, "jitter", 0.0, (double) ModuleOptions::kStrumJitterSteps, 1.0,
+                      (double) s.strumJitter, "Jitter",
+                      [] (double v) { return juce::String (juce::roundToInt (v) * 10) + "%"; });
+    addRepeatCombo (*win, 5, s);
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
+
+    // Captures the id, not the node — the node can be deleted or rebuilt while
+    // the window is up (host state restore), so it is re-looked-up on OK.
+    win->onResult = [this, id] (int result, ModuleWindow* w)
+    {
+        if (result == 1)
+        {
+            auto ns = proc.getModuleSettings (id);
+            ns.strumSpread  = juce::roundToInt (w->getDialValue ("spread"));
+            readModeCombo (*w, ns);   // Direction -> shared mode
+            ns.strumCurve   = w->getComboSelectedIndex ("curve");
+            ns.strumVelTilt = juce::roundToInt (w->getDialValue ("velTilt"));
+            ns.strumJitter  = juce::roundToInt (w->getDialValue ("jitter"));
+            readRepeatCombo (*w, ns);
+            proc.setModuleSettings (id, ns);
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (strumSublabel (ns));
+        }
+        w->getParentComponent()->removeChildComponent (w);
+        delete w;
     };
 }
 

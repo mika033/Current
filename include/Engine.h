@@ -14,6 +14,7 @@
 //     -> pitch modulators transform (Scale, then Progression, then Shift)
 //     -> Quantize re-times note-ons onto its swung grid
 //     -> Output (channel stamp) -> Delay adds echoes
+//     -> Strum fans simultaneous chord notes out over a short window
 //     -> Humanize warps the final stream (swing/timing/velocity feel) -> host
 //
 // Stepped-module behaviour (each on its own step clock, gate = a fraction of
@@ -107,6 +108,25 @@
 //               transport stop pending echoes are discarded (and sounding
 //               ones released) per the shared transport rules; echoes keep
 //               running while the transport is stopped for live playing.
+//   - Strum:    a time modulator that spreads a chord's notes out over a short
+//               window, like a strummed guitar. Note-ons arriving within a
+//               small fixed detection window are grouped into one chord, sorted
+//               per strumMode (Up = low->high downstroke, Down = high->low
+//               upstroke, Up-Down alternates strokes on successive strums,
+//               Random shuffles), and emitted one after another over
+//               strumSpreadSec — the inter-note spacing shaped by strumCurve,
+//               the velocity ramped by strumVelTilt, each note nudged by a
+//               deterministic strumJitter. Delay-only, like every timing module
+//               here (a real-time MIDI FX can't play a note before it arrived),
+//               so the chord fans late; the detection window is the small fixed
+//               latency this costs. Each note-off is delayed by the same amount
+//               as its note-on, so lengths and ordering are preserved and
+//               nothing hangs. With strumRepeatQn > 0 the held chord is
+//               re-strummed every that many quarter notes (a bar-based comping
+//               engine); pair it with Up-Down for alternating strokes. Maps no
+//               pitch, so it has no root/scale. Follows the shared transport
+//               rule: on a transport stop its buffered material is discarded and
+//               sounding notes released.
 //   - Humanize: a final-stage "performance feel" pass over the whole outgoing
 //               stream (pass-through, generated, quantized, and delayed alike).
 //               Two structured, grid-locked controls — swing (the same
@@ -167,6 +187,7 @@ public:
         bool hasProgression = false;
         bool hasShift       = false;
         bool hasDelay       = false;
+        bool hasStrum       = false;
         bool hasMidiIn      = false;
         bool hasOutput      = false;
 
@@ -265,6 +286,25 @@ public:
         int    delayScale    = -1;
         int    delayRoot     = -1;
 
+        // Strum settings. A time modulator that fans a chord's simultaneous
+        // note-ons out over strumSpreadSec, delaying each successive note (a
+        // real-time MIDI FX can only delay, never advance). strumMode is the
+        // shared Direction (kMode*: Up = low->high, Down = high->low, Up-Down
+        // alternates strokes on successive strums, Random shuffles); strumCurve
+        // shapes the inter-note spacing (ModuleOptions::kStrumCurve*);
+        // strumVelTilt (−1..+1) ramps velocity across the fan; strumJitter
+        // (0..1) adds a deterministic per-note looseness. strumRepeatQn > 0
+        // re-strums the held chord every that many quarter notes (a bar-based
+        // comping engine); 0 = Endless (strum the chord once). Which note-ons
+        // form one chord is decided by a small fixed detection window, not a
+        // user control.
+        double strumSpreadSec = 0.04;
+        int    strumMode      = 0;      // ModuleOptions::kMode*
+        int    strumCurve     = 0;      // ModuleOptions::kStrumCurve*
+        double strumVelTilt   = 0.0;    // -1..+1 velocity ramp across the fan
+        double strumJitter    = 0.0;    // 0..1 per-note random looseness
+        double strumRepeatQn  = 0.0;    // <= 0 = Endless (strum once)
+
         // Humanize settings. A final-stage feel pass over the whole outgoing
         // stream (see Engine.h's flow note and Engine::process's post-pass).
         // humanizeStepQn is the groove grid swing and accent lock to; the five
@@ -292,7 +332,8 @@ public:
         {
             return hasArp || hasRandom || hasScaleGen || hasLfo || hasChord
                 || hasDrone || hasQuantize || hasScaleMod || hasProgression
-                || hasShift || hasDelay || hasHumanize || hasMidiIn || hasOutput;
+                || hasShift || hasDelay || hasStrum || hasHumanize
+                || hasMidiIn || hasOutput;
         }
     };
 
@@ -378,6 +419,40 @@ private:
     std::vector<HumanEvent> pendingHuman;
     struct HumanHeld { int channel; int note; double jitterQn; };
     std::vector<HumanHeld> humanHeld;
+
+    // Strum's grouping + fan-out state. Chord notes arriving within a small
+    // detection window are collected into `strumGroup`, then finalized (sorted
+    // by Direction, spread over the spread time). Because the fan order needs
+    // the whole chord, the group's notes are withheld until the window closes,
+    // which is the (small, fixed) latency Strum adds. All sample fields are
+    // block-relative and aged by numSamples each block, exactly like the Delay/
+    // Quantize/Humanize buffers, so nothing needs cross-block sample arithmetic.
+    struct StrumInNote { int note; int channel; int velocity; int arrival; };
+    struct StrumInOff  { juce::MidiMessage msg; int arrival; };
+    struct StrumGroup
+    {
+        std::vector<StrumInNote> notes;   // note-ons collected so far
+        std::vector<StrumInOff>  offs;    // offs for grouped notes released pre-finalize
+        int  deadline = 0;                // block-relative; finalize when it lands this block
+        bool open = false;
+    };
+    StrumGroup strumGroup;
+
+    // Fanned note events whose scheduled time lands past this block (both
+    // delayed note-ons and their length-matched note-offs). Aged like the other
+    // pending buffers.
+    struct StrumEvent { juce::MidiMessage msg; int samplesUntil; };
+    std::vector<StrumEvent> pendingStrum;
+
+    // Currently-sounding strummed notes: the delay applied to each note-on (so
+    // its note-off can be delayed the same amount, preserving length and order)
+    // plus its velocity (so the Repeat re-strum can re-strike the held chord).
+    struct StrumHeld { int channel; int note; int velocity; int delay; };
+    std::vector<StrumHeld> strumHeld;
+
+    // Counts finalized strums so Up-Down can alternate its stroke and each
+    // strum's jitter draws a distinct value.
+    juce::int64 strumIndex = 0;
 
     // There are no step counters: every grid position (step clocks, repeat
     // windows, the LFO cycle, the Progression playhead, Quantize's swung

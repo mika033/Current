@@ -136,6 +136,7 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.hasProgression  = engHasProgression.load();
     cfg.hasShift        = engHasShift.load();
     cfg.hasDelay        = engHasDelay.load();
+    cfg.hasStrum        = engHasStrum.load();
     cfg.hasMidiIn       = engHasMidiIn.load();
     cfg.hasOutput       = engHasOutput.load();
     cfg.inChannelMask   = engInChannelMask.load();
@@ -215,6 +216,13 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.delayScale    = engDelayScale.load();
     cfg.delayRoot     = engDelayRoot.load();
 
+    cfg.strumSpreadSec = ModuleOptions::strumSpreadSeconds (engStrumSpread.load());
+    cfg.strumMode      = engStrumMode.load();
+    cfg.strumCurve     = engStrumCurve.load();
+    cfg.strumVelTilt   = (double) engStrumVelTilt.load() / (double) ModuleOptions::kStrumVelTiltRange;
+    cfg.strumJitter    = (double) engStrumJitter.load()  / (double) ModuleOptions::kStrumJitterSteps;
+    cfg.strumRepeatQn  = ModuleOptions::repeatQuarterNotes (engStrumRepeat.load());
+
     cfg.hasHumanize     = engHasHumanize.load();
     cfg.humanizeStepQn  = ModuleOptions::rateQuarterNotes (engHumanizeRate.load());
     cfg.humanizeSwing   = ModuleOptions::swingFraction (engHumanizeSwing.load());
@@ -277,7 +285,7 @@ void CurrentAudioProcessor::refreshEngineConfig()
     bool arp = false, rnd = false, scaleGen = false, lfo = false;
     bool chord = false, drone = false;
     bool quant = false, scaleMod = false, progression = false;
-    bool shift = false, delay = false, humanize = false;
+    bool shift = false, delay = false, strum = false, humanize = false;
     bool midiIn = false, output = false;
     std::uint16_t inMask = 0, outMask = 0;
 
@@ -416,6 +424,18 @@ void CurrentAudioProcessor::refreshEngineConfig()
                 }
                 delay = true;
                 break;
+            case ModuleType::Strum:
+                if (! strum)
+                {
+                    engStrumSpread.store (m.settings.strumSpread);
+                    engStrumMode.store (m.settings.mode);
+                    engStrumCurve.store (m.settings.strumCurve);
+                    engStrumVelTilt.store (m.settings.strumVelTilt);
+                    engStrumJitter.store (m.settings.strumJitter);
+                    engStrumRepeat.store (m.settings.repeat);
+                }
+                strum = true;
+                break;
             case ModuleType::Humanize:
                 if (! humanize)
                 {
@@ -454,6 +474,7 @@ void CurrentAudioProcessor::refreshEngineConfig()
     engHasProgression.store (progression);
     engHasShift.store (shift);
     engHasDelay.store (delay);
+    engHasStrum.store (strum);
     engHasHumanize.store (humanize);
     engHasMidiIn.store (midiIn);
     engHasOutput.store (output);
@@ -673,6 +694,17 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
             node.setProperty ("holdLength", m.settings.holdLength, nullptr);
             node.setProperty ("holdRepeat", m.settings.holdRepeat, nullptr);
         }
+        if (m.type == ModuleType::Strum)
+        {
+            // Direction rides the shared "mode", Repeat the shared "repeat"
+            // (both read back generically in setStateInformation).
+            node.setProperty ("mode",         m.settings.mode, nullptr);
+            node.setProperty ("repeat",       m.settings.repeat, nullptr);
+            node.setProperty ("strumSpread",  m.settings.strumSpread, nullptr);
+            node.setProperty ("strumCurve",   m.settings.strumCurve, nullptr);
+            node.setProperty ("strumVelTilt", m.settings.strumVelTilt, nullptr);
+            node.setProperty ("strumJitter",  m.settings.strumJitter, nullptr);
+        }
         canvas.appendChild (node, nullptr);
     }
     state.appendChild (canvas, nullptr);
@@ -755,6 +787,10 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
                                           isDrone ? ModuleOptions::kBarsFourBars : def.holdLength);
             m.settings.holdRepeat     = (int) node.getProperty ("holdRepeat",
                                           isDrone ? ModuleOptions::kRepeatFourBars : def.holdRepeat);
+            m.settings.strumSpread    = (int) node.getProperty ("strumSpread", def.strumSpread);
+            m.settings.strumCurve     = (int) node.getProperty ("strumCurve", def.strumCurve);
+            m.settings.strumVelTilt   = (int) node.getProperty ("strumVelTilt", def.strumVelTilt);
+            m.settings.strumJitter    = (int) node.getProperty ("strumJitter", def.strumJitter);
 
             moduleList.push_back (m);
         }

@@ -123,8 +123,10 @@ everything runs as one fixed chain: host MIDI enters through MIDI In (or an
 implicit all-channels input if none is placed), feeds the Arp and the
 generators, results pass through the Scale modulator, then Progression, then
 Shift, Quantize re-times what leaves the chain onto its swung grid, the Delay
-adds its echoes, and everything exits through Output (or an implicit
-channel-preserving output). A consequence of the fixed chain: placing several
+adds its echoes, Strum fans simultaneous chord notes out over a short window,
+Humanize adds the final performance feel, and everything exits through Output
+(or an implicit channel-preserving output). A consequence of the fixed chain:
+placing several
 copies of the same module doesn't layer them — extra copies share the first
 one's settings until wiring lands.
 
@@ -460,6 +462,59 @@ User settings:
 - Shift — −12 to +12 (default 0); applied to each repeat, cumulatively across
   the chain (scale steps or semitones per the scale setting).
 
+### Strum (modulator)
+
+Strum spreads the notes of a chord out over a short time window, like a
+strummed guitar: notes that arrive together are released one after another,
+fanning out instead of hitting at once. It re-times and re-shapes the chord's
+own notes and maps no pitch, so it carries no Root/Scale. Like every timing
+modulator here it can only delay (a real-time MIDI effect can't play a note
+earlier than it arrived), so the chord fans *late*. Which notes count as one
+chord is decided automatically by a small fixed detection window — no user
+control — and that window is the small latency the strum costs, since the fan
+order can't be chosen until the whole chord has arrived.
+
+Its six controls fill the settings grid over a blank menu bar. Direction and
+Repeat are the shared controls, so they read identically to the rest of the
+plugin.
+
+- **Spread** sets the total fan-out time from the first strummed note to the
+  last, 0 to 100 ms. 0 makes the chord hit together — an effective bypass.
+- **Direction** is the shared Mode control: Up (low to high, a downstroke),
+  Down (high to low, an upstroke), Up-Down (alternating strokes on successive
+  strums, the way a real player alternates), or Random (shuffled note order).
+- **Curve** shapes the inter-note spacing across the fan: Even (equal gaps),
+  Accelerate (the gaps shrink toward the end, so the notes bunch up late — the
+  natural pick-stroke feel), or Decelerate (the reverse).
+- **Velocity** tilts loudness across the strum, −100% to +100% (default 0):
+  negative starts loud and fades away (a bass-note accent), positive swells up,
+  0 is flat.
+- **Jitter** adds looseness — a small random variation in each note's timing
+  (and a touch of velocity) so repeated strums don't land identically. It is
+  drawn from the song position, not a free-running dice roll, so a looped part
+  strums the same way on every pass instead of shimmering.
+- **Repeat** is the shared Repeat control (Endless plus bar lengths to 16).
+  Endless strums the held chord once; a bar length re-strums it every that
+  period, turning Strum into a bar-based comping engine — set Direction to
+  Up-Down for authentic alternating strokes across the repeats.
+
+Each note-off is delayed by the same amount as its note-on, so notes keep their
+length, the fan stays in order, and nothing ever hangs. Strum works while the
+transport is stopped too (live chords strum as you play them); only Repeat needs
+the transport, since it re-strikes on the bar grid. As a buffered time module it
+follows the shared transport rules: on stop, material still in flight is
+discarded and anything sounding is released. The node shows its spread in
+milliseconds as a sublabel.
+
+User settings:
+
+- Spread — 0 to 100 ms (default 40 ms); 0 = bypass.
+- Direction — Up (default), Down, Up-Down, or Random.
+- Curve — Even (default), Accelerate, or Decelerate.
+- Velocity — −100% to +100% (default 0%); loudness tilt across the fan.
+- Jitter — 0% to 100% (default 0%); random per-note timing/velocity looseness.
+- Repeat — Endless (default), 1/4 bar, 1/2 bar, 1 bar, 2, 4, 8, or 16 bars.
+
 ### Humanize (modulator)
 
 Humanize is the final "performance feel" pass: it loosens the machine-tight
@@ -538,41 +593,6 @@ open details, where any, are flagged.
 
 - **Ratchet / Repeat** — subdivides or retriggers a note into a burst
   (settings: subdivision count and, likely, a velocity ramp).
-- **Strum** — spreads the notes of a chord out over a short time window, like a
-  strummed guitar: notes that arrive together are delayed by a growing offset so
-  they fan out instead of hitting at once. It re-times and re-shapes the chord's
-  own notes and maps no pitch, so it carries no Root/Scale. Like every timing
-  modulator here it can only delay (a real-time MIDI effect can't play a note
-  earlier than it arrived), so the first note stays on the beat and the rest
-  spread late; a true "strum ahead of the beat" would need host-latency
-  reporting and is out of scope, the same carve-out lay-back has in Humanize.
-  Which note-ons count as one chord is decided by a small automatic grouping
-  window, not a user control. Its six controls fill the settings grid over a
-  blank menu bar; Direction and Repeat are the shared controls, so they read
-  identically to the rest of the plugin.
-
-  Planned settings:
-
-  - Spread — the total fan-out time from the first strummed note to the last (a
-    short window, on the order of a few up to ~100 ms); a dial. 0 = the chord
-    hits together (an effective bypass).
-  - Direction — the shared Mode control: Up (low→high, a downstroke), Down
-    (high→low, an upstroke), Up-Down (alternating strokes on successive strums,
-    the way a real player alternates), Random (shuffled note order).
-  - Curve — how the inter-note spacing is shaped across the fan: Even,
-    Accelerate (notes bunch toward the end, the natural pick-stroke feel), or
-    Decelerate.
-  - Velocity — a signed tilt across the strum (−100%…+100%, default 0): negative
-    starts loud and fades away (a bass-note accent), positive swells up, 0 is
-    flat.
-  - Jitter — looseness: a random per-note variation in each note's timing (and a
-    touch of velocity) so repeated strums don't land identically. Deterministic
-    from the song position like the Humanize module, so a looped part strums the
-    same way on every pass instead of shimmering.
-  - Repeat — the shared Repeat control (Endless plus bar lengths to 16). Endless
-    (never restart) strums the held chord once; a bar length re-strums it every
-    that period, turning Strum into a bar-based comping engine — set Direction to
-    Up-Down for authentic alternating strokes across the repeats.
 - **Note Length / Legato** — overrides or scales gate length, from staccato
   through fully legato.
 

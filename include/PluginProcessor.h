@@ -127,7 +127,7 @@ private:
                       engHasChord { false }, engHasDrone { false },
                       engHasQuantize { false }, engHasScaleMod { false },
                       engHasProgression { false }, engHasShift { false },
-                      engHasDelay { false },
+                      engHasDelay { false }, engHasStrum { false },
                       engHasMidiIn { false }, engHasOutput { false };
     std::atomic<std::uint16_t> engInChannelMask { 0xffff }, engOutChannelMask { 0 };
 
@@ -187,6 +187,15 @@ private:
                      engDelayShift { 0 },
                      engDelayScale { ModuleOptions::kScaleGlobal },
                      engDelayRoot { ModuleOptions::kScaleGlobal };
+    // Strum: spread (0..10 -> ms) + Direction (shared mode) + curve + signed
+    // velocity tilt + jitter + Repeat (shared repeat list). Reuses the shared
+    // mode/repeat semantics but publishes them on its own atomics.
+    std::atomic<int> engStrumSpread { 4 },
+                     engStrumMode { ModuleOptions::kModeUp },
+                     engStrumCurve { ModuleOptions::kStrumCurveEven },
+                     engStrumVelTilt { 0 },
+                     engStrumJitter { 0 },
+                     engStrumRepeat { ModuleOptions::kRepeatEndless };
     // Humanize: the groove grid (rate) + swing + the five feel amounts, each a
     // 0..10 UI index converted to a 0..1 fraction in processBlock.
     std::atomic<bool> engHasHumanize { false };

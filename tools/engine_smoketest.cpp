@@ -1201,6 +1201,139 @@ int main()
                "Humanize jitter is deterministic (repeats identically per loop)");
     }
 
+    // --- 15d. Strum: fans a chord over the spread window, direction, balance -
+    {
+        // A 3-note chord played together, spread 100 ms. Collect the resulting
+        // note-ons (absolute sample, pitch, velocity) as the fan plays out, then
+        // release and drain; report the on/off tally.
+        auto runStrum = [&] (int mode, double spreadSec, double velTilt,
+                             std::vector<std::tuple<int, int, int>>& ons,
+                             int& onsN, int& offsN)
+        {
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasStrum       = true;
+            cfg.strumMode      = mode;
+            cfg.strumSpreadSec = spreadSec;
+            cfg.strumVelTilt   = velTilt;
+            int blockStart = 0, on = 0, off = 0;
+            auto pump = [&] (juce::MidiBuffer&& in)
+            {
+                juce::MidiBuffer midi (in);
+                e.process (midi, block, playing (false), 0, 0, cfg);
+                for (const auto meta : midi)
+                {
+                    const auto m = meta.getMessage();
+                    if (m.isNoteOn())
+                    { ons.push_back ({ blockStart + meta.samplePosition, m.getNoteNumber(), (int) m.getVelocity() }); ++on; }
+                    if (m.isNoteOff()) ++off;
+                }
+                blockStart += block;
+            };
+            {
+                juce::MidiBuffer in;
+                in.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+                in.addEvent (juce::MidiMessage::noteOn (1, 64, (juce::uint8) 100), 0);
+                in.addEvent (juce::MidiMessage::noteOn (1, 67, (juce::uint8) 100), 0);
+                pump (std::move (in));
+            }
+            for (int i = 0; i < 20; ++i) pump (juce::MidiBuffer());
+            {
+                juce::MidiBuffer in;
+                in.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
+                in.addEvent (juce::MidiMessage::noteOff (1, 64), 0);
+                in.addEvent (juce::MidiMessage::noteOff (1, 67), 0);
+                pump (std::move (in));
+            }
+            for (int i = 0; i < 20; ++i) pump (juce::MidiBuffer());
+            onsN = on; offsN = off;
+        };
+
+        {
+            std::vector<std::tuple<int, int, int>> ons; int on = 0, off = 0;
+            runStrum (ModuleOptions::kModeUp, 0.10, 0.0, ons, on, off);
+            check (ons.size() == 3, "Strum emits one note-on per chord note");
+            if (ons.size() == 3)
+            {
+                check (std::get<1> (ons[0]) == 60 && std::get<1> (ons[1]) == 64
+                           && std::get<1> (ons[2]) == 67,
+                       "Strum Up fans the chord low to high");
+                check (std::get<0> (ons[0]) < std::get<0> (ons[1])
+                           && std::get<0> (ons[1]) < std::get<0> (ons[2]),
+                       "Strum spreads the notes out in time");
+                check (std::get<0> (ons[0]) == (int) std::llround (0.03 * sr),
+                       "Strum's first note lands after the fixed detection window");
+            }
+            check (on == 3 && on == off, "Strum: chord balanced after release");
+        }
+        {
+            std::vector<std::tuple<int, int, int>> ons; int on = 0, off = 0;
+            runStrum (ModuleOptions::kModeDown, 0.10, 0.0, ons, on, off);
+            check (ons.size() == 3 && std::get<1> (ons[0]) == 67 && std::get<1> (ons[2]) == 60,
+                   "Strum Down fans the chord high to low");
+        }
+        {
+            std::vector<std::tuple<int, int, int>> ons; int on = 0, off = 0;
+            runStrum (ModuleOptions::kModeUp, 0.10, 1.0, ons, on, off);
+            check (ons.size() == 3 && std::get<2> (ons[2]) > std::get<2> (ons[0]),
+                   "Strum velocity tilt +100% swells across the fan");
+        }
+    }
+    {
+        // Spread 0 = bypass: the chord passes through together at sample 0.
+        Engine e; e.prepare (sr);
+        Engine::Config cfg; cfg.hasStrum = true; cfg.strumSpreadSec = 0.0;
+        juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 64, (juce::uint8) 100), 0);
+        e.process (midi, block, playing (false), 0, 0, cfg);
+        int ons = 0, at0 = 0;
+        for (const auto meta : midi)
+            if (meta.getMessage().isNoteOn()) { ++ons; if (meta.samplePosition == 0) ++at0; }
+        check (ons == 2 && at0 == 2, "Strum spread 0 passes the chord through together (bypass)");
+    }
+    {
+        // Repeat: a held chord is re-strummed on the 1/2-bar grid — more strikes
+        // than the chord has notes — and it all balances once released + stopped.
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasStrum       = true;
+        cfg.strumSpreadSec = 0.02;
+        cfg.strumRepeatQn  = 2.0;   // 1/2 bar
+        int on = 0, off = 0;
+        double qn = 0.0;
+        auto pump = [&] (juce::MidiBuffer&& in, bool isPlaying)
+        {
+            juce::MidiBuffer midi (in);
+            e.process (midi, block, isPlaying ? playingAt (qn) : playing (false), 0, 0, cfg);
+            for (const auto meta : midi)
+            {
+                if (meta.getMessage().isNoteOn())  ++on;
+                if (meta.getMessage().isNoteOff()) ++off;
+            }
+            if (isPlaying) qn += (double) block / 22050.0;
+        };
+        {
+            juce::MidiBuffer in;
+            in.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+            in.addEvent (juce::MidiMessage::noteOn (1, 64, (juce::uint8) 100), 0);
+            in.addEvent (juce::MidiMessage::noteOn (1, 67, (juce::uint8) 100), 0);
+            pump (std::move (in), true);
+        }
+        for (int i = 0; i < 150; ++i) pump (juce::MidiBuffer(), true);
+        {
+            juce::MidiBuffer in;
+            in.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
+            in.addEvent (juce::MidiMessage::noteOff (1, 64), 0);
+            in.addEvent (juce::MidiMessage::noteOff (1, 67), 0);
+            pump (std::move (in), true);
+        }
+        for (int i = 0; i < 40; ++i) pump (juce::MidiBuffer(), true);    // drain the delayed offs
+        for (int i = 0; i < 10; ++i) pump (juce::MidiBuffer(), false);   // stop
+        check (on > 3, "Strum Repeat re-strums the held chord (more strikes than notes)");
+        check (on == off, "Strum Repeat: balanced after release and stop");
+    }
+
     // --- 16. Host-position anchoring: mid-bar start and loop wrap ------------
     {
         // Play pressed mid-bar (host ppq starts at 2.5): the first step must

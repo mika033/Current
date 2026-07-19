@@ -94,6 +94,19 @@ namespace
     constexpr double kHumanizeAccentDepth = 0.4;   // full accent = +/-40% velocity on strong/weak
     constexpr double kHumanizeVelRange    = 48.0;  // full velocity jitter = +/-48
     constexpr int    kSaltTime = 1, kSaltVel = 2, kSaltLen = 3;
+
+    // Strum's chord-detection window: note-ons arriving within this of the
+    // group's first note are treated as one chord. It is the (small, fixed)
+    // latency Strum adds, since the fan order can't be decided until the whole
+    // chord is in — kept short enough to feel immediate, long enough to catch a
+    // hand-played chord roll.
+    constexpr double kStrumGroupWindowSec = 0.03;   // 30 ms
+    // Full-jitter maxima: the random late nudge (as a share of the spread) and
+    // the velocity wobble, reached at the 100% Jitter setting.
+    constexpr double kStrumJitterTimeFrac = 0.5;    // up to half the spread, late
+    constexpr double kStrumJitterVelRange = 20.0;   // +/-20 velocity
+    constexpr double kStrumVelTiltDepth   = 0.6;    // full tilt = +/-60% across the fan
+    constexpr int    kStrumSaltTime = 11, kStrumSaltVel = 12;
 }
 
 void Engine::prepare (double sampleRate)
@@ -111,6 +124,10 @@ void Engine::reset()
     pendingQuant.clear();
     pendingHuman.clear();
     humanHeld.clear();
+    strumGroup = {};
+    pendingStrum.clear();
+    strumHeld.clear();
+    strumIndex = 0;
     fallbackQn = 0.0;
     wasPlaying = false;
 }
@@ -197,6 +214,9 @@ void Engine::process (juce::MidiBuffer& midi,
         pendingQuant.clear();
         pendingHuman.clear();
         humanHeld.clear();
+        strumGroup = {};
+        pendingStrum.clear();
+        strumHeld.clear();
         wasPlaying = false;
         return;
     }
@@ -272,6 +292,35 @@ void Engine::process (juce::MidiBuffer& midi,
         }
         pendingHuman.clear();
         humanHeld.clear();
+
+        // Strum, same contract as Humanize (it runs at the same late stage): a
+        // buffered note-on never reached the synth, so cancel its activeGen gate
+        // before the flush; a buffered note-off is releasing a sounding note, so
+        // emit it now. The open group's withheld notes never sounded either, so
+        // its gates are cancelled and it is dropped. strumHeld is cleared — any
+        // still-held note's real note-off arrives later and passes through
+        // undelayed (pitch unchanged), still releasing it.
+        auto cancelGate = [&] (int channel, int note)
+        {
+            for (auto it = activeGen.begin(); it != activeGen.end(); ++it)
+                if (it->channel == channel && it->note == note)
+                {
+                    activeGen.erase (it);
+                    return;
+                }
+        };
+        for (const auto& sev : pendingStrum)
+        {
+            if (sev.msg.isNoteOn())
+                cancelGate (sev.msg.getChannel(), sev.msg.getNoteNumber());
+            else if (sev.msg.isNoteOff())
+                midi.addEvent (sev.msg, 0);
+        }
+        for (const auto& n : strumGroup.notes)
+            cancelGate (n.channel, n.note);
+        pendingStrum.clear();
+        strumGroup = {};
+        strumHeld.clear();
 
         flushGeneratedNotes (midi, 0);
         pendingEchoes.clear();
@@ -894,6 +943,268 @@ void Engine::process (juce::MidiBuffer& midi,
             it->samplesLeft -= numSamples;
             ++it;
         }
+    }
+
+    // --- Strum: fan a chord's simultaneous note-ons out over a short window ---
+    // Runs after the generated-note releases (so the buffer holds matched
+    // on/off events, exactly the shape Humanize also relies on) and before
+    // Humanize. Delay-only: a chord's notes are held back and released one after
+    // another, and each note-off is delayed by the same amount as its note-on so
+    // lengths and order are preserved. Grouping adds a small fixed latency (the
+    // detection window), the price of knowing the whole chord before choosing
+    // the fan order.
+    if (! cfg.hasStrum)
+    {
+        // Module removed mid-flight: emit any buffered offs so nothing hangs,
+        // then drop the rest (buffered ons never sounded; an open group's notes
+        // never sounded either).
+        for (const auto& e : pendingStrum)
+            if (! e.msg.isNoteOn())
+                midi.addEvent (e.msg, 0);
+        pendingStrum.clear();
+        strumGroup = {};
+        strumHeld.clear();
+    }
+    else
+    {
+        const double spreadSamples = juce::jmax (0.0, cfg.strumSpreadSec) * sr;
+        // The fan only needs a detection window when it actually reshapes the
+        // chord. With spread and both reshapers off, notes pass straight through
+        // (window 0 = each note is its own one-note group, zero added latency) —
+        // the "spread 0 = effective bypass" the spec calls for. A Repeat still
+        // works off the sounding-note bookkeeping, so it needs no window either.
+        const bool fanActive = spreadSamples > 0.0 || cfg.strumVelTilt != 0.0
+                                                   || cfg.strumJitter != 0.0;
+        const int  groupWindow = fanActive
+                                     ? juce::jmax (1, (int) std::llround (kStrumGroupWindowSec * sr))
+                                     : 0;
+
+        auto scheduleStrum = [&] (const juce::MidiMessage& msg, int at)
+        {
+            if (at < numSamples)
+                midi.addEvent (msg, juce::jmax (0, at));
+            else
+                pendingStrum.push_back ({ msg, at });
+        };
+
+        // A song-position tick index for the deterministic jitter hash, so a
+        // looped part strums identically on every pass. Derived from the block's
+        // song position at the fan's base sample.
+        auto strumGridIndex = [&] (int baseSample)
+        {
+            return (juce::int64) std::llround ((blockStartQn + (double) baseSample / samplesPerQn)
+                                                   * 960.0);
+        };
+
+        // Fan a finished chord out from `baseSample`: sort by pitch, order per
+        // Direction, then emit each note delayed by its curve position (+jitter)
+        // over the spread, ramping velocity across the fan. Records each note as
+        // sounding (for its off's matching delay and for Repeat), and re-times
+        // any off that arrived before the chord finished.
+        auto finalizeStrum = [&] (std::vector<StrumInNote>& notes,
+                                  std::vector<StrumInOff>& offs,
+                                  int baseSample, juce::int64 si)
+        {
+            const int n = (int) notes.size();
+            if (n == 0)
+                return;
+            std::sort (notes.begin(), notes.end(),
+                       [] (const StrumInNote& a, const StrumInNote& b) { return a.note < b.note; });
+
+            std::vector<int> order (n);           // strum position k -> pitch index
+            for (int i = 0; i < n; ++i)
+                order[(size_t) i] = i;            // Up = ascending
+            bool descending = false;
+            switch (cfg.strumMode)
+            {
+                case ModuleOptions::kModeDown:   descending = true; break;
+                case ModuleOptions::kModeUpDown: descending = (si & 1) != 0; break;   // alternate per strum
+                case ModuleOptions::kModeRandom:
+                    for (int i = n - 1; i > 0; --i)
+                        std::swap (order[(size_t) i], order[(size_t) rng.nextInt (i + 1)]);
+                    break;
+                default: break;   // kModeUp
+            }
+            if (descending)
+                std::reverse (order.begin(), order.end());
+
+            const juce::int64 gi = strumGridIndex (baseSample);
+            for (int k = 0; k < n; ++k)
+            {
+                auto& note   = notes[(size_t) order[(size_t) k]];
+                const double pos = n > 1 ? (double) k / (double) (n - 1) : 0.0;
+
+                double f = pos;   // cumulative offset fraction, shaped by the curve
+                if (cfg.strumCurve == ModuleOptions::kStrumCurveAccelerate)
+                    f = 1.0 - (1.0 - pos) * (1.0 - pos);   // concave: bunch toward the end
+                else if (cfg.strumCurve == ModuleOptions::kStrumCurveDecelerate)
+                    f = pos * pos;                          // convex: bunch toward the start
+
+                const int key = note.note * 16 + note.channel;
+                const double jitterSamples = hash01 (gi, key, kStrumSaltTime)
+                                                 * cfg.strumJitter * kStrumJitterTimeFrac * spreadSamples;
+                const int emit = baseSample + (int) std::llround (f * spreadSamples + jitterSamples);
+
+                const double ramp   = 2.0 * pos - 1.0;   // first struck note -1, last +1
+                const double velJit = (hash01 (gi, key, kStrumSaltVel) * 2.0 - 1.0)
+                                          * cfg.strumJitter * kStrumJitterVelRange;
+                const int vel = juce::jlimit (1, 127,
+                    (int) std::llround ((double) note.velocity
+                                            * (1.0 + cfg.strumVelTilt * ramp * kStrumVelTiltDepth)
+                                        + velJit));
+
+                const int delay = emit - note.arrival;   // total shift, reused for the off
+                scheduleStrum (juce::MidiMessage::noteOn (note.channel, note.note, (juce::uint8) vel), emit);
+
+                strumHeld.erase (std::remove_if (strumHeld.begin(), strumHeld.end(),
+                    [&] (const StrumHeld& h) { return h.channel == note.channel && h.note == note.note; }),
+                    strumHeld.end());
+                strumHeld.push_back ({ note.channel, note.note, note.velocity, delay });
+
+                for (auto& o : offs)
+                    if (o.msg.getChannel() == note.channel && o.msg.getNoteNumber() == note.note)
+                        scheduleStrum (o.msg, o.arrival + delay);
+            }
+            notes.clear();
+            offs.clear();
+        };
+
+        auto finalizeOpenGroup = [&] (int baseSample)
+        {
+            finalizeStrum (strumGroup.notes, strumGroup.offs, baseSample, strumIndex++);
+            strumGroup.open = false;
+        };
+
+        // Pull the block's straight output aside and rebuild it strummed.
+        juce::MidiBuffer straight;
+        straight.swapWith (midi);
+
+        // 1) Fire buffered events (fanned ons + delayed offs) due this block.
+        for (auto& e : pendingStrum)
+            if (e.samplesUntil < numSamples)
+            {
+                midi.addEvent (e.msg, juce::jmax (0, e.samplesUntil));
+                e.samplesUntil = std::numeric_limits<int>::min();   // mark fired
+            }
+        pendingStrum.erase (std::remove_if (pendingStrum.begin(), pendingStrum.end(),
+                                            [] (const StrumEvent& e)
+                                            { return e.samplesUntil == std::numeric_limits<int>::min(); }),
+                            pendingStrum.end());
+
+        // 2) Repeat: re-strum the currently-sounding chord on the bar grid.
+        //    Needs the transport, so it only fires while playing. Each boundary
+        //    releases the sounding instance and re-strikes it as a fresh strum
+        //    (a new strumIndex, so Up-Down alternates its stroke across repeats).
+        if (isPlaying && cfg.strumRepeatQn > 0.0 && ! strumHeld.empty())
+        {
+            const double repQn = cfg.strumRepeatQn;
+            for (auto k = (juce::int64) std::ceil (blockStartQn / repQn); ; ++k)
+            {
+                const double qn = (double) k * repQn;
+                if (qn >= blockEndQn)
+                    break;
+                const int s = juce::jlimit (0, numSamples - 1,
+                                            (int) std::llround ((qn - blockStartQn) * samplesPerQn));
+                if (strumHeld.empty())
+                    break;
+                std::vector<StrumInNote> chord;
+                for (const auto& h : strumHeld)
+                {
+                    chord.push_back ({ h.note, h.channel, h.velocity, s });
+                    midi.addEvent (juce::MidiMessage::noteOff (h.channel, h.note), s);   // release the old instance
+                }
+                strumHeld.clear();
+                std::vector<StrumInOff> none;
+                finalizeStrum (chord, none, s, strumIndex++);
+            }
+        }
+
+        // 3) Group this block's fresh note events and fan the finished chords.
+        for (const auto meta : straight)
+        {
+            const auto msg = meta.getMessage();
+            const int  s   = meta.samplePosition;
+
+            // A chord is finished once this event sits at or past the group's
+            // detection deadline; fan it from the deadline (the earliest the
+            // full chord is known) before handling the event itself.
+            if (strumGroup.open && s >= strumGroup.deadline)
+                finalizeOpenGroup (strumGroup.deadline);
+
+            if (msg.isNoteOn())
+            {
+                if (groupWindow <= 0)
+                {
+                    // Bypass path: pass the note straight through, but still book
+                    // it as sounding so its off tracks and Repeat can find it.
+                    std::vector<StrumInNote> one { { msg.getNoteNumber(), msg.getChannel(),
+                                                     msg.getVelocity(), s } };
+                    std::vector<StrumInOff> none;
+                    finalizeStrum (one, none, s, strumIndex++);
+                }
+                else
+                {
+                    if (! strumGroup.open)
+                    {
+                        strumGroup = {};
+                        strumGroup.open = true;
+                        strumGroup.deadline = s + groupWindow;
+                    }
+                    strumGroup.notes.push_back ({ msg.getNoteNumber(), msg.getChannel(),
+                                                  msg.getVelocity(), s });
+                }
+            }
+            else if (msg.isNoteOff())
+            {
+                bool inGroup = false;
+                if (strumGroup.open)
+                    for (const auto& gnv : strumGroup.notes)
+                        if (gnv.channel == msg.getChannel() && gnv.note == msg.getNoteNumber())
+                        {
+                            inGroup = true;
+                            break;
+                        }
+                if (inGroup)
+                    strumGroup.offs.push_back ({ msg, s });   // released before the chord finished
+                else
+                {
+                    // Release a sounding strummed note delayed by the same amount
+                    // its on was; an unknown note (never strummed) passes straight.
+                    int delay = 0;
+                    for (auto it = strumHeld.begin(); it != strumHeld.end(); ++it)
+                        if (it->channel == msg.getChannel() && it->note == msg.getNoteNumber())
+                        {
+                            delay = it->delay;
+                            strumHeld.erase (it);
+                            break;
+                        }
+                    scheduleStrum (msg, s + delay);
+                }
+            }
+            else
+            {
+                midi.addEvent (msg, s);   // CC / pitch-bend / clock: left in place
+            }
+        }
+
+        // A group whose deadline lands within this block but that no later event
+        // closed finalizes now; one still open past the block carries over (its
+        // samples aged like every other pending buffer).
+        if (strumGroup.open)
+        {
+            if (strumGroup.deadline < numSamples)
+                finalizeOpenGroup (strumGroup.deadline);
+            else
+            {
+                strumGroup.deadline -= numSamples;
+                for (auto& gnv : strumGroup.notes) gnv.arrival -= numSamples;
+                for (auto& o   : strumGroup.offs)  o.arrival   -= numSamples;
+            }
+        }
+
+        // Age the still-buffered events into the next block.
+        for (auto& e : pendingStrum)
+            e.samplesUntil -= numSamples;
     }
 
     // --- Humanize: final-stage feel warp over the whole outgoing stream -------

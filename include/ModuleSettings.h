@@ -277,6 +277,45 @@ namespace ModuleOptions
     // Drone octave offset around the shared generator centre (root at octave 3).
     constexpr int kDroneOctaveRange = 2;
 
+    // Strum: how the inter-note spacing is shaped across the fan-out. Even =
+    // equal gaps; Accelerate = gaps shrink toward the end, so the notes bunch
+    // near the end of the window (the natural pick-stroke feel); Decelerate =
+    // the reverse, notes bunch near the start.
+    inline const juce::StringArray& strumCurveNames()
+    {
+        static const juce::StringArray names { "Even", "Accelerate", "Decelerate" };
+        return names;
+    }
+
+    constexpr int kStrumCurveEven       = 0;
+    constexpr int kStrumCurveAccelerate = 1;
+    constexpr int kStrumCurveDecelerate = 2;
+
+    // Strum spread: the total fan-out time from the first strummed note to the
+    // last, as a 0..10 dial that maps to 0..100 ms (10 ms per step). 0 = the
+    // whole chord hits together (an effective bypass). Kept in real time (ms),
+    // not tempo, because a strum is a physical gesture whose length doesn't
+    // change with the song tempo.
+    constexpr int    kStrumSpreadSteps  = 10;
+    constexpr double kStrumSpreadMaxSec = 0.10;   // 100 ms at the full dial
+
+    inline double strumSpreadSeconds (int index)
+    {
+        return (double) juce::jlimit (0, kStrumSpreadSteps, index)
+                   / (double) kStrumSpreadSteps * kStrumSpreadMaxSec;
+    }
+
+    // Strum velocity tilt: a signed −10..+10 dial (÷10 = −1..+1). Negative
+    // starts the strum loud and fades it away (a bass-note accent), positive
+    // swells it up, 0 is flat. Applied as a linear ramp across the fan.
+    constexpr int kStrumVelTiltRange = 10;
+
+    // Strum jitter: a 0..10 dial (÷10 = 0..1) of per-note looseness — a small
+    // random late nudge in timing plus a touch of velocity, so repeated strums
+    // don't land identically. Drawn from the song position (deterministic), so
+    // a looped part strums the same way on every pass instead of shimmering.
+    constexpr int kStrumJitterSteps = 10;
+
     // Note name for a MIDI pitch. Octave convention: C3 = MIDI 48 (the one
     // modules.md and the requirements use), so octave = note/12 - 1.
     inline juce::String midiNoteName (int note)
@@ -310,7 +349,8 @@ struct ProgressionStep
 // and shiftAmount; Delay uses root/scale (Off sentinel) plus rate and its
 // delay* fields; Chord uses root/scale plus its chord* fields; Drone uses
 // root/scale plus its drone* fields; Chord and Drone share holdLength/
-// holdRepeat; Humanize uses rate (its groove grid) + swing + its humanize*
+// holdRepeat; Strum uses mode (Direction) + repeat plus its strum* fields (no
+// pitch mapping); Humanize uses rate (its groove grid) + swing + its humanize*
 // fields (no pitch mapping). Other module types ignore the whole struct. Root/scale overrides
 // of -1 mean "follow the global menu-bar setting" — the engine resolves them
 // per block, so a module left on Global tracks later menu-bar changes.
@@ -404,6 +444,19 @@ struct ModuleSettings
     // (offset from the shared generator centre, root at octave 3).
     int droneVoicing = ModuleOptions::kVoicingRoot;
     int droneOctave  = 0;   // -kDroneOctaveRange..+kDroneOctaveRange
+
+    // Strum only. Spreads a chord's simultaneous notes over a short window.
+    // Direction (which note leads) reuses the shared `mode` field (Up = low to
+    // high downstroke, Down = high to low upstroke, Up-Down alternates strokes
+    // on successive strums, Random shuffles); Repeat (re-strum the held chord
+    // every so often) reuses the shared `repeat` field. These four are its own:
+    // spread as a 0..10 dial (0..100 ms, 0 = bypass), the spacing curve, a
+    // signed velocity tilt across the fan, and per-note jitter. Strum maps no
+    // pitch, so it carries no root/scale.
+    int strumSpread  = 4;   // 0..kStrumSpreadSteps (default ~40 ms)
+    int strumCurve   = ModuleOptions::kStrumCurveEven;
+    int strumVelTilt = 0;   // -kStrumVelTiltRange..+kStrumVelTiltRange
+    int strumJitter  = 0;   // 0..kStrumJitterSteps
 
     // Chord and Drone: Repeat is how often a new chord/note starts (counted
     // from the song's bar 0) and Length is how long it sounds inside that
