@@ -14,90 +14,6 @@ InlineDialog::InlineDialog (const juce::String& title, const juce::String& messa
 
 InlineDialog::~InlineDialog() = default;
 
-void InlineDialog::addTextEditor (const juce::String& name,
-                                  const juce::String& initialText,
-                                  const juce::String& label)
-{
-    auto* entry = new TextFieldEntry();
-    entry->name  = name;
-    entry->label = label;
-
-    entry->labelComp = std::make_unique<juce::Label> ("", label);
-    entry->labelComp->setColour (juce::Label::textColourId,
-                                 CurrentTheme::active().text.withAlpha (0.85f));
-    addAndMakeVisible (entry->labelComp.get());
-
-    entry->editor = std::make_unique<juce::TextEditor>();
-    entry->editor->setText (initialText);
-    entry->editor->setColour (juce::TextEditor::backgroundColourId,
-                              CurrentTheme::active().canvasBg);
-    entry->editor->setColour (juce::TextEditor::textColourId,
-                              CurrentTheme::active().text);
-    entry->editor->setColour (juce::TextEditor::outlineColourId,
-                              CurrentTheme::active().widgetOutline);
-    entry->editor->setColour (juce::TextEditor::focusedOutlineColourId,
-                              CurrentTheme::active().widgetOutline);
-    entry->editor->setColour (juce::CaretComponent::caretColourId,
-                              CurrentTheme::active().text);
-
-    // A single-line TextEditor swallows Return before it bubbles to keyPressed,
-    // so the editor commits the dialog itself: trigger the first (affirmative)
-    // button.
-    entry->editor->onReturnKey = [this]()
-    {
-        if (! buttons.isEmpty() && onResult)
-            onResult (buttons.getFirst()->returnValue, this);
-    };
-
-    addAndMakeVisible (entry->editor.get());
-    textFields.add (entry);
-
-    if (getParentComponent())
-        resized();
-}
-
-juce::String InlineDialog::getTextEditorContents (const juce::String& name) const
-{
-    for (auto* entry : textFields)
-        if (entry->name == name)
-            return entry->editor->getText();
-    return {};
-}
-
-void InlineDialog::addComboBox (const juce::String& name,
-                                const juce::StringArray& items,
-                                int selectedIndex,
-                                const juce::String& label)
-{
-    auto* entry = new ComboEntry();
-    entry->name = name;
-
-    entry->labelComp = std::make_unique<juce::Label> ("", label);
-    entry->labelComp->setColour (juce::Label::textColourId,
-                                 CurrentTheme::active().text.withAlpha (0.85f));
-    addAndMakeVisible (entry->labelComp.get());
-
-    // Colours come from the editor's LookAndFeel (same as the menu-bar combos),
-    // so no per-widget colour setup is needed here.
-    entry->combo = std::make_unique<juce::ComboBox>();
-    entry->combo->addItemList (items, 1);   // ids are 1-based
-    entry->combo->setSelectedItemIndex (juce::jlimit (0, items.size() - 1, selectedIndex),
-                                        juce::dontSendNotification);
-    addAndMakeVisible (entry->combo.get());
-    combos.add (entry);
-
-    if (getParentComponent())
-        resized();
-}
-
-int InlineDialog::getComboBoxSelectedIndex (const juce::String& name) const
-{
-    for (auto* entry : combos)
-        if (entry->name == name)
-            return entry->combo->getSelectedItemIndex();
-    return -1;
-}
-
 void InlineDialog::addButton (const juce::String& text, int returnValue)
 {
     auto* entry = new ButtonEntry();
@@ -147,15 +63,11 @@ int InlineDialog::calculatePanelHeight() const
     h += titleHeight;
 
     if (messageText.isNotEmpty())
+    {
         h += messageTextHeight() + fieldSpacing;
-
-    // Acknowledgement-style dialog (message + buttons, no field): breathing
-    // room so buttons don't crowd the last line of text.
-    if (messageText.isNotEmpty() && textFields.isEmpty() && combos.isEmpty())
+        // Breathing room so the buttons don't crowd the last line of text.
         h += messageButtonGap;
-
-    for (int i = 0; i < textFields.size() + combos.size(); ++i)
-        h += fieldLabelHeight + fieldHeight + fieldSpacing;
+    }
 
     h += buttonHeight + padding;
     return h;
@@ -197,33 +109,12 @@ void InlineDialog::resized()
 {
     const int panelH  = calculatePanelHeight();
     const int centreX = getLocalBounds().getCentreX();
-    const int panelY  = (getHeight() - panelH) / 2;
+    // Clamp to the top edge when the panel is taller than the editor: the title
+    // and buttons stay reachable and only bottom padding can clip.
+    const int panelY  = juce::jmax (0, (getHeight() - panelH) / 2);
 
     panelBounds = juce::Rectangle<int> (centreX - panelWidth / 2, panelY,
                                         panelWidth, panelH);
-
-    int y = panelBounds.getY() + padding + titleHeight;
-    const int contentX = panelBounds.getX() + padding;
-    const int contentW = panelBounds.getWidth() - padding * 2;
-
-    if (messageText.isNotEmpty())
-        y += messageTextHeight() + fieldSpacing;
-
-    for (auto* entry : textFields)
-    {
-        entry->labelComp->setBounds (contentX, y, contentW, fieldLabelHeight);
-        y += fieldLabelHeight;
-        entry->editor->setBounds (contentX, y, contentW, fieldHeight);
-        y += fieldHeight + fieldSpacing;
-    }
-
-    for (auto* entry : combos)
-    {
-        entry->labelComp->setBounds (contentX, y, contentW, fieldLabelHeight);
-        y += fieldLabelHeight;
-        entry->combo->setBounds (contentX, y, contentW, fieldHeight);
-        y += fieldHeight + fieldSpacing;
-    }
 
     const int btnW = 80;
     int totalButtonWidth = btnW * buttons.size()
@@ -238,9 +129,6 @@ void InlineDialog::resized()
         entry->button->setBounds (bx, by, btnW, buttonHeight);
         bx += btnW + buttonSpacing;
     }
-
-    if (! textFields.isEmpty())
-        textFields.getFirst()->editor->grabKeyboardFocus();
 }
 
 void InlineDialog::mouseDown (const juce::MouseEvent& e)

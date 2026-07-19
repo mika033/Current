@@ -45,6 +45,16 @@ InlineDialog* CurrentAudioProcessorEditor::showInlineDialog (const juce::String&
     return dlg;
 }
 
+ModuleWindow* CurrentAudioProcessorEditor::showModuleWindow (const juce::String& title)
+{
+    auto* win = new ModuleWindow (title);
+    addAndMakeVisible (win);
+    win->setBounds (getLocalBounds());   // cover the whole editor
+    win->toFront (true);
+    win->grabKeyboardFocus();
+    return win;
+}
+
 void CurrentAudioProcessorEditor::applyTheme()
 {
     const int idx = (int) processor.apvts().getRawParameterValue (ParamIDs::theme)->load();

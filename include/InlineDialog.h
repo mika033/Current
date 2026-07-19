@@ -11,12 +11,15 @@
  *  repaints from CurrentTheme::active() every frame, so theme swaps land for
  *  free.
  *
- *  In Phase 2 this backs the empty "settings placeholder" a module opens on
- *  double-click; the message/text-field plumbing is carried over from Little Arp
- *  Monster so later phases can grow real settings dialogs on the same base.
+ *  A title, an optional wrapped message, and a row of action buttons — an
+ *  acknowledgement / confirmation dialog. Every real module edits its settings
+ *  through ModuleWindow now; this backs only the generic fallback for a module
+ *  type that has no dedicated window yet. (It once carried text fields and
+ *  dynamic combo rows for the module dialogs; those were removed when the last
+ *  module, Progression, moved to ModuleWindow's custom-body escape hatch.)
  *
  *  Usage:
- *      auto* d = editor.showInlineDialog("Arp settings");
+ *      auto* d = editor.showInlineDialog("Arp settings", "…");
  *      d->addButton("Close", 0);
  *      d->onResult = [](int, InlineDialog* dlg) {
  *          dlg->getParentComponent()->removeChildComponent(dlg);
@@ -31,22 +34,6 @@ public:
     InlineDialog (const juce::String& title, const juce::String& message = "");
     ~InlineDialog() override;
 
-    /** Add a labeled single-line text editor. The label sits above the editor.
-     *  `name` is the lookup key for getTextEditorContents. */
-    void addTextEditor (const juce::String& name,
-                        const juce::String& initialText,
-                        const juce::String& label);
-    juce::String getTextEditorContents (const juce::String& name) const;
-
-    /** Add a labeled drop-down with one entry per item. The label sits above
-     *  the combo, like addTextEditor. `selectedIndex` is 0-based into `items`;
-     *  read the choice back with getComboBoxSelectedIndex. */
-    void addComboBox (const juce::String& name,
-                      const juce::StringArray& items,
-                      int selectedIndex,
-                      const juce::String& label);
-    int getComboBoxSelectedIndex (const juce::String& name) const;
-
     /** Add an action button. `returnValue` is what gets passed to onResult when
      *  the button is clicked. By convention the first button added is the
      *  affirmative (Return key triggers it). */
@@ -54,7 +41,7 @@ public:
 
     /** Fired when the user clicks a button, hits Esc / Return, or clicks outside
      *  the panel. The caller owns disposal: remove + delete the dialog inside
-     *  the callback (so it can read getTextEditorContents first). */
+     *  the callback. */
     std::function<void (int, InlineDialog*)> onResult;
 
     void paint (juce::Graphics&) override;
@@ -67,23 +54,6 @@ private:
     juce::String titleText;
     juce::String messageText;
 
-    struct TextFieldEntry
-    {
-        juce::String                      name;
-        juce::String                      label;
-        std::unique_ptr<juce::Label>      labelComp;
-        std::unique_ptr<juce::TextEditor> editor;
-    };
-    juce::OwnedArray<TextFieldEntry> textFields;
-
-    struct ComboEntry
-    {
-        juce::String                    name;
-        std::unique_ptr<juce::Label>    labelComp;
-        std::unique_ptr<juce::ComboBox> combo;
-    };
-    juce::OwnedArray<ComboEntry> combos;
-
     struct ButtonEntry
     {
         int                               returnValue = 0;
@@ -95,7 +65,6 @@ private:
 
     static constexpr int panelWidth       = 390;
     static constexpr int titleHeight      = 30;
-    static constexpr int fieldHeight      = 28;
     static constexpr int fieldLabelHeight = 18;
     static constexpr int buttonHeight     = 28;
     static constexpr int padding          = 16;

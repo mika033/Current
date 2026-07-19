@@ -4,7 +4,7 @@
 #include "Theme.h"
 
 MainView::MainView (CurrentAudioProcessor& processor, CurrentAudioProcessorEditor& editor)
-    : menuBar (processor.apvts(), [&editor]() { editor.applyTheme(); }),
+    : menuBar (processor, [&editor]() { editor.applyTheme(); }),
       canvas  (processor, editor),
       palette ()
 {
