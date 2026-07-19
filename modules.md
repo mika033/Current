@@ -430,6 +430,45 @@ User settings:
 - Amount — −36 to +36 (default 0); scale steps or semitones per the scale
   setting.
 
+### Mirror (modulator)
+
+Mirror turns a line upside-down: it reflects every note around a centre note,
+so an interval above the centre comes out the same interval below (with the
+centre at C4, E4 a third up becomes A♭3 a third down). Rhythm and phrasing are
+untouched — only pitch flips. Like Shift, what the reflection means follows the
+scale: with a scale active — Global (the default) or any named scale — it mirrors
+in scale degrees, so E4 in C major folds to A3 and the result stays in key; with
+the scale set to Off it mirrors in chromatic semitones (E4 → A♭3). The centre
+control has an Off position at the far-left of its dial; there the inversion is
+skipped and only the register window (below) acts, so Mirror doubles as a plain
+range tool.
+
+After the inversion, the result is constrained to a **register window** between
+a Low and a High note — the two can't cross (turning one past the other pushes
+it along), and setting them equal makes a one-note window. The Bounds control
+decides what happens to a note that lands outside the window: **Limit** drops it
+(it simply doesn't sound), while **Mirror** folds it back once across the nearest
+edge — a note below Low bounces up above Low by the same distance — staying in the
+window's domain (scale degrees with a scale active, semitones with Off) so it
+stays in key. A fold that would still overshoot (a note more than a window-width
+out) is clamped to the edge, so the window is always honoured. A dropped or folded
+note never hangs: note-ons and note-offs map the same way, and a note Limit drops
+was never emitted, so it books no dangling note-off. The node shows the centre
+note (or the Low–High window when the centre is Off).
+
+User settings:
+
+- Root — Global (default) or C to B; the reference for the scale-degree mirror.
+- Scale — Global (default), Off (chromatic mirror), or any scale from the global
+  list. Governs both the inversion and the boundary fold, so the module is never
+  half-tonal.
+- Centre — Off or any MIDI note (default C4); the note the inversion reflects
+  around, Off = no inversion.
+- Low / High — the register window's bounds (defaults C2 / C6); Low can't exceed
+  High.
+- Bounds — Limit (drop out-of-window notes) or Mirror (fold them back inside);
+  default Mirror, so nothing is silently dropped out of the box.
+
 ### Delay (modulator)
 
 Delay repeats every note that passes it as a fading echo chain — the classic
@@ -585,9 +624,6 @@ open details, where any, are flagged.
 - **Harmonizer** — turns single notes into chords, with one selectable chord
   type. Octave-spreading (the classic octaver) is folded in as chord-type
   choices rather than a separate module.
-- **Mirror / Invert** — reflects pitch around a configurable centre note:
-  intervals above the centre become the same intervals below it, and vice
-  versa.
 
 ### Modulators — time and rhythm
 

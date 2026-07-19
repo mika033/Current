@@ -57,6 +57,16 @@ juce::String Canvas::shiftSublabel (const ModuleSettings& settings)
     return settings.shiftAmount > 0 ? "+" + n : n;
 }
 
+juce::String Canvas::mirrorSublabel (const ModuleSettings& settings)
+{
+    // The inversion centre — the module's headline fact at a glance. Off (no
+    // inversion) reads as the window instead, since that is all it does then.
+    if (settings.mirrorCenter < 0)
+        return ModuleOptions::midiNoteName (settings.mirrorLow) + "-"
+             + ModuleOptions::midiNoteName (settings.mirrorHigh);
+    return ModuleOptions::midiNoteName (settings.mirrorCenter);
+}
+
 juce::String Canvas::scaleModSublabel (const ModuleSettings& settings) const
 {
     // The scale it snaps to — the module's one meaningful fact at a glance
@@ -291,6 +301,8 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
         node->setSublabel (rateSublabel (instance.settings));
     else if (instance.type == ModuleType::Shift)
         node->setSublabel (shiftSublabel (instance.settings));
+    else if (instance.type == ModuleType::Mirror)
+        node->setSublabel (mirrorSublabel (instance.settings));
     else if (instance.type == ModuleType::Chord)
         node->setSublabel (chordSublabel (instance.settings));
     else if (instance.type == ModuleType::Drone)
@@ -354,6 +366,11 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
         if (n.moduleType() == ModuleType::Shift)
         {
             openShiftDialog (n);
+            return;
+        }
+        if (n.moduleType() == ModuleType::Mirror)
+        {
+            openMirrorDialog (n);
             return;
         }
         if (n.moduleType() == ModuleType::Delay)
@@ -752,6 +769,75 @@ void Canvas::openShiftDialog (ModuleComponent& node)
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (shiftSublabel (ns));
+        }
+        w2->getParentComponent()->removeChildComponent (w2);
+        delete w2;
+    };
+}
+
+void Canvas::openMirrorDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    // A pitch transformer carrying the shared Root/Scale pair (Off = a chromatic
+    // mirror; a scale = a diatonic one that stays in key). No time base, so the
+    // menu bar's third slot stays blank. Grid: the Centre note (far-left detent =
+    // Off, no inversion), the Low/High register window, and the Bounds mode.
+    auto* win = owner.showModuleWindow ("Mirror");
+    addRootScaleMenu (*win, s, true);
+
+    // Centre runs one below the note range so the far-left detent reads "Off".
+    auto noteText = [] (double v) { return ModuleOptions::midiNoteName (juce::roundToInt (v)); };
+    win->setGridDial (0, "center",
+                      (double) ModuleOptions::kMirrorCenterOff, 127.0, 1.0,
+                      (double) s.mirrorCenter, "Centre",
+                      [] (double v)
+                      {
+                          const int n = juce::roundToInt (v);
+                          return n < 0 ? juce::String ("Off") : ModuleOptions::midiNoteName (n);
+                      });
+    win->setGridDial (1, "low",  0.0, 127.0, 1.0, (double) s.mirrorLow,  "Low",  noteText);
+    win->setGridDial (2, "high", 0.0, 127.0, 1.0, (double) s.mirrorHigh, "High", noteText);
+    win->setGridCombo (3, "bounds", ModuleOptions::mirrorBoundsNames(),
+                       juce::jlimit (0, ModuleOptions::mirrorBoundsNames().size() - 1, s.mirrorBounds),
+                       "Bounds");
+
+    // Low and High can't cross: turning one past the other pushes it along, so
+    // the window never inverts (setDialValue fires no callback, so no recursion).
+    auto* w = win;
+    win->setDialChangeCallback ("low", [w]()
+    {
+        if (w->getDialValue ("low") > w->getDialValue ("high"))
+            w->setDialValue ("high", w->getDialValue ("low"));
+    });
+    win->setDialChangeCallback ("high", [w]()
+    {
+        if (w->getDialValue ("high") < w->getDialValue ("low"))
+            w->setDialValue ("low", w->getDialValue ("high"));
+    });
+
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
+
+    win->onResult = [this, id] (int result, ModuleWindow* w2)
+    {
+        if (result == 1)
+        {
+            auto ns = proc.getModuleSettings (id);
+            readRootScaleMenu (*w2, ns, true);
+            ns.mirrorCenter = juce::roundToInt (w2->getDialValue ("center"));
+            ns.mirrorLow    = juce::roundToInt (w2->getDialValue ("low"));
+            ns.mirrorHigh   = juce::roundToInt (w2->getDialValue ("high"));
+            // The push keeps them ordered live; normalise anyway in case a value
+            // arrived some other way.
+            if (ns.mirrorLow > ns.mirrorHigh)
+                std::swap (ns.mirrorLow, ns.mirrorHigh);
+            ns.mirrorBounds = w2->getComboSelectedIndex ("bounds");
+            proc.setModuleSettings (id, ns);
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (mirrorSublabel (ns));
         }
         w2->getParentComponent()->removeChildComponent (w2);
         delete w2;

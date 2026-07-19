@@ -11,7 +11,7 @@
 //
 //   host MIDI -> MIDI In (channel filter)
 //     -> stepped modules add notes  (Arp, Random, Scale, LFO)
-//     -> pitch modulators transform (Scale, then Progression, then Shift)
+//     -> pitch modulators transform (Scale, Progression, Shift, then Mirror)
 //     -> Quantize re-times note-ons onto its swung grid
 //     -> Output (channel stamp) -> Delay adds echoes
 //     -> Strum fans simultaneous chord notes out over a short window
@@ -95,6 +95,19 @@
 //               (shiftScale Global/-1 or a named scale index) the amount moves
 //               in scale degrees — out-of-scale notes snap to the scale first;
 //               with the scale Off (kScaleOff) it moves chromatic semitones.
+//   - Mirror:   inverts every note around its centre note, then constrains the
+//               result to a [low, high] register window. The inversion reflects
+//               a note the same distance on the far side of the centre (an
+//               interval up becomes that interval down); with a scale active it
+//               reflects in scale degrees so the result stays in key, with the
+//               scale Off it reflects in chromatic semitones. A centre of
+//               kMirrorCenterOff skips the inversion (the module then only
+//               windows). A result outside [low, high] is either dropped
+//               (mirrorBounds = Limit) or folded once back across the nearest
+//               boundary and clamped if it still overshoots (Mirror). A dropped
+//               note is simply not emitted (mapPitch returns -1) and books no
+//               note-off, so nothing hangs; note-ons and note-offs map alike, so
+//               a surviving note always releases what it sounded.
 //   - Delay:    every note-on leaving the chain (pass-through and generated
 //               alike) schedules an echo one delay time (`delayTimeQn`) later
 //               at `delayFeedback` times its velocity, which in turn schedules
@@ -186,6 +199,7 @@ public:
         bool hasScaleMod    = false;
         bool hasProgression = false;
         bool hasShift       = false;
+        bool hasMirror      = false;
         bool hasDelay       = false;
         bool hasStrum       = false;
         bool hasMidiIn      = false;
@@ -277,6 +291,21 @@ public:
         int shiftScale  = -1;
         int shiftRoot   = -1;
 
+        // Mirror settings. Inverts pitch around mirrorCenter (kMirrorCenterOff
+        // = -1 = Off, no inversion), then constrains to [mirrorLow, mirrorHigh].
+        // mirrorScale/mirrorRoot follow the Shift model: the invert and the
+        // boundary fold move in scale steps with a scale active, in chromatic
+        // semitones when the scale is Off (-2). mirrorBounds: kMirrorLimit drops
+        // an out-of-window note (mapPitch returns -1, so nothing is emitted and
+        // no note-off is booked), kMirrorFold reflects it once across the nearest
+        // edge then clamps.
+        int mirrorCenter = 60;
+        int mirrorLow    = 36;
+        int mirrorHigh   = 84;
+        int mirrorBounds = 0;   // ModuleOptions::kMirrorLimit / kMirrorFold
+        int mirrorScale  = -1;
+        int mirrorRoot   = -1;
+
         // Delay settings. delayScale/delayRoot follow the same model as Shift:
         // the per-echo shift moves in scale degrees with a scale active, in
         // chromatic semitones when the scale is Off (-2).
@@ -332,7 +361,7 @@ public:
         {
             return hasArp || hasRandom || hasScaleGen || hasLfo || hasChord
                 || hasDrone || hasQuantize || hasScaleMod || hasProgression
-                || hasShift || hasDelay || hasStrum || hasHumanize
+                || hasShift || hasMirror || hasDelay || hasStrum || hasHumanize
                 || hasMidiIn || hasOutput;
         }
     };
@@ -348,10 +377,12 @@ public:
                   const Config& cfg);
 
 private:
-    // Map a single pitch through the modulator chain (Scale, then Progression
-    // at `progIndex`, then Shift). Applied to note-ons only — note-offs are
+    // Map a single pitch through the modulator chain (Scale, Progression at
+    // `progIndex`, Shift, then Mirror). Applied to note-ons only — note-offs are
     // released from the activeGen/activePass bookkeeping, which remembers the
     // emitted pitch, so a progression step change mid-note can't hang anything.
+    // Returns -1 when Mirror's Limit mode drops the note; callers must skip
+    // emitting it (no note-off is booked, so nothing hangs).
     int mapPitch (int note, int root, int scaleIndex,
                   int progIndex, const Config& cfg) const;
 

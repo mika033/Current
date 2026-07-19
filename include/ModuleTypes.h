@@ -30,6 +30,7 @@ enum class ModuleType
     ScaleMod,      // the "Scale" modulator — forces passing notes onto a scale
     Progression,
     Shift,
+    Mirror,        // inverts pitch around a centre, then constrains to a register window
     Delay,
     Strum,         // spreads a chord's notes over a short window (a strummed guitar)
     Humanize,      // final-stage performance feel: swing + timing/velocity jitter
@@ -45,7 +46,8 @@ inline bool moduleHasInputPort (ModuleType t)
 {
     return t == ModuleType::Arp || t == ModuleType::Quantize
         || t == ModuleType::ScaleMod || t == ModuleType::Progression
-        || t == ModuleType::Shift || t == ModuleType::Delay
+        || t == ModuleType::Shift || t == ModuleType::Mirror
+        || t == ModuleType::Delay
         || t == ModuleType::Strum || t == ModuleType::Humanize
         || t == ModuleType::Output;
 }
@@ -78,9 +80,9 @@ struct ModuleDescriptor
 // modulator shares its display name with the Scale generator on purpose (the
 // user asked for a "scale modulator"); shape and colour keep them apart, and
 // their persistence ids differ ("Scale" vs "ScaleMod").
-inline const std::array<ModuleDescriptor, 15>& moduleCatalogue()
+inline const std::array<ModuleDescriptor, 16>& moduleCatalogue()
 {
-    static const std::array<ModuleDescriptor, 15> kCatalogue = {{
+    static const std::array<ModuleDescriptor, 16> kCatalogue = {{
         { ModuleType::Random,      ModuleKind::Generator, "Random"      },
         { ModuleType::ScaleGen,    ModuleKind::Generator, "Scale"       },
         { ModuleType::Lfo,         ModuleKind::Generator, "LFO"         },
@@ -91,6 +93,7 @@ inline const std::array<ModuleDescriptor, 15>& moduleCatalogue()
         { ModuleType::ScaleMod,    ModuleKind::Modulator, "Scale"       },
         { ModuleType::Progression, ModuleKind::Modulator, "Progression" },
         { ModuleType::Shift,       ModuleKind::Modulator, "Shift"       },
+        { ModuleType::Mirror,      ModuleKind::Modulator, "Mirror"      },
         { ModuleType::Delay,       ModuleKind::Modulator, "Delay"       },
         { ModuleType::Strum,       ModuleKind::Modulator, "Strum"       },
         { ModuleType::Humanize,    ModuleKind::Modulator, "Humanize"    },
@@ -124,6 +127,7 @@ inline juce::String moduleTypeToString (ModuleType type)
         case ModuleType::ScaleMod:    return "ScaleMod";
         case ModuleType::Progression: return "Progression";
         case ModuleType::Shift:       return "Shift";
+        case ModuleType::Mirror:      return "Mirror";
         case ModuleType::Delay:       return "Delay";
         case ModuleType::Strum:       return "Strum";
         case ModuleType::Humanize:    return "Humanize";
@@ -144,6 +148,7 @@ inline ModuleType moduleTypeFromString (const juce::String& s)
     if (s == "ScaleMod") return ModuleType::ScaleMod;
     if (s == "Progression") return ModuleType::Progression;
     if (s == "Shift")    return ModuleType::Shift;
+    if (s == "Mirror")   return ModuleType::Mirror;
     if (s == "Delay")    return ModuleType::Delay;
     if (s == "Strum")    return ModuleType::Strum;
     if (s == "Humanize") return ModuleType::Humanize;

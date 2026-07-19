@@ -138,6 +138,21 @@ namespace ModuleOptions
     // degrees (scale Global / named).
     constexpr int kShiftRange = 36;
 
+    // Mirror: how the module treats a note that lands outside its [Low, High]
+    // register window after the centre-inversion. Limit drops it; Mirror folds
+    // it back once across the nearest boundary (then clamps if a single fold
+    // still overshoots). Both stay in the module's Root/Scale — scale steps with
+    // a scale active, semitones with Scale = Off.
+    inline const juce::StringArray& mirrorBoundsNames()
+    {
+        static const juce::StringArray names { "Limit", "Mirror" };
+        return names;
+    }
+
+    constexpr int kMirrorLimit     = 0;
+    constexpr int kMirrorFold      = 1;   // the "Mirror" bounds mode (reflect)
+    constexpr int kMirrorCenterOff = -1;  // far-left Centre detent: no inversion
+
     // LFO shapes, phase 0 = the start of the cycle. All bipolar in [-1, +1];
     // Sine and Triangle start at 0 rising, Saw Up rises -1 to +1, Saw Down
     // falls +1 to -1, Square is +1 for the first half. Random redraws a value
@@ -346,7 +361,8 @@ struct ProgressionStep
 // its lfo* fields; Quantize uses rate (its timing grid) and swing; the Scale
 // modulator uses root/scale only; Progression uses root/scale plus its prog*
 // fields; Shift uses root/scale (scaleOverride carries the extra Off sentinel)
-// and shiftAmount; Delay uses root/scale (Off sentinel) plus rate and its
+// and shiftAmount; Mirror uses root/scale (Off sentinel) plus its mirror*
+// fields; Delay uses root/scale (Off sentinel) plus rate and its
 // delay* fields; Chord uses root/scale plus its chord* fields; Drone uses
 // root/scale plus its drone* fields; Chord and Drone share holdLength/
 // holdRepeat; Strum uses mode (Direction) + repeat plus its strum* fields (no
@@ -389,6 +405,20 @@ struct ModuleSettings
     // default) passes notes through untouched until the user dials it in.
     // Shift's root/scale come from the shared rootOverride/scaleOverride.
     int shiftAmount = 0;   // -kShiftRange..+kShiftRange
+
+    // Mirror only. Inverts pitch around mirrorCenter, then keeps the result
+    // inside the [mirrorLow, mirrorHigh] register window. mirrorCenter is a MIDI
+    // note, or kMirrorCenterOff (-1, the far-left dial detent) for no inversion —
+    // the module then just applies the window. mirrorBounds selects Limit (drop
+    // out-of-window notes) or Mirror/Fold (reflect once across the nearest edge,
+    // then clamp). Both the invert and the fold run in the module's Root/Scale
+    // (shared rootOverride/scaleOverride): scale steps with a scale active,
+    // chromatic semitones with Scale = Off. The dialog blocks Low > High and
+    // pushes the other bound along when they meet.
+    int mirrorCenter = 60;   // kMirrorCenterOff = Off, else 0..127 (default C4)
+    int mirrorLow    = 36;   // C2
+    int mirrorHigh   = 84;   // C6
+    int mirrorBounds = ModuleOptions::kMirrorFold;   // index into mirrorBoundsNames()
 
     // Quantize only: how far every second grid step is pushed late (the grid
     // itself is the shared `rate` field). Index into swingNames(). Humanize

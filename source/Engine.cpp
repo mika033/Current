@@ -41,6 +41,44 @@ namespace
         return (int) (m < 0 ? m + n : m);
     }
 
+    // Signed count of scale steps from `a` to `b` (both snapped into the scale
+    // first), positive when `b` is above `a`. Used by Mirror's diatonic
+    // reflection. Bounded walk — pitches live in 0..127, so the count can't
+    // exceed ~75 for any real scale; the guard caps a pathological one.
+    int scaleStepsBetween (int a, int b, int root, int scaleIndex)
+    {
+        a = ScaleTables::snapToScale (juce::jlimit (0, 127, a), root, scaleIndex);
+        b = ScaleTables::snapToScale (juce::jlimit (0, 127, b), root, scaleIndex);
+        if (a == b)
+            return 0;
+        const int dir = b > a ? 1 : -1;
+        int p = a, count = 0;
+        for (int guard = 0; p != b && guard < 256; ++guard)
+        {
+            int q = p + dir;
+            while (q >= 0 && q <= 127 && ! ScaleTables::isInScale (q, root, scaleIndex))
+                q += dir;
+            if (q < 0 || q > 127)
+                break;
+            p = q;
+            count += dir;
+        }
+        return count;
+    }
+
+    // Reflect `note` around `pivot`. Chromatic mode is a plain semitone mirror
+    // (an interval up becomes that interval down); diatonic mode mirrors by
+    // scale degrees — the reflected note sits the same number of scale steps on
+    // the far side of the pivot — so a fold or invert stays in key. Mirror uses
+    // this for both the centre inversion and the boundary fold.
+    int reflectAround (int note, int pivot, int root, int scaleIndex, bool chromatic)
+    {
+        if (chromatic)
+            return 2 * pivot - note;
+        const int d = scaleStepsBetween (pivot, note, root, scaleIndex);
+        return ScaleTables::stepInScale (pivot, root, scaleIndex, -d);
+    }
+
     // Pair-based swing (swing-timing.md): the straight grid boundary at index j
     // is pushed late by swingQn when j is odd; even boundaries — the pair starts
     // — stay put. The one source of the swing model, shared by Quantize (which
@@ -175,6 +213,40 @@ int Engine::mapPitch (int note, int root, int scaleIndex,
                                           cfg.shiftRoot >= 0 ? cfg.shiftRoot : root,
                                           cfg.shiftScale >= 0 ? cfg.shiftScale : scaleIndex,
                                           cfg.shiftAmount);
+    }
+    if (cfg.hasMirror)
+    {
+        const bool chromatic = cfg.mirrorScale == ModuleOptions::kScaleOff;
+        const int  mRoot  = cfg.mirrorRoot  >= 0 ? cfg.mirrorRoot  : root;
+        const int  mScale = cfg.mirrorScale >= 0 ? cfg.mirrorScale : scaleIndex;
+
+        // Snap the window edges into the scale in diatonic mode so the whole
+        // module stays in key — a clamped straggler then also lands in-scale.
+        int lo = juce::jlimit (0, 127, cfg.mirrorLow);
+        int hi = juce::jlimit (0, 127, cfg.mirrorHigh);
+        if (! chromatic)
+        {
+            lo = ScaleTables::snapToScale (lo, mRoot, mScale);
+            hi = ScaleTables::snapToScale (hi, mRoot, mScale);
+        }
+        if (lo > hi)
+            std::swap (lo, hi);
+
+        // 1. Invert around the centre (Off = skip; the note falls straight
+        //    through to the window stage).
+        if (cfg.mirrorCenter >= 0)
+            p = reflectAround (p, cfg.mirrorCenter, mRoot, mScale, chromatic);
+
+        // 2. Keep it inside [lo, hi]. Limit drops an out-of-window note; Mirror
+        //    folds it once across the nearest edge, clamping if a single fold
+        //    still overshoots (a note more than a window-width out).
+        if (p < lo || p > hi)
+        {
+            if (cfg.mirrorBounds == ModuleOptions::kMirrorLimit)
+                return -1;   // dropped: the caller emits nothing, books no off
+            p = reflectAround (p, p < lo ? lo : hi, mRoot, mScale, chromatic);
+            p = juce::jlimit (lo, hi, p);
+        }
     }
     return p;
 }
@@ -429,6 +501,11 @@ void Engine::process (juce::MidiBuffer& midi,
                 const int target = quantActive ? quantTarget (s) : s;
                 const int p = mapPitch (m.getNoteNumber(), root, scaleIndex,
                                         progIndexAt (target), cfg);
+                // Mirror's Limit mode can drop the note; nothing is emitted and
+                // no activePass entry is booked, so the later note-off simply
+                // finds no match and releases nothing (no hang).
+                if (p < 0)
+                    continue;
                 forEachOutChannel (cfg.outChannelMask, m.getChannel(), [&] (int ch)
                 {
                     if (quantActive)
@@ -499,6 +576,8 @@ void Engine::process (juce::MidiBuffer& midi,
             const int target = quantActive ? quantTarget (sample) : sample;
             const int p = mapPitch (rawPitch, root, scaleIndex,
                                     progIndexAt (target), cfg);
+            if (p < 0)   // Mirror Limit dropped this step — emit nothing.
+                return;
             forEachOutChannel (cfg.outChannelMask, 1, [&] (int ch)
             {
                 if (quantActive)
@@ -785,6 +864,8 @@ void Engine::process (juce::MidiBuffer& midi,
                 for (int r : raw)
                 {
                     const int p = mapPitch (r, root, scaleIndex, progIndexAt (s), cfg);
+                    if (p < 0)   // Mirror Limit dropped this voicing tone.
+                        continue;
                     if (std::find (out.begin(), out.end(), p) == out.end())
                         out.push_back (p);
                 }

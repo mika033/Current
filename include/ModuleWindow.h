@@ -97,6 +97,15 @@ public:
      *  dial's unit when Scale flips to/from Off). */
     void setComboChangeCallback (const juce::String& name, std::function<void()> cb);
 
+    /** Install a callback fired when the named dial is turned by the user (after
+     *  its own label refresh), so one dial can react to another — Mirror's Low
+     *  and High push each other so the window can't invert. */
+    void setDialChangeCallback (const juce::String& name, std::function<void()> cb);
+
+    /** Set a dial's value programmatically (no change callback, so a reaction
+     *  can't recurse), refreshing its live label. No-op for an unknown name. */
+    void setDialValue (const juce::String& name, double value);
+
     /** Add an action button. The first button added is the affirmative one
      *  (Return triggers it), conventionally OK. */
     void addButton (const juce::String& text, int returnValue);
@@ -135,6 +144,8 @@ private:
         // every dial move.
         juce::String                          baseLabel;
         std::function<juce::String (double)>  dialFormat;
+        // Optional reaction to a user-driven dial turn (Mirror's Low/High push).
+        std::function<void()>                 dialChangeCb;
         bool filled() const { return combo != nullptr || dial != nullptr; }
     };
 

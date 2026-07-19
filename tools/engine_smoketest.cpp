@@ -1430,6 +1430,82 @@ int main()
         check (nOns == 0, "a null position (no playhead) generates nothing");
     }
 
+    // --- 16b. Mirror: invert around a centre, then window the result --------
+    {
+        // One note through a Mirror, reading back the emitted on/off pitches.
+        auto mirrored = [&] (int inNote, int center, int low, int high,
+                             int bounds, int mScale, int mRoot,
+                             int globalRoot, int globalScale)
+        {
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasMirror    = true;
+            cfg.mirrorCenter = center;
+            cfg.mirrorLow    = low;
+            cfg.mirrorHigh   = high;
+            cfg.mirrorBounds = bounds;
+            cfg.mirrorScale  = mScale;
+            cfg.mirrorRoot   = mRoot;
+            juce::MidiBuffer midi;
+            midi.addEvent (juce::MidiMessage::noteOn  (1, inNote, (juce::uint8) 100), 0);
+            midi.addEvent (juce::MidiMessage::noteOff (1, inNote), 256);
+            e.process (midi, block, playing (false), globalRoot, globalScale, cfg);
+            int on = -1, off = -1, ons = 0;
+            for (const auto meta : midi)
+            {
+                const auto m = meta.getMessage();
+                if (m.isNoteOn())  { on = m.getNoteNumber(); ++ons; }
+                if (m.isNoteOff()) off = m.getNoteNumber();
+            }
+            return std::tuple<int, int, int> (on, off, ons);
+        };
+
+        // Chromatic invert around C4 (60): E4 (64) -> A♭3 (56), a wide window so
+        // no folding. Note-off follows the note-on (no hang).
+        {
+            auto [on, off, ons] = mirrored (64, 60, 24, 96,
+                                            ModuleOptions::kMirrorLimit,
+                                            ModuleOptions::kScaleOff, -1, 0, 0);
+            check (on == 56 && off == 56 && ons == 1,
+                   "Mirror chromatic: E4 inverts around C4 to A flat 3 (56)");
+        }
+        // Diatonic invert in C major around C4: E4 is +2 degrees, so it mirrors
+        // to -2 degrees = A3 (57), staying in key (chromatic would give 56).
+        {
+            auto [on, off, ons] = mirrored (64, 60, 24, 96,
+                                            ModuleOptions::kMirrorLimit,
+                                            -1 /*global scale*/, -1, 0, 0);
+            check (on == 57 && off == 57,
+                   "Mirror diatonic: E4 mirrors to A3 (57) in C major, in key");
+        }
+        // Centre Off = no inversion: the note only meets the window (in range,
+        // so it passes untouched).
+        {
+            auto [on, off, ons] = mirrored (64, ModuleOptions::kMirrorCenterOff,
+                                            24, 96, ModuleOptions::kMirrorLimit,
+                                            ModuleOptions::kScaleOff, -1, 0, 0);
+            check (on == 64, "Mirror centre Off passes the note through the window");
+        }
+        // Limit drops an out-of-window result: invert 72 around 60 -> 48, window
+        // 55..96 excludes it, so nothing is emitted (and no dangling note-off).
+        {
+            auto [on, off, ons] = mirrored (72, 60, 55, 96,
+                                            ModuleOptions::kMirrorLimit,
+                                            ModuleOptions::kScaleOff, -1, 0, 0);
+            check (ons == 0 && off == -1,
+                   "Mirror Limit drops an out-of-window note (no on, no off)");
+        }
+        // Fold reflects that same out-of-window result back in: 48 is below the
+        // low edge 55 by 7, so it folds to 55 + 7 = 62.
+        {
+            auto [on, off, ons] = mirrored (72, 60, 55, 96,
+                                            ModuleOptions::kMirrorFold,
+                                            ModuleOptions::kScaleOff, -1, 0, 0);
+            check (on == 62 && off == 62,
+                   "Mirror Fold reflects a below-window note back inside (62)");
+        }
+    }
+
     // --- 17. ScaleTables spot checks -----------------------------------------
     {
         check (ScaleTables::isInScale (60, 0, 0), "C is in C major");

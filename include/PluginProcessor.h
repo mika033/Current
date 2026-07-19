@@ -127,6 +127,7 @@ private:
                       engHasChord { false }, engHasDrone { false },
                       engHasQuantize { false }, engHasScaleMod { false },
                       engHasProgression { false }, engHasShift { false },
+                      engHasMirror { false },
                       engHasDelay { false }, engHasStrum { false },
                       engHasMidiIn { false }, engHasOutput { false };
     std::atomic<std::uint16_t> engInChannelMask { 0xffff }, engOutChannelMask { 0 };
@@ -182,6 +183,14 @@ private:
     std::atomic<int> engShiftAmount { 0 },
                      engShiftScale { ModuleOptions::kScaleGlobal },
                      engShiftRoot { ModuleOptions::kScaleGlobal };
+    // Mirror: centre note (kMirrorCenterOff = Off), the [low, high] window, the
+    // bounds mode (Limit / Fold), and the shared root/scale (Off = chromatic).
+    std::atomic<int> engMirrorCenter { 60 },
+                     engMirrorLow { 36 },
+                     engMirrorHigh { 84 },
+                     engMirrorBounds { ModuleOptions::kMirrorFold },
+                     engMirrorScale { ModuleOptions::kScaleGlobal },
+                     engMirrorRoot { ModuleOptions::kScaleGlobal };
     std::atomic<int> engDelayRate { ModuleOptions::kRate1_8 },
                      engDelayFeedback { ModuleOptions::kFeedbackHalf },
                      engDelayShift { 0 },

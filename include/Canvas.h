@@ -59,6 +59,7 @@ private:
     void openScaleModDialog (ModuleComponent& node);
     void openProgressionDialog (ModuleComponent& node);
     void openShiftDialog (ModuleComponent& node);
+    void openMirrorDialog (ModuleComponent& node);
     void openDelayDialog (ModuleComponent& node);
     void openStrumDialog (ModuleComponent& node);
     void openHumanizeDialog (ModuleComponent& node);
@@ -67,6 +68,7 @@ private:
     static juce::String channelSublabel (ModuleType type, int channel);
     static juce::String rateSublabel (const ModuleSettings& settings);
     static juce::String shiftSublabel (const ModuleSettings& settings);
+    static juce::String mirrorSublabel (const ModuleSettings& settings);
     juce::String scaleModSublabel (const ModuleSettings& settings) const;
     static juce::String progressionSublabel (const ModuleSettings& settings);
     static juce::String chordSublabel (const ModuleSettings& settings);

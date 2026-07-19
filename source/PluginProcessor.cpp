@@ -135,6 +135,7 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.hasScaleMod     = engHasScaleMod.load();
     cfg.hasProgression  = engHasProgression.load();
     cfg.hasShift        = engHasShift.load();
+    cfg.hasMirror       = engHasMirror.load();
     cfg.hasDelay        = engHasDelay.load();
     cfg.hasStrum        = engHasStrum.load();
     cfg.hasMidiIn       = engHasMidiIn.load();
@@ -209,6 +210,13 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.shiftAmount = engShiftAmount.load();
     cfg.shiftScale  = engShiftScale.load();
     cfg.shiftRoot   = engShiftRoot.load();
+
+    cfg.mirrorCenter = engMirrorCenter.load();
+    cfg.mirrorLow    = engMirrorLow.load();
+    cfg.mirrorHigh   = engMirrorHigh.load();
+    cfg.mirrorBounds = engMirrorBounds.load();
+    cfg.mirrorScale  = engMirrorScale.load();
+    cfg.mirrorRoot   = engMirrorRoot.load();
 
     cfg.delayTimeQn   = ModuleOptions::rateQuarterNotes (engDelayRate.load());
     cfg.delayFeedback = ModuleOptions::feedbackFraction (engDelayFeedback.load());
@@ -285,7 +293,7 @@ void CurrentAudioProcessor::refreshEngineConfig()
     bool arp = false, rnd = false, scaleGen = false, lfo = false;
     bool chord = false, drone = false;
     bool quant = false, scaleMod = false, progression = false;
-    bool shift = false, delay = false, strum = false, humanize = false;
+    bool shift = false, mirror = false, delay = false, strum = false, humanize = false;
     bool midiIn = false, output = false;
     std::uint16_t inMask = 0, outMask = 0;
 
@@ -413,6 +421,18 @@ void CurrentAudioProcessor::refreshEngineConfig()
                 }
                 shift = true;
                 break;
+            case ModuleType::Mirror:
+                if (! mirror)
+                {
+                    engMirrorCenter.store (m.settings.mirrorCenter);
+                    engMirrorLow.store (m.settings.mirrorLow);
+                    engMirrorHigh.store (m.settings.mirrorHigh);
+                    engMirrorBounds.store (m.settings.mirrorBounds);
+                    engMirrorScale.store (m.settings.scaleOverride);
+                    engMirrorRoot.store (m.settings.rootOverride);
+                }
+                mirror = true;
+                break;
             case ModuleType::Delay:
                 if (! delay)
                 {
@@ -473,6 +493,7 @@ void CurrentAudioProcessor::refreshEngineConfig()
     engHasScaleMod.store (scaleMod);
     engHasProgression.store (progression);
     engHasShift.store (shift);
+    engHasMirror.store (mirror);
     engHasDelay.store (delay);
     engHasStrum.store (strum);
     engHasHumanize.store (humanize);
@@ -617,7 +638,7 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
             || m.type == ModuleType::Lfo || m.type == ModuleType::ScaleMod
             || m.type == ModuleType::Progression || m.type == ModuleType::Chord
             || m.type == ModuleType::Drone || m.type == ModuleType::Shift
-            || m.type == ModuleType::Delay)
+            || m.type == ModuleType::Mirror || m.type == ModuleType::Delay)
         {
             node.setProperty ("root",  m.settings.rootOverride, nullptr);
             node.setProperty ("scale", m.settings.scaleOverride, nullptr);
@@ -665,6 +686,14 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
             // root/scale ride the shared block above (scale carries Shift's
             // chromatic/degree switch via kScaleOff).
             node.setProperty ("shiftAmount", m.settings.shiftAmount, nullptr);
+        if (m.type == ModuleType::Mirror)
+        {
+            // root/scale ride the shared block above (Off = chromatic mirror).
+            node.setProperty ("mirrorCenter", m.settings.mirrorCenter, nullptr);
+            node.setProperty ("mirrorLow",    m.settings.mirrorLow, nullptr);
+            node.setProperty ("mirrorHigh",   m.settings.mirrorHigh, nullptr);
+            node.setProperty ("mirrorBounds", m.settings.mirrorBounds, nullptr);
+        }
         if (m.type == ModuleType::Lfo)
         {
             node.setProperty ("lfoShape",      m.settings.lfoShape, nullptr);
@@ -761,6 +790,10 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             m.settings.repeat        = (int)  node.getProperty ("repeat",
                                           isScaleGen ? ModuleOptions::kRepeatOneBar : def.repeat);
             m.settings.shiftAmount   = (int)  node.getProperty ("shiftAmount", def.shiftAmount);
+            m.settings.mirrorCenter  = (int)  node.getProperty ("mirrorCenter", def.mirrorCenter);
+            m.settings.mirrorLow     = (int)  node.getProperty ("mirrorLow",    def.mirrorLow);
+            m.settings.mirrorHigh    = (int)  node.getProperty ("mirrorHigh",   def.mirrorHigh);
+            m.settings.mirrorBounds  = (int)  node.getProperty ("mirrorBounds", def.mirrorBounds);
             m.settings.swing         = (int)  node.getProperty ("swing", def.swing);
             m.settings.humanizeLayback = (int) node.getProperty ("humanizeLayback", def.humanizeLayback);
             m.settings.humanizeAccent  = (int) node.getProperty ("humanizeAccent",  def.humanizeAccent);

@@ -10,9 +10,9 @@ phases. File references are relative to the repo root; headers live in
 
 A JUCE MIDI-effect plugin (VST3 + Standalone, Linux build only so far). The
 editor shows a menu bar (global root / scale + theme switch), a canvas that
-modules can be dragged onto from a palette of fifteen (generators Random,
+modules can be dragged onto from a palette of sixteen (generators Random,
 Scale, LFO, Chord, and Drone, modulators Arp, Quantize, Scale, Progression,
-Shift, Delay, Strum, and Humanize, I/O modules MIDI In and Output), and an engine that actually runs
+Shift, Mirror, Delay, Strum, and Humanize, I/O modules MIDI In and Output), and an engine that actually runs
 those modules — but as a fixed implicit chain, because there is no port
 wiring yet. The I/O modules carry a per-module MIDI channel; every other
 module carries full settings (drawn from the shared settings pool —
@@ -66,15 +66,16 @@ real double-click dialogs.
   a thin menu bar echoing the global one (three slots — Root, Scale, and a Rate
   or Length combo, unused slots left blank), a 3x2 grid of combo/dial cells
   (labels above, Little Arp Monster section-box sizing; dials for knob-friendly
-  values like octaves/gate), and an action-button row. All fifteen modules are
+  values like octaves/gate), and an action-button row. All sixteen modules are
   on it, routing shared settings through `Canvas`'s `ModuleWindow` helper pairs.
   For a module whose body the six cells can't hold, `setCustomBody` swaps the
   grid for a caller-supplied component and sizes the panel to it, keeping the
   rest of the chrome — **Progression** uses this for its step list (see below).
-  Two hooks let one cell react to another: `setComboChangeCallback` and
-  `refreshDial`, wrapped in `Canvas`'s shared `addAmountDial`/`readAmountDial`
+  Three hooks let one cell react to another: `setComboChangeCallback` and
+  `refreshDial` (wrapped in `Canvas`'s shared `addAmountDial`/`readAmountDial`
   pair so Shift/Delay's amount dial rewords its unit ("steps"/"semitones") when
-  the Scale combo flips, identically in both. The design decisions behind
+  the Scale combo flips), and `setDialChangeCallback`/`setDialValue` (Mirror's
+  Low and High dials push each other so the window can't invert). The design decisions behind
   the window (band-by-band rules, dial readouts, the roads not taken) are
   written up in `design/module-window.md`.
 - `tools/engine_smoketest.cpp` — headless engine test, see Testing below.
@@ -204,7 +205,13 @@ semantics) is at the top of `Engine.h`. Summary:
   activePass bookkeeping, not from re-mapping); then Shift transposes by its
   amount — scale degrees via `stepInScale` when its scale is Global/named,
   chromatic semitones when Off (`ModuleOptions::kScaleOff`, stored in the
-  shared `scaleOverride` field).
+  shared `scaleOverride` field); finally Mirror inverts around its centre note
+  (`reflectAround`, diatonic in scale steps or chromatic in semitones per its
+  scale) and constrains the result to a `[low, high]` window — Limit mode has
+  `mapPitch` return -1 so the caller drops the note (booking no note-off), Fold
+  reflects it once back across the nearest edge then clamps. Mirror is the one
+  pitch stage that can drop a note, so all three `mapPitch` call sites (host
+  pass-through, generated notes, the Drone's held tones) skip a -1 result.
 - Quantize is the second stateful time modulator: while playing, every
   note-on leaving the chain is deferred to the next point of its rate grid
   (`pendingQuant`), with swing pushing odd grid points late by swing/2 of a
@@ -292,8 +299,8 @@ shared `ModuleSettings` blob (used by every other type), each edited via a
 real settings dialog in `Canvas` (`openChannelDialog`, `openArpDialog`,
 `openRandomDialog`, `openScaleGenDialog`, `openLfoDialog`,
 `openQuantizeDialog`, `openScaleModDialog`, `openProgressionDialog`,
-`openShiftDialog`, `openDelayDialog`, `openStrumDialog`, `openHumanizeDialog`,
-`openChordDialog`, `openDroneDialog`),
+`openShiftDialog`, `openMirrorDialog`, `openDelayDialog`, `openStrumDialog`,
+`openHumanizeDialog`, `openChordDialog`, `openDroneDialog`),
 reflected in a node sublabel (channel, rate, Shift's signed amount, the
 Scale modulator's scale, the Progression's degrees, the Chord's degree +
 type, the Drone's voicing, or the Strum's spread in ms), and persisted with the
@@ -306,7 +313,7 @@ choice parameters ("Global" prepended), so they can't drift from the menu
 bar; Shift's dialog inserts its extra "Off" entry into that same list.
 
 The settings UI is fully on the structured `ModuleWindow` (see the component
-map) for all fifteen modules. Each `open*Dialog` builds a `ModuleWindow` via
+map) for all sixteen modules. Each `open*Dialog` builds a `ModuleWindow` via
 `editor.showModuleWindow`, fills the menu bar (Root / Scale / Rate-or-Length)
 and grid cells through `Canvas`'s `ModuleWindow` helper pairs, and reads the
 controls back by name (`getComboSelectedIndex` / `getDialValue`) on OK. Modules

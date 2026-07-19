@@ -99,9 +99,15 @@ void ModuleWindow::setGridDial (int slot,
     configureDial (*c.dial);
     c.dial->setRange (minValue, maxValue, interval);
     c.dial->setValue (value, juce::dontSendNotification);
-    // Live readout: fold the value into the label ("From: C2") on every move.
+    // Live readout: fold the value into the label ("From: C2") on every move,
+    // then fire any installed reaction (Mirror's Low/High push).
     auto* cell = &c;
-    c.dial->onValueChange = [this, cell]() { refreshDialLabel (*cell); };
+    c.dial->onValueChange = [this, cell]()
+    {
+        refreshDialLabel (*cell);
+        if (cell->dialChangeCb)
+            cell->dialChangeCb();
+    };
     addAndMakeVisible (c.dial.get());
     refreshDialLabel (c);   // initial text (setValue above was silent)
 
@@ -162,6 +168,25 @@ void ModuleWindow::setComboChangeCallback (const juce::String& name, std::functi
         if (s.filled() && s.name == name) { s.combo->onChange = cb; return; }
     for (auto& c : gridCells)
         if (c.combo != nullptr && c.name == name) { c.combo->onChange = cb; return; }
+}
+
+void ModuleWindow::setDialChangeCallback (const juce::String& name, std::function<void()> cb)
+{
+    for (auto& c : gridCells)
+        if (c.dial != nullptr && c.name == name) { c.dialChangeCb = std::move (cb); return; }
+}
+
+void ModuleWindow::setDialValue (const juce::String& name, double value)
+{
+    for (auto& c : gridCells)
+        if (c.dial != nullptr && c.name == name)
+        {
+            // dontSendNotification so a push reaction can't recurse into the
+            // dial that triggered it; refresh the label by hand instead.
+            c.dial->setValue (value, juce::dontSendNotification);
+            refreshDialLabel (c);
+            return;
+        }
 }
 
 void ModuleWindow::addButton (const juce::String& text, int returnValue)
