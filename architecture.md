@@ -10,9 +10,9 @@ phases. File references are relative to the repo root; headers live in
 
 A JUCE MIDI-effect plugin (VST3 + Standalone, Linux build only so far). The
 editor shows a menu bar (global root / scale + theme switch), a canvas that
-modules can be dragged onto from a palette of thirteen (generators Random,
+modules can be dragged onto from a palette of fourteen (generators Random,
 Scale, LFO, Chord, and Drone, modulators Arp, Quantize, Scale, Progression,
-Shift, and Delay, I/O modules MIDI In and Output), and an engine that actually runs
+Shift, Delay, and Humanize, I/O modules MIDI In and Output), and an engine that actually runs
 those modules — but as a fixed implicit chain, because there is no port
 wiring yet. The I/O modules carry a per-module MIDI channel; every other
 module carries full settings (drawn from the shared settings pool —
@@ -66,7 +66,7 @@ real double-click dialogs.
   a thin menu bar echoing the global one (three slots — Root, Scale, and a Rate
   or Length combo, unused slots left blank), a 3x2 grid of combo/dial cells
   (labels above, Little Arp Monster section-box sizing; dials for knob-friendly
-  values like octaves/gate), and an action-button row. All thirteen modules are
+  values like octaves/gate), and an action-button row. All fourteen modules are
   on it, routing shared settings through `Canvas`'s `ModuleWindow` helper pairs.
   For a module whose body the six cells can't hold, `setCustomBody` swaps the
   grid for a caller-supplied component and sizes the panel to it, keeping the
@@ -228,6 +228,19 @@ semantics) is at the top of `Engine.h`. Summary:
 - Output modules stamp everything leaving the engine with their channel; with
   several, the stream is duplicated once per channel (the implicit chain's
   fan-out). With none placed, events keep their own channel.
+- Humanize is the last stage: a post-pass over the whole finished `midi` buffer
+  (pass-through, generated, quantized, and delayed alike). It re-times every
+  note event through a continuous, delay-only warp — pair-based swing (the same
+  `swungBoundaryQn` the Quantize path uses, applied via `swingWarpQn` as a nudge
+  rather than a snap) plus a constant lay-back — and shapes note-ons' velocity
+  (metric accent + jitter) and note-offs' length (jitter). Events whose warped
+  time lands past the block wait in `pendingHuman`; each held note-on records
+  its random timing jitter so the matching note-off reuses it and the note's
+  length is preserved through the warp. The jitter is a deterministic hash of
+  song position, so the humanised feel repeats every loop. Like Quantize it only
+  warps while playing; on a transport stop it cancels the `activeGen` gate of any
+  note whose warped on never fired and emits any buffered offs, so the
+  no-hanging-notes invariant holds. It maps no pitch, so it has no root/scale.
 - The same `mapPitch` is applied to note-ons and note-offs so their pitches
   always match — this is the core no-hanging-notes invariant. Passed-through
   host notes are additionally remembered in `activePass` as
@@ -261,7 +274,8 @@ shared `ModuleSettings` blob (used by every other type), each edited via a
 real settings dialog in `Canvas` (`openChannelDialog`, `openArpDialog`,
 `openRandomDialog`, `openScaleGenDialog`, `openLfoDialog`,
 `openQuantizeDialog`, `openScaleModDialog`, `openProgressionDialog`,
-`openShiftDialog`, `openDelayDialog`, `openChordDialog`, `openDroneDialog`),
+`openShiftDialog`, `openDelayDialog`, `openHumanizeDialog`, `openChordDialog`,
+`openDroneDialog`),
 reflected in a node sublabel (channel, rate, Shift's signed amount, the
 Scale modulator's scale, the Progression's degrees, the Chord's degree +
 type, or the Drone's voicing), and persisted with the canvas state. The dialogs
@@ -273,7 +287,7 @@ choice parameters ("Global" prepended), so they can't drift from the menu
 bar; Shift's dialog inserts its extra "Off" entry into that same list.
 
 The settings UI is fully on the structured `ModuleWindow` (see the component
-map) for all thirteen modules. Each `open*Dialog` builds a `ModuleWindow` via
+map) for all fourteen modules. Each `open*Dialog` builds a `ModuleWindow` via
 `editor.showModuleWindow`, fills the menu bar (Root / Scale / Rate-or-Length)
 and grid cells through `Canvas`'s `ModuleWindow` helper pairs, and reads the
 controls back by name (`getComboSelectedIndex` / `getDialValue`) on OK. Modules

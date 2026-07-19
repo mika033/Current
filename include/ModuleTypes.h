@@ -31,6 +31,7 @@ enum class ModuleType
     Progression,
     Shift,
     Delay,
+    Humanize,      // final-stage performance feel: swing + timing/velocity jitter
     // I/O
     MidiIn,
     Output
@@ -44,6 +45,7 @@ inline bool moduleHasInputPort (ModuleType t)
     return t == ModuleType::Arp || t == ModuleType::Quantize
         || t == ModuleType::ScaleMod || t == ModuleType::Progression
         || t == ModuleType::Shift || t == ModuleType::Delay
+        || t == ModuleType::Humanize
         || t == ModuleType::Output;
 }
 
@@ -75,9 +77,9 @@ struct ModuleDescriptor
 // modulator shares its display name with the Scale generator on purpose (the
 // user asked for a "scale modulator"); shape and colour keep them apart, and
 // their persistence ids differ ("Scale" vs "ScaleMod").
-inline const std::array<ModuleDescriptor, 13>& moduleCatalogue()
+inline const std::array<ModuleDescriptor, 14>& moduleCatalogue()
 {
-    static const std::array<ModuleDescriptor, 13> kCatalogue = {{
+    static const std::array<ModuleDescriptor, 14> kCatalogue = {{
         { ModuleType::Random,      ModuleKind::Generator, "Random"      },
         { ModuleType::ScaleGen,    ModuleKind::Generator, "Scale"       },
         { ModuleType::Lfo,         ModuleKind::Generator, "LFO"         },
@@ -89,6 +91,7 @@ inline const std::array<ModuleDescriptor, 13>& moduleCatalogue()
         { ModuleType::Progression, ModuleKind::Modulator, "Progression" },
         { ModuleType::Shift,       ModuleKind::Modulator, "Shift"       },
         { ModuleType::Delay,       ModuleKind::Modulator, "Delay"       },
+        { ModuleType::Humanize,    ModuleKind::Modulator, "Humanize"    },
         { ModuleType::MidiIn,      ModuleKind::IO,        "MIDI In"     },
         { ModuleType::Output,      ModuleKind::IO,        "Output"      }
     }};
@@ -120,6 +123,7 @@ inline juce::String moduleTypeToString (ModuleType type)
         case ModuleType::Progression: return "Progression";
         case ModuleType::Shift:       return "Shift";
         case ModuleType::Delay:       return "Delay";
+        case ModuleType::Humanize:    return "Humanize";
         case ModuleType::MidiIn:      return "MidiIn";
         case ModuleType::Output:      return "Output";
     }
@@ -138,6 +142,7 @@ inline ModuleType moduleTypeFromString (const juce::String& s)
     if (s == "Progression") return ModuleType::Progression;
     if (s == "Shift")    return ModuleType::Shift;
     if (s == "Delay")    return ModuleType::Delay;
+    if (s == "Humanize") return ModuleType::Humanize;
     if (s == "MidiIn")   return ModuleType::MidiIn;
     if (s == "Output")   return ModuleType::Output;
     return ModuleType::Arp;

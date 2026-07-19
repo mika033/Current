@@ -310,7 +310,8 @@ struct ProgressionStep
 // and shiftAmount; Delay uses root/scale (Off sentinel) plus rate and its
 // delay* fields; Chord uses root/scale plus its chord* fields; Drone uses
 // root/scale plus its drone* fields; Chord and Drone share holdLength/
-// holdRepeat. Other module types ignore the whole struct. Root/scale overrides
+// holdRepeat; Humanize uses rate (its groove grid) + swing + its humanize*
+// fields (no pitch mapping). Other module types ignore the whole struct. Root/scale overrides
 // of -1 mean "follow the global menu-bar setting" — the engine resolves them
 // per block, so a module left on Global tracks later menu-bar changes.
 struct ModuleSettings
@@ -350,8 +351,23 @@ struct ModuleSettings
     int shiftAmount = 0;   // -kShiftRange..+kShiftRange
 
     // Quantize only: how far every second grid step is pushed late (the grid
-    // itself is the shared `rate` field). Index into swingNames().
+    // itself is the shared `rate` field). Index into swingNames(). Humanize
+    // reuses this same field for its own swing amount (identical semantics and
+    // range — see the Humanize fields below).
     int swing = ModuleOptions::kSwingOff;
+
+    // Humanize only. A final-stage "performance feel" pass over the outgoing
+    // stream. Its grid (what swing and accent lock to) is the shared `rate`
+    // field; its swing amount is the shared `swing` field above. These five are
+    // the rest of its controls, all 0..10 (= 0..100% via swingFraction, like
+    // swing): a structured groove pair (layback = drag behind the beat, accent
+    // = periodic velocity emphasis on strong beats) and a random-touch trio
+    // (timing / velocity / length jitter). See modules.md's Humanize entry.
+    int humanizeLayback = 0;
+    int humanizeAccent  = 0;
+    int humanizeTimeJit = 0;
+    int humanizeVelJit  = 0;
+    int humanizeLenJit  = 0;
 
     // Progression only. The rate is a bar length (one step of the progression),
     // deliberately not the shared note-length rate — progressions move in bars,

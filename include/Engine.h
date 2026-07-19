@@ -13,7 +13,8 @@
 //     -> stepped modules add notes  (Arp, Random, Scale, LFO)
 //     -> pitch modulators transform (Scale, then Progression, then Shift)
 //     -> Quantize re-times note-ons onto its swung grid
-//     -> Output (channel stamp) -> Delay adds echoes -> host
+//     -> Output (channel stamp) -> Delay adds echoes
+//     -> Humanize warps the final stream (swing/timing/velocity feel) -> host
 //
 // Stepped-module behaviour (each on its own step clock, gate = a fraction of
 // its step — user-set on every note-emitting Rate module: Random, Scale, LFO,
@@ -106,6 +107,21 @@
 //               transport stop pending echoes are discarded (and sounding
 //               ones released) per the shared transport rules; echoes keep
 //               running while the transport is stopped for live playing.
+//   - Humanize: a final-stage "performance feel" pass over the whole outgoing
+//               stream (pass-through, generated, quantized, and delayed alike).
+//               Two structured, grid-locked controls — swing (the same
+//               pair-based model as Quantize, applied here as a continuous,
+//               delay-only time-warp instead of a snap, so it nudges rather than
+//               quantizes) and a constant lay-back (drag behind the beat) — plus
+//               a periodic velocity accent (strong beats louder) and three
+//               random amounts (timing / velocity / length jitter). All timing
+//               moves are delays (a real-time MIDI FX can't pull a note earlier
+//               than it arrived), so lay-back drags and jitter drags/lengthens;
+//               the random draws are a deterministic function of song position,
+//               so the humanized feel repeats identically on every loop pass.
+//               Like Quantize it only warps while the transport plays (stopped,
+//               notes pass straight through for immediate live feel); on stop or
+//               removal its buffered note-offs are flushed so nothing hangs.
 //
 // I/O module behaviour (channel editable per module):
 //   - MIDI In:  filters which host events enter the graph by channel. With no
@@ -249,6 +265,23 @@ public:
         int    delayScale    = -1;
         int    delayRoot     = -1;
 
+        // Humanize settings. A final-stage feel pass over the whole outgoing
+        // stream (see Engine.h's flow note and Engine::process's post-pass).
+        // humanizeStepQn is the groove grid swing and accent lock to; the five
+        // amounts are 0..1 fractions (swingFraction of the 0..10 UI index).
+        // Swing and layback are a pure, monotonic time-warp of every note event
+        // (delay-only, so no host latency is needed); timing/velocity/length
+        // jitter are deterministic per-note random, so the feel repeats on every
+        // loop pass.
+        bool   hasHumanize     = false;
+        double humanizeStepQn  = 0.25;   // groove grid in quarter notes (1/16)
+        double humanizeSwing   = 0.0;    // 0..1 pair-based swing (off-beats late)
+        double humanizeLayback = 0.0;    // 0..1 constant drag behind the beat
+        double humanizeAccent  = 0.0;    // 0..1 strong/weak velocity emphasis
+        double humanizeTimeJit = 0.0;    // 0..1 random late offset per note-on
+        double humanizeVelJit  = 0.0;    // 0..1 random velocity variation
+        double humanizeLenJit  = 0.0;    // 0..1 random note lengthening
+
         // Bit (ch - 1) set = channel ch participates. inChannelMask is all-ones
         // when no MIDI In module narrows the input; outChannelMask is 0 when no
         // Output module is present (meaning: keep each event's own channel).
@@ -259,7 +292,7 @@ public:
         {
             return hasArp || hasRandom || hasScaleGen || hasLfo || hasChord
                 || hasDrone || hasQuantize || hasScaleMod || hasProgression
-                || hasShift || hasDelay || hasMidiIn || hasOutput;
+                || hasShift || hasDelay || hasHumanize || hasMidiIn || hasOutput;
         }
     };
 
@@ -332,6 +365,19 @@ private:
         int inNote; int inChannel; bool fromHost;
     };
     std::vector<QuantNote> pendingQuant;
+
+    // Humanize's final-stage time-warp buffers events whose humanized
+    // (delay-only) time lands past this block; `samplesUntil` is block-relative
+    // and decremented each block, exactly like EchoNote / QuantNote. Cleared /
+    // flushed on transport stop or module removal (see the post-pass). Each held
+    // note-on records the random timing jitter drawn for it (in quarter notes)
+    // so its note-off can reuse the exact same jitter and the note's length is
+    // preserved through the warp — the swing/layback part is a pure function of
+    // song position and recomputed on both ends.
+    struct HumanEvent { juce::MidiMessage msg; int samplesUntil; };
+    std::vector<HumanEvent> pendingHuman;
+    struct HumanHeld { int channel; int note; double jitterQn; };
+    std::vector<HumanHeld> humanHeld;
 
     // There are no step counters: every grid position (step clocks, repeat
     // windows, the LFO cycle, the Progression playhead, Quantize's swung

@@ -1052,6 +1052,155 @@ int main()
                "Delay: transport stop discards the buffered echo");
     }
 
+    // --- 15c. Humanize: neutral pass-through, accent, swing warp, balance ----
+    {
+        // All amounts zero: the note passes through untouched in time, pitch,
+        // and velocity (and balanced).
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasHumanize = true;   // every humanize* amount defaults to 0
+        juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::noteOn  (1, 60, (juce::uint8) 100), 0);
+        midi.addEvent (juce::MidiMessage::noteOff (1, 60), 256);
+        e.process (midi, block, playingAt (0.0), 0, 0, cfg);
+        int onS = -1, onV = -1, offS = -1, onP = -1;
+        for (const auto meta : midi)
+        {
+            const auto m = meta.getMessage();
+            if (m.isNoteOn())  { onS = meta.samplePosition; onV = m.getVelocity(); onP = m.getNoteNumber(); }
+            if (m.isNoteOff()) { offS = meta.samplePosition; }
+        }
+        check (onS == 0 && onP == 60 && onV == 100 && offS == 256,
+               "Humanize neutral (0%): note passes through untouched");
+    }
+    {
+        // Accent: on a strong beat (even step of the pair) velocity is boosted,
+        // on a weak beat (odd step) it is cut. Full accent = +/-40%.
+        auto accentVel = [&] (double ppq)
+        {
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasHumanize    = true;
+            cfg.humanizeStepQn = 0.25;   // the beat grid
+            cfg.humanizeAccent = 1.0;    // full depth
+            auto midi = noteOnBuf (60, 0);
+            e.process (midi, block, playingAt (ppq), 0, 0, cfg);
+            int v = -1;
+            for (const auto meta : midi)
+                if (meta.getMessage().isNoteOn()) v = meta.getMessage().getVelocity();
+            return v;
+        };
+        check (accentVel (0.0) == 127,
+               "Humanize accent lifts a strong-beat note (100 * 1.4 -> clamp 127)");
+        check (accentVel (0.25) == 60,
+               "Humanize accent cuts a weak-beat note (100 * 0.6 = 60)");
+    }
+    {
+        // Swing warp: a note on an even (on-beat) grid boundary stays put; a
+        // note on an odd (off-beat) boundary is pushed late by swing/2 of a
+        // step, exactly like the Quantize swing but as a nudge, not a snap.
+        // 1/4 grid at 120bpm = 22050 samples; 60% swing = +0.3 step = 6615.
+        auto swungOnset = [&] (double ppq)
+        {
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasHumanize    = true;
+            cfg.humanizeStepQn = 1.0;
+            cfg.humanizeSwing  = 0.6;
+            int abs = -1, blockStart = 0;
+            for (int i = 0; i < 40 && abs < 0; ++i)
+            {
+                juce::MidiBuffer midi;
+                if (i == 0)
+                    midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+                e.process (midi, block, playingAt (ppq + (double) blockStart / 22050.0), 0, 0, cfg);
+                for (const auto meta : midi)
+                    if (meta.getMessage().isNoteOn())
+                        abs = blockStart + meta.samplePosition;
+                blockStart += block;
+            }
+            { juce::MidiBuffer m; e.process (m, block, playing (false), 0, 0, cfg); }
+            return abs;
+        };
+        check (swungOnset (0.0) == 0,
+               "Humanize swing leaves an on-beat note in place");
+        check (swungOnset (1.0) == 6615,
+               "Humanize swing nudges an off-beat note late by swing/2 of a step");
+    }
+    {
+        // The whole warp + buffer + transport-stop path stays note-balanced: run
+        // a Random generator through a fully-cranked Humanize for a while, then
+        // stop. Every note-on must still be matched by a note-off.
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasRandom       = true;
+        cfg.hasHumanize     = true;
+        cfg.humanizeStepQn  = 0.25;
+        cfg.humanizeSwing   = 0.7;
+        cfg.humanizeLayback = 0.5;
+        cfg.humanizeAccent  = 0.5;
+        cfg.humanizeTimeJit = 0.6;
+        cfg.humanizeVelJit  = 0.6;
+        cfg.humanizeLenJit  = 0.6;
+
+        int ons = 0, offs = 0;
+        double qn = 0.0;
+        for (int i = 0; i < 300; ++i)
+        {
+            juce::MidiBuffer midi;
+            e.process (midi, block, playingAt (qn), 0, 0, cfg);
+            tally (midi, ons, offs);
+            qn += (double) block / 22050.0;
+        }
+        // A stop, then idle blocks to let any buffered offs drain.
+        for (int i = 0; i < 20; ++i)
+        {
+            juce::MidiBuffer midi;
+            e.process (midi, block, playing (false), 0, 0, cfg);
+            tally (midi, ons, offs);
+        }
+        check (ons > 0, "Humanize: notes flowed through while playing");
+        check (ons == offs, "Humanize: every note-on balanced by a note-off after stop");
+    }
+    {
+        // Determinism: feeding the SAME fixed note stream through Humanize over
+        // the same song positions must produce byte-identical output on two runs
+        // — that is what makes the humanized feel repeat on every loop pass
+        // instead of shimmering. (A fixed host note stream, not the stochastic
+        // Random generator, so the only variable under test is Humanize itself.)
+        auto run = [&] ()
+        {
+            Engine e; e.prepare (sr);
+            Engine::Config cfg;
+            cfg.hasHumanize     = true;
+            cfg.humanizeStepQn  = 0.25;
+            cfg.humanizeTimeJit = 0.7;
+            cfg.humanizeVelJit  = 0.7;
+            cfg.humanizeLenJit  = 0.7;
+            std::vector<std::tuple<int, int, int>> evs;   // (absSample, pitch, vel)
+            int blockStart = 0;
+            double qn = 0.0;
+            for (int i = 0; i < 120; ++i)
+            {
+                juce::MidiBuffer midi;
+                // One fixed note per block: on at the block start, off mid-block.
+                midi.addEvent (juce::MidiMessage::noteOn  (1, 60 + (i % 5), (juce::uint8) 100), 0);
+                midi.addEvent (juce::MidiMessage::noteOff (1, 60 + (i % 5)), 200);
+                e.process (midi, block, playingAt (qn), 0, 0, cfg);
+                for (const auto meta : midi)
+                    if (meta.getMessage().isNoteOn())
+                        evs.push_back ({ blockStart + meta.samplePosition,
+                                         meta.getMessage().getNoteNumber(),
+                                         (int) meta.getMessage().getVelocity() });
+                blockStart += block;
+                qn += (double) block / 22050.0;
+            }
+            return evs;
+        };
+        check (run() == run() && ! run().empty(),
+               "Humanize jitter is deterministic (repeats identically per loop)");
+    }
+
     // --- 16. Host-position anchoring: mid-bar start and loop wrap ------------
     {
         // Play pressed mid-bar (host ppq starts at 2.5): the first step must

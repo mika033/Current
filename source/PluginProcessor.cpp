@@ -215,6 +215,15 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.delayScale    = engDelayScale.load();
     cfg.delayRoot     = engDelayRoot.load();
 
+    cfg.hasHumanize     = engHasHumanize.load();
+    cfg.humanizeStepQn  = ModuleOptions::rateQuarterNotes (engHumanizeRate.load());
+    cfg.humanizeSwing   = ModuleOptions::swingFraction (engHumanizeSwing.load());
+    cfg.humanizeLayback = ModuleOptions::swingFraction (engHumanizeLayback.load());
+    cfg.humanizeAccent  = ModuleOptions::swingFraction (engHumanizeAccent.load());
+    cfg.humanizeTimeJit = ModuleOptions::swingFraction (engHumanizeTimeJit.load());
+    cfg.humanizeVelJit  = ModuleOptions::swingFraction (engHumanizeVelJit.load());
+    cfg.humanizeLenJit  = ModuleOptions::swingFraction (engHumanizeLenJit.load());
+
     const int root       = (int) (rootParam  != nullptr ? rootParam->load()  : 0.0f);
     const int scaleIndex = (int) (scaleParam != nullptr ? scaleParam->load() : 0.0f);
 
@@ -268,7 +277,7 @@ void CurrentAudioProcessor::refreshEngineConfig()
     bool arp = false, rnd = false, scaleGen = false, lfo = false;
     bool chord = false, drone = false;
     bool quant = false, scaleMod = false, progression = false;
-    bool shift = false, delay = false;
+    bool shift = false, delay = false, humanize = false;
     bool midiIn = false, output = false;
     std::uint16_t inMask = 0, outMask = 0;
 
@@ -407,6 +416,19 @@ void CurrentAudioProcessor::refreshEngineConfig()
                 }
                 delay = true;
                 break;
+            case ModuleType::Humanize:
+                if (! humanize)
+                {
+                    engHumanizeRate.store (m.settings.rate);
+                    engHumanizeSwing.store (m.settings.swing);
+                    engHumanizeLayback.store (m.settings.humanizeLayback);
+                    engHumanizeAccent.store (m.settings.humanizeAccent);
+                    engHumanizeTimeJit.store (m.settings.humanizeTimeJit);
+                    engHumanizeVelJit.store (m.settings.humanizeVelJit);
+                    engHumanizeLenJit.store (m.settings.humanizeLenJit);
+                }
+                humanize = true;
+                break;
             case ModuleType::MidiIn:
                 midiIn = true;
                 // Channel 0 = All; several MIDI Ins merge (union).
@@ -432,6 +454,7 @@ void CurrentAudioProcessor::refreshEngineConfig()
     engHasProgression.store (progression);
     engHasShift.store (shift);
     engHasDelay.store (delay);
+    engHasHumanize.store (humanize);
     engHasMidiIn.store (midiIn);
     engHasOutput.store (output);
     // No MIDI In module = implicit all-channels input; no Output = keep each
@@ -580,14 +603,25 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         }
         if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen
             || m.type == ModuleType::Arp || m.type == ModuleType::Lfo
-            || m.type == ModuleType::Delay || m.type == ModuleType::Quantize)
+            || m.type == ModuleType::Delay || m.type == ModuleType::Quantize
+            || m.type == ModuleType::Humanize)
             node.setProperty ("rate", m.settings.rate, nullptr);
         // Gate ships on every note-emitting Rate module.
         if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen
             || m.type == ModuleType::Lfo || m.type == ModuleType::Arp)
             node.setProperty ("gate", m.settings.gate, nullptr);
-        if (m.type == ModuleType::Quantize)
+        // Quantize and Humanize share the swing field (same meaning); Humanize
+        // adds its five feel amounts.
+        if (m.type == ModuleType::Quantize || m.type == ModuleType::Humanize)
             node.setProperty ("swing", m.settings.swing, nullptr);
+        if (m.type == ModuleType::Humanize)
+        {
+            node.setProperty ("humanizeLayback", m.settings.humanizeLayback, nullptr);
+            node.setProperty ("humanizeAccent",  m.settings.humanizeAccent, nullptr);
+            node.setProperty ("humanizeTimeJit", m.settings.humanizeTimeJit, nullptr);
+            node.setProperty ("humanizeVelJit",  m.settings.humanizeVelJit, nullptr);
+            node.setProperty ("humanizeLenJit",  m.settings.humanizeLenJit, nullptr);
+        }
         if (m.type == ModuleType::Progression)
         {
             node.setProperty ("progRate",  m.settings.progRate, nullptr);
@@ -696,6 +730,11 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
                                           isScaleGen ? ModuleOptions::kRepeatOneBar : def.repeat);
             m.settings.shiftAmount   = (int)  node.getProperty ("shiftAmount", def.shiftAmount);
             m.settings.swing         = (int)  node.getProperty ("swing", def.swing);
+            m.settings.humanizeLayback = (int) node.getProperty ("humanizeLayback", def.humanizeLayback);
+            m.settings.humanizeAccent  = (int) node.getProperty ("humanizeAccent",  def.humanizeAccent);
+            m.settings.humanizeTimeJit = (int) node.getProperty ("humanizeTimeJit", def.humanizeTimeJit);
+            m.settings.humanizeVelJit  = (int) node.getProperty ("humanizeVelJit",  def.humanizeVelJit);
+            m.settings.humanizeLenJit  = (int) node.getProperty ("humanizeLenJit",  def.humanizeLenJit);
             m.settings.progRate      = (int)  node.getProperty ("progRate", def.progRate);
             m.settings.progSteps     = progStepsFromString (
                                            node.getProperty ("progSteps",

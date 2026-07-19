@@ -460,6 +460,61 @@ User settings:
 - Shift — −12 to +12 (default 0); applied to each repeat, cumulatively across
   the chain (scale steps or semitones per the scale setting).
 
+### Humanize (modulator)
+
+Humanize is the final "performance feel" pass: it loosens the machine-tight
+output into something a player might have played. It sits at the very end of
+the chain and shapes everything flowing out — played notes, generated notes,
+quantized notes, and delay echoes alike — along two axes laid out to match the
+settings window: a top row of *structured groove* you dial in deliberately, and
+a bottom row of *random human touch*.
+
+Groove (top row, all locked to the Rate grid):
+
+- **Swing** pushes every off-beat late, the same pair-based model the Quantize
+  modulator uses (`swing-timing.md`) — but applied as a nudge, not a snap, so it
+  shuffles the timing without quantizing notes onto the grid. On-beats stay put;
+  ~60–70% is the classic triplet shuffle.
+- **Lay-back** drags every note a constant amount behind the beat — the
+  "relaxed drummer" feel — up to half a step at 100%.
+- **Accent** emphasises velocity by metric position: notes on the strong beat of
+  each pair get louder, off-beat notes softer (±40% at full), so a flat
+  generated line breathes with the pulse.
+
+Human touch (bottom row, random but repeatable):
+
+- **Timing** jitter nudges each note-on a random amount late.
+- **Velocity** jitter varies each note's velocity up and down.
+- **Length** jitter lengthens each note by a random amount.
+
+All timing moves are delays — a live MIDI effect can only hold a note back,
+never play it earlier than it arrived — so lay-back and jitter drag and lengthen
+rather than rush. The random amounts are drawn from the song position, not a
+free-running dice roll, so the humanised feel is *repeatable*: a looped section
+plays with the same "human" timing every pass instead of shimmering. Like
+Quantize, Humanize only acts while the transport plays (stopped, notes pass
+straight through for immediate live feel), and it follows the shared
+no-hanging-notes rule across a transport stop.
+
+Because swing and accent need to know where the beats are, Humanize carries a
+Rate (the groove grid); it maps no pitch, so it has no Root/Scale. Every amount
+is a 0–100% dial (default 0%, i.e. a fresh Humanize passes everything through
+untouched until dialled in).
+
+User settings:
+
+- Rate — 1/32 to 1/1 (default 1/16); the grid swing and accent lock to.
+- Swing — 0% to 100% (default 0%); off-beat lateness (pair-based).
+- Lay-back — 0% to 100% (default 0%); constant drag behind the beat.
+- Accent — 0% to 100% (default 0%); strong/weak velocity emphasis.
+- Timing — 0% to 100% (default 0%); random note-on lateness.
+- Velocity — 0% to 100% (default 0%); random velocity variation.
+- Length — 0% to 100% (default 0%); random note lengthening.
+
+Not yet exposed: a true *push* (playing ahead of the beat), which a zero-latency
+MIDI effect can't do without reporting host latency — lay-back covers the
+musically dominant, drag-behind half.
+
 ## Planned — speced
 
 These are concrete enough to build. Each entry states the intended behaviour;
@@ -506,8 +561,6 @@ swing setting covers it.)
 
 - **Velocity Shaper** — modulates velocity with an LFO or a drawn curve
   (settings: shape, rate/length, depth).
-- **Humanize** — adds small random timing and velocity jitter (settings: one
-  amount each).
 
 ### Modulators — routing
 
