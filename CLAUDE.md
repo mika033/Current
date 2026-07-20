@@ -101,6 +101,39 @@ arranger-style step row (see below and `design/module-window.md`). `InlineDialog
 now backs only the generic fallback for a module type that has no dedicated
 window yet.
 
+## The big missing piece: port wiring
+
+Current's whole premise is a **patchable** modular tool — drag modules onto the
+canvas and connect them with cables (this module's output into that one's
+input), so the user decides the signal flow. **That wiring does not exist yet**,
+and it is the single largest gap between what's built and the product vision.
+Building it is a priority.
+
+What's there today is a stand-in: the engine runs every placed module in one
+**fixed, hardcoded order** (the "implicit chain"), regardless of where nodes sit
+on the canvas. The ports drawn on the node shapes are decoration only —
+`ModuleComponent` paints them, but there is no connection model (`moduleList` is
+a flat list with no edges), nothing connection-related is persisted, and
+`Engine::Config` is handed only *which module types are present* plus their
+settings, never *how they connect*. `Canvas` has no connect interaction at all.
+
+Consequences of the missing wiring that keep surfacing, so future sessions
+recognise them as "wiring will fix this," not bugs to work around:
+
+- Input-only modulators (Arp, Harmonizer) act on the **played host input**
+  only, because in the fixed chain that's the slot they occupy — they never see
+  generator output. An Arp and a Harmonizer on the same canvas fight over that
+  one played-input slot (the Arp swallows it first).
+- "First instance wins" — extra copies of a module type share the first one's
+  settings, since there's no wiring to give each its own place in the flow.
+- The whole chain order (generators → pitch mods → Quantize → Output → Delay →
+  Strum → Humanize) is imposed, not chosen.
+
+When wiring lands, each of these becomes user-controlled: route a generator into
+a Harmonizer and it harmonises the generated notes; place two Arps on different
+branches and they run independently. Until then, don't design around the fixed
+order as if it were the intended one.
+
 ## Naming
 
 "Current" is only a working title and cannot ship: Minimal Audio already has a product named Current. A different name must be chosen before release (add it to the shipping checklist work). Until then the repo, identifiers, and docs keep the working title — don't rename anything piecemeal.
