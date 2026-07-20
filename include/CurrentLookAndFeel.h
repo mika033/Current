@@ -40,6 +40,13 @@ public:
         setColour (juce::TextButton::textColourOffId,  s.text);
         setColour (juce::TextButton::textColourOnId,   s.text);
 
+        // Generic slider colours for any future slider; the menu-bar BPM
+        // setter is now a StepperControl (its buttons/label draw from the
+        // TextButton/Label colours above, its value box paints from the theme).
+        setColour (juce::Slider::textBoxTextColourId,       s.text);
+        setColour (juce::Slider::textBoxBackgroundColourId, s.widgetBg);
+        setColour (juce::Slider::textBoxOutlineColourId,    s.widgetOutline);
+
         setColour (juce::ToggleButton::textColourId,   s.text);
         setColour (juce::ToggleButton::tickColourId,   s.accent);
         setColour (juce::ToggleButton::tickDisabledColourId, s.widgetOutline);
@@ -63,5 +70,39 @@ public:
     juce::Font getTextButtonFont (juce::TextButton&, int /*buttonHeight*/) override
     {
         return juce::Font (juce::FontOptions (kUiFontSize));
+    }
+
+    // Flat-dot rotary for the module-window grid dials (octaves, gate, and the
+    // like). Ported from Little Arp Monster's LamLookAndFeel: a filled body, a
+    // thin outline, and an accent dot marking the value — no arc, no gradient,
+    // so it reads cleanly on both themes' panels. Colours come from the active
+    // scheme, so a theme swap recolours it for free.
+    void drawRotarySlider (juce::Graphics& g,
+                           int x, int y, int width, int height,
+                           float sliderPos,
+                           float rotaryStartAngle, float rotaryEndAngle,
+                           juce::Slider&) override
+    {
+        const auto& s = CurrentTheme::active();
+
+        auto bounds  = juce::Rectangle<int> (x, y, width, height).toFloat().reduced (4.0f);
+        auto radius  = juce::jmin (bounds.getWidth(), bounds.getHeight()) / 2.0f;
+        auto centreX = bounds.getCentreX();
+        auto centreY = bounds.getCentreY();
+        auto angle   = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
+
+        g.setColour (s.widgetBg);
+        g.fillEllipse (centreX - radius, centreY - radius, radius * 2.0f, radius * 2.0f);
+
+        g.setColour (s.widgetOutline);
+        g.drawEllipse (centreX - radius, centreY - radius, radius * 2.0f, radius * 2.0f, 1.5f);
+
+        const auto dotRadius   = radius * 0.22f;
+        const auto dotDistance = radius * 0.7f;
+        const auto dotX = centreX + dotDistance * std::cos (angle - juce::MathConstants<float>::halfPi);
+        const auto dotY = centreY + dotDistance * std::sin (angle - juce::MathConstants<float>::halfPi);
+
+        g.setColour (s.accent);
+        g.fillEllipse (dotX - dotRadius, dotY - dotRadius, dotRadius * 2.0f, dotRadius * 2.0f);
     }
 };

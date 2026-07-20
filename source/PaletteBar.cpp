@@ -97,8 +97,15 @@ void PaletteBar::resized()
     if (n == 0)
         return;
 
-    constexpr int itemW = 84;
-    constexpr int gap   = 12;
+    // Preferred chip size, shrunk (gap first, then width) when the editor is
+    // near its minimum width — eight chips no longer fit at full size there.
+    int itemW = 84;
+    int gap   = 12;
+    if (n * itemW + (n - 1) * gap > area.getWidth())
+    {
+        gap   = 8;
+        itemW = juce::jlimit (48, 84, (area.getWidth() - (n - 1) * gap) / n);
+    }
 
     int x = area.getX();
     for (auto& item : items)
