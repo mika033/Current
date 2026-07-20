@@ -158,6 +158,7 @@ void Engine::reset()
     held.fill (false);
     activeGen.clear();
     activePass.clear();
+    harmHeld.clear();
     pendingEchoes.clear();
     pendingQuant.clear();
     pendingHuman.clear();
@@ -282,6 +283,7 @@ void Engine::process (juce::MidiBuffer& midi,
         if (! activePass.empty())
             flushPassedNotes (midi, 0);
         held.fill (false);
+        harmHeld.clear();
         pendingEchoes.clear();
         pendingQuant.clear();
         pendingHuman.clear();
@@ -478,6 +480,153 @@ void Engine::process (juce::MidiBuffer& midi,
                           cfg.progStepCount);
     };
 
+    // Harmonizer: the extra voices to stack above a played note (excluding the
+    // note itself, which passes through as the bass). Diatonic scale-degree
+    // stacking in the module's Root/Scale, or fixed chromatic intervals with the
+    // scale Off; the octaver types add an octave (+ fifth). Voices strictly above
+    // the played note, inversion re-voicing the harmony only, deduplicated so a
+    // collapsed voice can't be double-booked (which would leave a hanging off).
+    auto harmVoicesRaw = [&] (int played)
+    {
+        std::vector<int> voices;
+        if (! cfg.hasHarmonizer)
+            return voices;
+
+        std::vector<int> tones;   // full stack; tones[0] is the played-note slot
+        if (cfg.harmScale == ModuleOptions::kScaleOff)
+        {
+            for (int semi : ModuleOptions::harmonizerChromaticIntervals (cfg.harmType))
+                tones.push_back (juce::jlimit (0, 127, played + semi));
+        }
+        else
+        {
+            const int hRoot  = cfg.harmRoot  >= 0 ? cfg.harmRoot  : root;
+            const int hScale = cfg.harmScale >= 0 ? cfg.harmScale : scaleIndex;
+            if (cfg.harmType <= ModuleOptions::kHarm6th)
+            {
+                for (int off : ModuleOptions::chordTypeDegrees (cfg.harmType))
+                    tones.push_back (ScaleTables::stepInScale (played, hRoot, hScale, off));
+            }
+            else if (cfg.harmType == ModuleOptions::kHarmOctave)
+            {
+                tones.push_back (played);
+                tones.push_back (juce::jlimit (0, 127, played + 12));
+            }
+            else   // kHarmOctaveFifth
+            {
+                tones.push_back (played);
+                tones.push_back (ScaleTables::snapToScale (juce::jmin (127, played + 7), hRoot, hScale));
+                tones.push_back (juce::jlimit (0, 127, played + 12));
+            }
+        }
+
+        for (size_t i = 1; i < tones.size(); ++i)
+            if (tones[i] > played)
+                voices.push_back (tones[i]);
+        std::sort (voices.begin(), voices.end());
+        // Inversion lifts the lowest `inv` voices an octave — the played note
+        // stays the bass, so this re-voices the harmony without moving the root.
+        const int inv = juce::jlimit (0, (int) voices.size(), cfg.harmInversion);
+        for (int i = 0; i < inv; ++i)
+            voices[(size_t) i] = juce::jmin (127, voices[(size_t) i] + 12);
+        std::sort (voices.begin(), voices.end());
+        voices.erase (std::unique (voices.begin(), voices.end()), voices.end());
+        return voices;
+    };
+
+    // Emit one tone of a played note through the full chain: pitch-map it, then
+    // either defer to Quantize's grid or emit now (booking an echo + an
+    // activePass entry so the note-off releases exactly this). `isVoice` tags a
+    // Harmonizer-added voice. This is the single host-note emit path; a note with
+    // no Harmonizer is just its root tone.
+    auto emitHostTone = [&] (int rawTone, int inNote, int inChannel, int velocity,
+                             int s, bool isVoice)
+    {
+        const int target = quantActive ? quantTarget (s) : s;
+        const int p = mapPitch (rawTone, root, scaleIndex, progIndexAt (target), cfg);
+        if (p < 0)   // Mirror Limit dropped this tone — emit nothing, book no off.
+            return;
+        forEachOutChannel (cfg.outChannelMask, inChannel, [&] (int ch)
+        {
+            if (quantActive)
+            {
+                pendingQuant.push_back ({ p, ch, velocity, target, s, -1,
+                                          inNote, inChannel, true, isVoice });
+                return;
+            }
+            midi.addEvent (juce::MidiMessage::noteOn (ch, p, (juce::uint8) velocity), s);
+            activePass.push_back ({ inNote, inChannel, p, ch, isVoice });
+            scheduleEcho (p, ch, velocity, s);
+        });
+    };
+
+    // Emit a played note: its own pitch as the bass, plus (when asked, and a
+    // Harmonizer is present) the stacked voices.
+    auto emitHostNote = [&] (int nn, int ch, int velocity, int s, bool withVoices)
+    {
+        emitHostTone (nn, nn, ch, velocity, s, false);
+        if (withVoices)
+            for (int v : harmVoicesRaw (nn))
+                emitHostTone (v, nn, ch, velocity, s, true);
+    };
+
+    // Release just the Harmonizer voices booked for one played note (its bass
+    // stays sounding) — Top mode uses this when a note stops being the top.
+    auto releaseHarmVoices = [&] (int inNote, int inChannel, int s)
+    {
+        for (auto it = activePass.begin(); it != activePass.end();)
+        {
+            if (it->harmVoice && it->inNote == inNote && it->inChannel == inChannel)
+            {
+                midi.addEvent (juce::MidiMessage::noteOff (it->outChannel, it->outNote), s);
+                it = activePass.erase (it);
+            }
+            else
+                ++it;
+        }
+        pendingQuant.erase (std::remove_if (pendingQuant.begin(), pendingQuant.end(),
+            [&] (const QuantNote& q) { return q.fromHost && q.harmVoice
+                                              && q.inNote == inNote && q.inChannel == inChannel; }),
+            pendingQuant.end());
+    };
+
+    // Release everything sounding on a channel (bass + voices) — Replace mode is
+    // monophonic, so a new note cuts the previous note and its whole stack.
+    auto releaseHarmChannel = [&] (int inChannel, int s)
+    {
+        for (auto it = activePass.begin(); it != activePass.end();)
+        {
+            if (it->inChannel == inChannel)
+            {
+                midi.addEvent (juce::MidiMessage::noteOff (it->outChannel, it->outNote), s);
+                it = activePass.erase (it);
+            }
+            else
+                ++it;
+        }
+        pendingQuant.erase (std::remove_if (pendingQuant.begin(), pendingQuant.end(),
+            [&] (const QuantNote& q) { return q.fromHost && q.inChannel == inChannel; }),
+            pendingQuant.end());
+    };
+
+    // Highest held note on a channel (-1 = none) and its struck velocity — Top
+    // mode's top-finding and re-promotion.
+    auto topHeldNote = [&] (int ch)
+    {
+        int top = -1;
+        for (const auto& h : harmHeld)
+            if (h.channel == ch)
+                top = juce::jmax (top, h.note);
+        return top;
+    };
+    auto heldVelocity = [&] (int ch, int nn)
+    {
+        for (const auto& h : harmHeld)
+            if (h.channel == ch && h.note == nn)
+                return h.velocity;
+        return 100;
+    };
+
     // --- Host events: input filter, held tracking, pass-through -------------
     for (const auto meta : incoming)
     {
@@ -491,35 +640,57 @@ void Engine::process (juce::MidiBuffer& midi,
             if (! inputAccepts (cfg.inChannelMask, m.getChannel()))
                 continue;
 
-            held[(size_t) m.getNoteNumber()] = true;
+            const int nn  = m.getNoteNumber();
+            const int ch  = m.getChannel();
+            const int vel = m.getVelocity();
+            held[(size_t) nn] = true;
             if (! swallowHostNotes)
             {
-                // Pitch is decided by the moment the note will sound (the
-                // quantize target), so a deferred note lands on the
-                // progression step in force when it plays, not when it was
-                // played.
-                const int target = quantActive ? quantTarget (s) : s;
-                const int p = mapPitch (m.getNoteNumber(), root, scaleIndex,
-                                        progIndexAt (target), cfg);
-                // Mirror's Limit mode can drop the note; nothing is emitted and
-                // no activePass entry is booked, so the later note-off simply
-                // finds no match and releases nothing (no hang).
-                if (p < 0)
-                    continue;
-                forEachOutChannel (cfg.outChannelMask, m.getChannel(), [&] (int ch)
+                // The Harmonizer (when present) stacks a chord on the note; its
+                // Mode decides how simultaneous held notes interact. Pitch,
+                // Quantize deferral and echoes are all handled inside
+                // emitHostNote/emitHostTone (a note without a Harmonizer is just
+                // its bass tone).
+                if (cfg.hasHarmonizer)
                 {
-                    if (quantActive)
+                    switch (cfg.harmMode)
                     {
-                        pendingQuant.push_back ({ p, ch, m.getVelocity(),
-                                                  target, s, -1,
-                                                  m.getNoteNumber(), m.getChannel(), true });
-                        return;
+                        case ModuleOptions::kHarmReplace:
+                            // Monophonic: cut the previous note and its stack,
+                            // then harmonise the new note alone.
+                            releaseHarmChannel (ch, s);
+                            emitHostNote (nn, ch, vel, s, true);
+                            break;
+                        case ModuleOptions::kHarmTop:
+                        {
+                            // Harmonise only the highest held note. A new note at
+                            // or above the current top takes the harmony (the old
+                            // top loses its voices, keeps its bass); a lower note
+                            // passes through dry.
+                            const int oldTop = topHeldNote (ch);   // before nn joins
+                            if (oldTop < 0 || nn > oldTop)
+                            {
+                                if (oldTop >= 0)
+                                    releaseHarmVoices (oldTop, ch, s);
+                                emitHostNote (nn, ch, vel, s, true);
+                            }
+                            else
+                                emitHostNote (nn, ch, vel, s, false);
+                            break;
+                        }
+                        default:   // kHarmAdd
+                            emitHostNote (nn, ch, vel, s, true);
+                            break;
                     }
-                    midi.addEvent (juce::MidiMessage::noteOn (ch, p, (juce::uint8) m.getVelocity()), s);
-                    activePass.push_back ({ m.getNoteNumber(), m.getChannel(), p, ch });
-                    scheduleEcho (p, ch, m.getVelocity(), s);
-                });
+                }
+                else
+                {
+                    emitHostNote (nn, ch, vel, s, false);
+                }
             }
+            // Track the held key for the Harmonizer's Mode logic (after the
+            // on-logic above, which reads the pre-existing held set).
+            harmHeld.push_back ({ ch, nn, vel });
         }
         else if (m.isNoteOff())
         {
@@ -544,6 +715,27 @@ void Engine::process (juce::MidiBuffer& midi,
                 if (q.fromHost && q.gateSamples < 0
                     && q.inNote == m.getNoteNumber() && q.inChannel == m.getChannel())
                     q.gateSamples = juce::jmax (1, s - q.arrivalOffset);
+
+            // Harmonizer bookkeeping: drop the released key. In Top mode, if the
+            // released note was the top, promote the new highest held note —
+            // give it the harmony the old top gave up (a re-trigger of its
+            // voices at the release point). The old top's own voices were just
+            // released by the activePass loop above.
+            for (auto it = harmHeld.begin(); it != harmHeld.end(); ++it)
+                if (it->channel == m.getChannel() && it->note == m.getNoteNumber())
+                {
+                    harmHeld.erase (it);
+                    break;
+                }
+            if (cfg.hasHarmonizer && cfg.harmMode == ModuleOptions::kHarmTop
+                && ! swallowHostNotes)
+            {
+                const int ch      = m.getChannel();
+                const int newTop  = topHeldNote (ch);
+                if (newTop >= 0 && m.getNoteNumber() > newTop)
+                    for (int v : harmVoicesRaw (newTop))
+                        emitHostTone (v, newTop, ch, heldVelocity (ch, newTop), s, true);
+            }
         }
         else if (m.getChannel() > 0)
         {
@@ -963,7 +1155,7 @@ void Engine::process (juce::MidiBuffer& midi,
             if (q.gateSamples >= 0)
                 activeGen.push_back ({ q.note, q.channel, q.samplesUntil + q.gateSamples });
             else
-                activePass.push_back ({ q.inNote, q.inChannel, q.note, q.channel });
+                activePass.push_back ({ q.inNote, q.inChannel, q.note, q.channel, q.harmVoice });
             scheduleEcho (q.note, q.channel, q.velocity, at);
             q.velocity = 0;   // mark as fired for the sweep below
         }

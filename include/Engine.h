@@ -108,6 +108,25 @@
 //               note is simply not emitted (mapPitch returns -1) and books no
 //               note-off, so nothing hangs; note-ons and note-offs map alike, so
 //               a surviving note always releases what it sounded.
+//   - Harmonizer: stacks a chord on each played host note — the Chord
+//               generator's voicing brain, driven by the note you play instead
+//               of a fixed degree. The played note is the bass and passes
+//               through as usual; the extra voices (harmType/harmInversion, in
+//               harmRoot/harmScale — diatonic scale degrees, or fixed chromatic
+//               intervals with the scale Off) are emitted alongside it, sharing
+//               its note-on and note-off, so they are pure additions with no
+//               latency. Each voice runs through the same pitch chain (Scale,
+//               Progression, Shift, Mirror) and Quantize/Delay as the played
+//               note. Mode picks how simultaneous held notes are handled: Add
+//               harmonises every held note; Replace keeps only the newest
+//               (cutting the previous note and its stack — monophonic); Top
+//               harmonises only the highest held note and passes the rest
+//               through, re-harmonising the new highest when the top is
+//               released. Acts on played input only (like the Arp): while an Arp
+//               is swallowing the host notes the Harmonizer has nothing to work
+//               on. The added voices are ordinary pass-through notes (tracked in
+//               activePass), so a transport stop or the module's removal needs
+//               no special flush — the eventual note-offs release them.
 //   - Delay:    every note-on leaving the chain (pass-through and generated
 //               alike) schedules an echo one delay time (`delayTimeQn`) later
 //               at `delayFeedback` times its velocity, which in turn schedules
@@ -200,6 +219,7 @@ public:
         bool hasProgression = false;
         bool hasShift       = false;
         bool hasMirror      = false;
+        bool hasHarmonizer  = false;
         bool hasDelay       = false;
         bool hasStrum       = false;
         bool hasMidiIn      = false;
@@ -306,6 +326,20 @@ public:
         int mirrorScale  = -1;
         int mirrorRoot   = -1;
 
+        // Harmonizer settings. Stacks a chord on each played (host) note-on: the
+        // note is the bass, harmType/harmInversion choose the voices above it
+        // (harmType <= kHarm6th uses diatonic scale-degree stacking in
+        // harmRoot/harmScale; kHarmOctave/kHarmOctaveFifth fold in the octaver).
+        // harmScale == kScaleOff switches to fixed chromatic intervals.
+        // harmMode (kHarmAdd/Replace/Top) decides how simultaneous held notes
+        // are treated. -1 root/scale = follow the global value, like the other
+        // pitch modules.
+        int harmType      = 0;
+        int harmInversion = 0;
+        int harmMode      = 0;   // ModuleOptions::kHarmAdd/Replace/Top
+        int harmScale     = -1;
+        int harmRoot      = -1;
+
         // Delay settings. delayScale/delayRoot follow the same model as Shift:
         // the per-echo shift moves in scale degrees with a scale active, in
         // chromatic semitones when the scale is Off (-2).
@@ -361,8 +395,8 @@ public:
         {
             return hasArp || hasRandom || hasScaleGen || hasLfo || hasChord
                 || hasDrone || hasQuantize || hasScaleMod || hasProgression
-                || hasShift || hasMirror || hasDelay || hasStrum || hasHumanize
-                || hasMidiIn || hasOutput;
+                || hasShift || hasMirror || hasHarmonizer || hasDelay || hasStrum
+                || hasHumanize || hasMidiIn || hasOutput;
         }
     };
 
@@ -408,9 +442,18 @@ private:
     // Host notes that passed through, remembered as (incoming -> emitted) so the
     // incoming note-off can release exactly what was emitted, whatever the
     // config says by then. One entry per emitted copy (an Output fan-out emits
-    // several per incoming note).
-    struct PassNote { int inNote; int inChannel; int outNote; int outChannel; };
+    // several per incoming note). `harmVoice` marks a Harmonizer-added voice (as
+    // opposed to the played note itself), so Top mode can drop a note's voices
+    // while keeping its root sounding.
+    struct PassNote { int inNote; int inChannel; int outNote; int outChannel; bool harmVoice = false; };
     std::vector<PassNote> activePass;
+
+    // Host keys currently held, with the velocity they were struck at — the
+    // Harmonizer's Mode logic needs this (Replace finds the note to cut, Top
+    // finds the highest held note and its velocity when promoting it). Mirrors
+    // `held` above, which is only a bool per pitch.
+    struct HarmHeldNote { int channel; int note; int velocity; };
+    std::vector<HarmHeldNote> harmHeld;
 
     // Echoes the Delay has scheduled but not yet sounded. `samplesUntil` is
     // relative to the current block's start and is decremented as blocks pass;
@@ -434,7 +477,7 @@ private:
     {
         int note; int channel; int velocity;
         int samplesUntil; int arrivalOffset; int gateSamples;
-        int inNote; int inChannel; bool fromHost;
+        int inNote; int inChannel; bool fromHost; bool harmVoice = false;
     };
     std::vector<QuantNote> pendingQuant;
 

@@ -274,6 +274,57 @@ namespace ModuleOptions
         return names;
     }
 
+    // Harmonizer: the Chord generator's stacking, driven by the played note
+    // instead of a fixed degree. The played note is always the bass; these are
+    // the voices added above it. The first six types reuse chordTypeDegrees
+    // (scale-degree stacking, diatonic in the module's Root/Scale); the last two
+    // fold in the classic octaver (Octave = +1 octave, Octave+5th = fifth +
+    // octave). With Scale = Off the module stacks fixed chromatic intervals
+    // instead (see harmonizerChromaticIntervals) so it harmonises any input.
+    inline const juce::StringArray& harmonizerTypeNames()
+    {
+        static const juce::StringArray names { "Triad", "7th", "Sus2", "Sus4",
+                                               "5th", "6th", "Octave", "Octave+5th" };
+        return names;
+    }
+
+    constexpr int kHarm6th         = 5;   // last of the scale-degree chord types
+    constexpr int kHarmOctave      = 6;
+    constexpr int kHarmOctaveFifth = 7;
+
+    // Chromatic (Scale = Off) interval sets, in semitones from the played note
+    // (index 0 = the note itself). One per harmonizerTypeNames() entry, so the
+    // module harmonises out-of-key input consistently.
+    inline const std::vector<int>& harmonizerChromaticIntervals (int index)
+    {
+        static const std::vector<std::vector<int>> kIv = {
+            { 0, 4, 7 },       // Triad (major)
+            { 0, 4, 7, 10 },   // 7th (dominant)
+            { 0, 2, 7 },       // Sus2
+            { 0, 5, 7 },       // Sus4
+            { 0, 7 },          // 5th (power chord)
+            { 0, 4, 7, 9 },    // 6th
+            { 0, 12 },         // Octave
+            { 0, 7, 12 }       // Octave+5th
+        };
+        return kIv[(size_t) juce::jlimit (0, (int) kIv.size() - 1, index)];
+    }
+
+    // Harmonizer Mode — how simultaneous held notes are treated. Add harmonises
+    // every held note independently (thicken); Replace keeps only the newest
+    // note sounding, cutting the previous note and its stack (a monophonic
+    // harmoniser); Top harmonises only the highest held note and passes the rest
+    // through un-harmonised (solo over a held chord).
+    inline const juce::StringArray& harmonizerModeNames()
+    {
+        static const juce::StringArray names { "Add", "Replace", "Top" };
+        return names;
+    }
+
+    constexpr int kHarmAdd     = 0;
+    constexpr int kHarmReplace = 1;
+    constexpr int kHarmTop     = 2;
+
     // Drone voicings. The 5th is the pitch a perfect fifth up snapped into the
     // scale (so e.g. Locrian holds its diminished fifth); the triad stacks
     // scale degrees like the Chord generator.
@@ -497,4 +548,14 @@ struct ModuleSettings
     // default raises both to 4 bars.
     int holdLength = ModuleOptions::kBarsOneBar;
     int holdRepeat = ModuleOptions::kRepeatOneBar;
+
+    // Harmonizer only: the chord it stacks on each played note (Type +
+    // Inversion, borrowing the Chord generator's lists) and how it treats
+    // simultaneous held notes (Mode). Its Root/Scale come from the shared
+    // rootOverride/scaleOverride (scaleOverride carries the Off sentinel, which
+    // switches from diatonic scale-degree stacking to fixed chromatic
+    // intervals). No time base of its own — it rides each note's own timing.
+    int harmType      = 0;   // index into harmonizerTypeNames()
+    int harmInversion = 0;   // index into chordInversionNames()
+    int harmMode      = ModuleOptions::kHarmAdd;   // Add / Replace / Top
 };

@@ -60,6 +60,7 @@ private:
     void openProgressionDialog (ModuleComponent& node);
     void openShiftDialog (ModuleComponent& node);
     void openMirrorDialog (ModuleComponent& node);
+    void openHarmonizerDialog (ModuleComponent& node);
     void openDelayDialog (ModuleComponent& node);
     void openStrumDialog (ModuleComponent& node);
     void openHumanizeDialog (ModuleComponent& node);
@@ -74,6 +75,7 @@ private:
     static juce::String chordSublabel (const ModuleSettings& settings);
     static juce::String droneSublabel (const ModuleSettings& settings);
     static juce::String strumSublabel (const ModuleSettings& settings);
+    static juce::String harmonizerSublabel (const ModuleSettings& settings);
 
     // Shared dialog controls, one add/read pair per shared setting (see
     // modules.md "Shared settings"). Every dialog builds its combos through

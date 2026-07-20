@@ -10,9 +10,9 @@ phases. File references are relative to the repo root; headers live in
 
 A JUCE MIDI-effect plugin (VST3 + Standalone, Linux build only so far). The
 editor shows a menu bar (global root / scale + theme switch), a canvas that
-modules can be dragged onto from a palette of sixteen (generators Random,
+modules can be dragged onto from a palette of seventeen (generators Random,
 Scale, LFO, Chord, and Drone, modulators Arp, Quantize, Scale, Progression,
-Shift, Mirror, Delay, Strum, and Humanize, I/O modules MIDI In and Output), and an engine that actually runs
+Shift, Mirror, Harmonizer, Delay, Strum, and Humanize, I/O modules MIDI In and Output), and an engine that actually runs
 those modules — but as a fixed implicit chain, because there is no port
 wiring yet. The I/O modules carry a per-module MIDI channel; every other
 module carries full settings (drawn from the shared settings pool —
@@ -66,7 +66,7 @@ real double-click dialogs.
   a thin menu bar echoing the global one (three slots — Root, Scale, and a Rate
   or Length combo, unused slots left blank), a 3x2 grid of combo/dial cells
   (labels above, Little Arp Monster section-box sizing; dials for knob-friendly
-  values like octaves/gate), and an action-button row. All sixteen modules are
+  values like octaves/gate), and an action-button row. All seventeen modules are
   on it, routing shared settings through `Canvas`'s `ModuleWindow` helper pairs.
   For a module whose body the six cells can't hold, `setCustomBody` swaps the
   grid for a caller-supplied component and sizes the panel to it, keeping the
@@ -212,6 +212,22 @@ semantics) is at the top of `Engine.h`. Summary:
   reflects it once back across the nearest edge then clamps. Mirror is the one
   pitch stage that can drop a note, so all three `mapPitch` call sites (host
   pass-through, generated notes, the Drone's held tones) skip a -1 result.
+- The Harmonizer is not part of `mapPitch` — it changes the note *count*, so it
+  sits at the front of the host-note path (`emitHostNote`/`emitHostTone` in
+  `Engine::process`): a played note-on emits its own pitch as the bass plus the
+  stacked voices (`harmVoicesRaw` — diatonic scale-degree stacking in its
+  Root/Scale, or fixed chromatic intervals with the scale Off; the octaver types
+  add an octave/fifth), and every tone then runs through the same `mapPitch`
+  chain and Quantize/Delay path as any host note. It acts on host input only
+  (like the Arp, and swallowed alongside it), so it touches neither generated
+  notes nor the Drone's held tones. The added voices are ordinary `activePass`
+  entries tagged `harmVoice`, so a played note's own note-off releases the whole
+  stack and no transport-stop or removal flush is needed. Mode (Add/Replace/Top)
+  is bookkeeping over the held-key set (`harmHeld`, which carries the velocity
+  `held`'s bool array lacks): Replace cuts the sounding channel before the new
+  note (`releaseHarmChannel`), Top harmonises only the highest held note,
+  moving the voices (`releaseHarmVoices` + a re-trigger on note-off) as the top
+  changes.
 - Quantize is the second stateful time modulator: while playing, every
   note-on leaving the chain is deferred to the next point of its rate grid
   (`pendingQuant`), with swing pushing odd grid points late by swing/2 of a
@@ -299,11 +315,13 @@ shared `ModuleSettings` blob (used by every other type), each edited via a
 real settings dialog in `Canvas` (`openChannelDialog`, `openArpDialog`,
 `openRandomDialog`, `openScaleGenDialog`, `openLfoDialog`,
 `openQuantizeDialog`, `openScaleModDialog`, `openProgressionDialog`,
-`openShiftDialog`, `openMirrorDialog`, `openDelayDialog`, `openStrumDialog`,
+`openShiftDialog`, `openMirrorDialog`, `openHarmonizerDialog`,
+`openDelayDialog`, `openStrumDialog`,
 `openHumanizeDialog`, `openChordDialog`, `openDroneDialog`),
 reflected in a node sublabel (channel, rate, Shift's signed amount, the
 Scale modulator's scale, the Progression's degrees, the Chord's degree +
-type, the Drone's voicing, or the Strum's spread in ms), and persisted with the
+type, the Drone's voicing, the Strum's spread in ms, or the Harmonizer's chord
+type), and persisted with the
 canvas state. The dialogs
 build their controls through `Canvas`'s shared add/read helper pairs
 (root+scale, rate, repeat, mode, octaves, gate, hold length+repeat) so a shared setting is the
@@ -313,7 +331,7 @@ choice parameters ("Global" prepended), so they can't drift from the menu
 bar; Shift's dialog inserts its extra "Off" entry into that same list.
 
 The settings UI is fully on the structured `ModuleWindow` (see the component
-map) for all sixteen modules. Each `open*Dialog` builds a `ModuleWindow` via
+map) for all seventeen modules. Each `open*Dialog` builds a `ModuleWindow` via
 `editor.showModuleWindow`, fills the menu bar (Root / Scale / Rate-or-Length)
 and grid cells through `Canvas`'s `ModuleWindow` helper pairs, and reads the
 controls back by name (`getComboSelectedIndex` / `getDialValue`) on OK. Modules

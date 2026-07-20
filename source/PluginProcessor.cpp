@@ -136,6 +136,7 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.hasProgression  = engHasProgression.load();
     cfg.hasShift        = engHasShift.load();
     cfg.hasMirror       = engHasMirror.load();
+    cfg.hasHarmonizer   = engHasHarmonizer.load();
     cfg.hasDelay        = engHasDelay.load();
     cfg.hasStrum        = engHasStrum.load();
     cfg.hasMidiIn       = engHasMidiIn.load();
@@ -224,6 +225,12 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     cfg.delayScale    = engDelayScale.load();
     cfg.delayRoot     = engDelayRoot.load();
 
+    cfg.harmType      = engHarmType.load();
+    cfg.harmInversion = engHarmInversion.load();
+    cfg.harmMode      = engHarmMode.load();
+    cfg.harmScale     = engHarmScale.load();
+    cfg.harmRoot      = engHarmRoot.load();
+
     cfg.strumSpreadSec = ModuleOptions::strumSpreadSeconds (engStrumSpread.load());
     cfg.strumMode      = engStrumMode.load();
     cfg.strumCurve     = engStrumCurve.load();
@@ -293,7 +300,8 @@ void CurrentAudioProcessor::refreshEngineConfig()
     bool arp = false, rnd = false, scaleGen = false, lfo = false;
     bool chord = false, drone = false;
     bool quant = false, scaleMod = false, progression = false;
-    bool shift = false, mirror = false, delay = false, strum = false, humanize = false;
+    bool shift = false, mirror = false, harmonizer = false;
+    bool delay = false, strum = false, humanize = false;
     bool midiIn = false, output = false;
     std::uint16_t inMask = 0, outMask = 0;
 
@@ -433,6 +441,17 @@ void CurrentAudioProcessor::refreshEngineConfig()
                 }
                 mirror = true;
                 break;
+            case ModuleType::Harmonizer:
+                if (! harmonizer)
+                {
+                    engHarmType.store (m.settings.harmType);
+                    engHarmInversion.store (m.settings.harmInversion);
+                    engHarmMode.store (m.settings.harmMode);
+                    engHarmScale.store (m.settings.scaleOverride);
+                    engHarmRoot.store (m.settings.rootOverride);
+                }
+                harmonizer = true;
+                break;
             case ModuleType::Delay:
                 if (! delay)
                 {
@@ -494,6 +513,7 @@ void CurrentAudioProcessor::refreshEngineConfig()
     engHasProgression.store (progression);
     engHasShift.store (shift);
     engHasMirror.store (mirror);
+    engHasHarmonizer.store (harmonizer);
     engHasDelay.store (delay);
     engHasStrum.store (strum);
     engHasHumanize.store (humanize);
@@ -638,7 +658,8 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
             || m.type == ModuleType::Lfo || m.type == ModuleType::ScaleMod
             || m.type == ModuleType::Progression || m.type == ModuleType::Chord
             || m.type == ModuleType::Drone || m.type == ModuleType::Shift
-            || m.type == ModuleType::Mirror || m.type == ModuleType::Delay)
+            || m.type == ModuleType::Mirror || m.type == ModuleType::Harmonizer
+            || m.type == ModuleType::Delay)
         {
             node.setProperty ("root",  m.settings.rootOverride, nullptr);
             node.setProperty ("scale", m.settings.scaleOverride, nullptr);
@@ -722,6 +743,13 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         {
             node.setProperty ("holdLength", m.settings.holdLength, nullptr);
             node.setProperty ("holdRepeat", m.settings.holdRepeat, nullptr);
+        }
+        if (m.type == ModuleType::Harmonizer)
+        {
+            // root/scale ride the shared block above (Off = chromatic stacking).
+            node.setProperty ("harmType",      m.settings.harmType, nullptr);
+            node.setProperty ("harmInversion", m.settings.harmInversion, nullptr);
+            node.setProperty ("harmMode",      m.settings.harmMode, nullptr);
         }
         if (m.type == ModuleType::Strum)
         {
@@ -824,6 +852,9 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             m.settings.strumCurve     = (int) node.getProperty ("strumCurve", def.strumCurve);
             m.settings.strumVelTilt   = (int) node.getProperty ("strumVelTilt", def.strumVelTilt);
             m.settings.strumJitter    = (int) node.getProperty ("strumJitter", def.strumJitter);
+            m.settings.harmType       = (int) node.getProperty ("harmType", def.harmType);
+            m.settings.harmInversion  = (int) node.getProperty ("harmInversion", def.harmInversion);
+            m.settings.harmMode       = (int) node.getProperty ("harmMode", def.harmMode);
 
             moduleList.push_back (m);
         }

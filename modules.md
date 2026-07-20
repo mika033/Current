@@ -469,6 +469,58 @@ User settings:
 - Bounds — Limit (drop out-of-window notes) or Mirror (fold them back inside);
   default Mirror, so nothing is silently dropped out of the box.
 
+### Harmonizer (modulator)
+
+Harmonizer turns each note you play into a chord: it takes the played note as
+the bass and stacks extra voices on top, so a single-finger line comes out as
+block chords. It is the Chord generator's voicing brain, but driven by what you
+play instead of a fixed degree — where the Chord generator asks "which degree of
+the key?", the Harmonizer just harmonises whatever note arrives. It is purely
+additive and rides the input's own timing: every added voice starts and stops
+with the note that spawned it, so there is no window, no rate, and no added
+latency.
+
+The stack stays diatonic to the module's Root/Scale — the played note is read as
+a scale degree and the added voices are the scale tones above it (play E in C
+major → E–G–B). With **Scale = Off** it stacks fixed chromatic intervals instead
+(a Triad is always a major triad in semitones), so it harmonises anything
+regardless of key. Type picks the shape — Triad (default), 7th, Sus2, Sus4, 5th,
+6th, plus **Octave** and **Octave+5th** (the classic octaver folded in as chord
+types) — and Inversion re-voices the harmony, lifting its lowest voices an octave
+while the played note stays the bass. Each added voice runs through the rest of
+the pitch chain (Scale, Progression, Shift, Mirror) and Quantize/Delay exactly
+like the played note, so downstream modules see the whole chord.
+
+**Mode** decides what happens when you hold more than one note at once:
+
+- **Add** (default) — every held note gets its own stack. Play a chord in and
+  each note is harmonised independently: the way to thicken a pad or voice block
+  chords. Polyphony climbs fast (a four-note chord on a Triad is twelve voices).
+- **Replace** — only the newest note is harmonised; playing a new note cuts the
+  previous note and its whole stack. A monophonic harmoniser — the clean choice
+  for a single melodic line. (No fall-back to still-held older notes: releasing
+  the current note simply stops it.)
+- **Top** — only the highest held note is harmonised; everything below it passes
+  through untouched. Hold a chord and play a melody above it and only the melody
+  grows the harmony. Releasing the top note re-harmonises whatever note is now
+  highest.
+
+Because a Harmonizer acts on played input (like the Arp), it does nothing while
+an Arp on the canvas is consuming the host notes — until wiring lands, only one
+of the two owns the played input at a time. The added voices are ordinary
+pass-through notes, so removing the module or stopping the transport never leaves
+one hanging — each voice is released by its played note's own note-off. The node
+shows the chord Type.
+
+User settings:
+
+- Root — Global (default) or C to B; the reference for the diatonic stack.
+- Scale — Global (default), Off (chromatic stacking), or any scale from the
+  global list.
+- Type — Triad (default), 7th, Sus2, Sus4, 5th, 6th, Octave, or Octave+5th.
+- Inversion — Root (default), 1st, or 2nd; lifts the lowest voices an octave.
+- Mode — Add (default), Replace, or Top; how simultaneous held notes are treated.
+
 ### Delay (modulator)
 
 Delay repeats every note that passes it as a fading echo chain — the classic
@@ -619,11 +671,8 @@ open details, where any, are flagged.
 - **Step Sequencer** — the user draws a fixed melodic pattern in a mini piano
   roll and the module plays it in a loop. The grid UI should follow the shared
   `design/grid-interaction.md` conventions.
-### Modulators — pitch
-
-- **Harmonizer** — turns single notes into chords, with one selectable chord
-  type. Octave-spreading (the classic octaver) is folded in as chord-type
-  choices rather than a separate module.
+(The Harmonizer — single notes into chords — is now implemented; see its entry
+under "Implemented modules" above.)
 
 ### Modulators — time and rhythm
 

@@ -127,7 +127,7 @@ private:
                       engHasChord { false }, engHasDrone { false },
                       engHasQuantize { false }, engHasScaleMod { false },
                       engHasProgression { false }, engHasShift { false },
-                      engHasMirror { false },
+                      engHasMirror { false }, engHasHarmonizer { false },
                       engHasDelay { false }, engHasStrum { false },
                       engHasMidiIn { false }, engHasOutput { false };
     std::atomic<std::uint16_t> engInChannelMask { 0xffff }, engOutChannelMask { 0 };
@@ -196,6 +196,13 @@ private:
                      engDelayShift { 0 },
                      engDelayScale { ModuleOptions::kScaleGlobal },
                      engDelayRoot { ModuleOptions::kScaleGlobal };
+    // Harmonizer: chord Type + Inversion (Chord generator's lists) + Mode
+    // (Add/Replace/Top) + the shared root/scale (Off = chromatic stacking).
+    std::atomic<int> engHarmType { 0 },
+                     engHarmInversion { 0 },
+                     engHarmMode { ModuleOptions::kHarmAdd },
+                     engHarmScale { ModuleOptions::kScaleGlobal },
+                     engHarmRoot { ModuleOptions::kScaleGlobal };
     // Strum: spread (0..10 -> ms) + Direction (shared mode) + curve + signed
     // velocity tilt + jitter + Repeat (shared repeat list). Reuses the shared
     // mode/repeat semantics but publishes them on its own atomics.

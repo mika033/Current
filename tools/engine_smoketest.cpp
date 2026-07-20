@@ -1506,6 +1506,161 @@ int main()
         }
     }
 
+    // --- 16c. Harmonizer: stacks a chord on the played note, modes, balance --
+    {
+        // Add mode, Triad in C major: playing C4 (60) yields C4 + E4 + G4, and
+        // releasing the key releases all three (no hang).
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasHarmonizer = true;
+        cfg.harmType      = 0;   // Triad
+        cfg.harmMode      = ModuleOptions::kHarmAdd;
+        juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::noteOn  (1, 60, (juce::uint8) 100), 0);
+        midi.addEvent (juce::MidiMessage::noteOff (1, 60), 256);
+        e.process (midi, block, playing (false), 0, 0, cfg);
+        std::vector<int> ons, offs;
+        for (const auto meta : midi)
+        {
+            const auto m = meta.getMessage();
+            if (m.isNoteOn())  ons.push_back (m.getNoteNumber());
+            if (m.isNoteOff()) offs.push_back (m.getNoteNumber());
+        }
+        std::sort (ons.begin(), ons.end());
+        std::sort (offs.begin(), offs.end());
+        check (ons == std::vector<int> { 60, 64, 67 },
+               "Harmonizer Add: C4 triad in C major = C4 E4 G4");
+        check (offs == std::vector<int> { 60, 64, 67 },
+               "Harmonizer Add: releasing the key releases the whole stack (no hang)");
+    }
+    {
+        // Scale Off = fixed chromatic intervals: a Triad on C# (61) is a major
+        // triad in semitones, C#-F-G# (61, 65, 68), regardless of key.
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasHarmonizer = true;
+        cfg.harmType      = 0;   // Triad
+        cfg.harmScale     = ModuleOptions::kScaleOff;
+        auto midi = noteOnBuf (61);
+        e.process (midi, block, playing (false), 0, 0, cfg);
+        std::vector<int> ons;
+        for (const auto meta : midi)
+            if (meta.getMessage().isNoteOn()) ons.push_back (meta.getMessage().getNoteNumber());
+        std::sort (ons.begin(), ons.end());
+        check (ons == std::vector<int> { 61, 65, 68 },
+               "Harmonizer Scale=Off stacks fixed chromatic intervals on any note");
+    }
+    {
+        // Replace mode (Octave type): a new note cuts the previous note and its
+        // stack. Play C4 (-> C4 C5), then C3 (-> cut C4/C5, sound C3 C4).
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasHarmonizer = true;
+        cfg.harmType      = ModuleOptions::kHarmOctave;
+        cfg.harmMode      = ModuleOptions::kHarmReplace;
+        int on = 0, off = 0;
+        auto pump = [&] (juce::MidiBuffer&& in, std::vector<int>* onsOut, std::vector<int>* offsOut)
+        {
+            juce::MidiBuffer midi (in);
+            e.process (midi, block, playing (false), 0, 0, cfg);
+            for (const auto meta : midi)
+            {
+                const auto m = meta.getMessage();
+                if (m.isNoteOn())  { ++on;  if (onsOut)  onsOut->push_back (m.getNoteNumber()); }
+                if (m.isNoteOff()) { ++off; if (offsOut) offsOut->push_back (m.getNoteNumber()); }
+            }
+        };
+        std::vector<int> b1, b2offs, b2ons;
+        pump (noteOnBuf (60), &b1, nullptr);
+        std::sort (b1.begin(), b1.end());
+        check (b1 == std::vector<int> { 60, 72 }, "Harmonizer Replace: first note sounds with its octave");
+        pump (noteOnBuf (48), &b2ons, &b2offs);
+        std::sort (b2offs.begin(), b2offs.end());
+        std::sort (b2ons.begin(), b2ons.end());
+        check (b2offs == std::vector<int> { 60, 72 },
+               "Harmonizer Replace: a new note cuts the previous note and its stack");
+        check (b2ons == std::vector<int> { 48, 60 },
+               "Harmonizer Replace: the new note sounds with its own stack");
+        // Release both keys, then check nothing hung (the cut C4's off finds no
+        // match and is harmless).
+        {
+            juce::MidiBuffer in;
+            in.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
+            in.addEvent (juce::MidiMessage::noteOff (1, 48), 0);
+            pump (std::move (in), nullptr, nullptr);
+        }
+        check (on == off, "Harmonizer Replace: balanced after release (no hang)");
+    }
+    {
+        // Top mode (Octave type): only the highest held note is harmonised.
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasHarmonizer = true;
+        cfg.harmType      = ModuleOptions::kHarmOctave;
+        cfg.harmMode      = ModuleOptions::kHarmTop;
+        int on = 0, off = 0;
+        auto pump = [&] (juce::MidiBuffer&& in, std::vector<int>* onsOut, std::vector<int>* offsOut)
+        {
+            juce::MidiBuffer midi (in);
+            e.process (midi, block, playing (false), 0, 0, cfg);
+            for (const auto meta : midi)
+            {
+                const auto m = meta.getMessage();
+                if (m.isNoteOn())  { ++on;  if (onsOut)  onsOut->push_back (m.getNoteNumber()); }
+                if (m.isNoteOff()) { ++off; if (offsOut) offsOut->push_back (m.getNoteNumber()); }
+            }
+        };
+        std::vector<int> b1, b2ons, b2offs, b3ons, b3offs, b4ons;
+        pump (noteOnBuf (60), &b1, nullptr);   // 60 top -> 60, 72
+        std::sort (b1.begin(), b1.end());
+        check (b1 == std::vector<int> { 60, 72 }, "Harmonizer Top: the first note is the top and is harmonised");
+        pump (noteOnBuf (64), &b2ons, &b2offs); // 64 new top: 60 loses its voice (off 72), 64 -> 64, 76
+        std::sort (b2ons.begin(), b2ons.end());
+        check (b2offs == std::vector<int> { 72 },
+               "Harmonizer Top: the old top loses its voices when a higher note arrives");
+        check (b2ons == std::vector<int> { 64, 76 },
+               "Harmonizer Top: the new highest note takes the harmony");
+        // A note below the top passes through dry (just itself, no voice, no off).
+        pump (noteOnBuf (55), &b3ons, &b3offs);
+        check (b3ons == std::vector<int> { 55 } && b3offs.empty(),
+               "Harmonizer Top: a note below the top passes through un-harmonised");
+        // Release the top (64): 60 becomes the top again and is re-harmonised.
+        {
+            juce::MidiBuffer in; in.addEvent (juce::MidiMessage::noteOff (1, 64), 0);
+            pump (std::move (in), &b4ons, nullptr);
+        }
+        check (b4ons == std::vector<int> { 72 },
+               "Harmonizer Top: releasing the top re-harmonises the next-highest note");
+        // Release the rest; everything must balance.
+        {
+            juce::MidiBuffer in;
+            in.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
+            in.addEvent (juce::MidiMessage::noteOff (1, 55), 0);
+            pump (std::move (in), nullptr, nullptr);
+        }
+        check (on == off, "Harmonizer Top: balanced after all keys released (no hang)");
+    }
+    {
+        // Harmonised voices ride the pitch chain: a Shift after the Harmonizer
+        // transposes the whole stack. Add-mode Octave on C4 (60, 72) + Shift +2
+        // semitones (Scale Off) -> 62, 74.
+        Engine e; e.prepare (sr);
+        Engine::Config cfg;
+        cfg.hasHarmonizer = true;
+        cfg.harmType      = ModuleOptions::kHarmOctave;
+        cfg.hasShift      = true;
+        cfg.shiftAmount   = 2;
+        cfg.shiftScale    = ModuleOptions::kScaleOff;
+        auto midi = noteOnBuf (60);
+        e.process (midi, block, playing (false), 0, 0, cfg);
+        std::vector<int> ons;
+        for (const auto meta : midi)
+            if (meta.getMessage().isNoteOn()) ons.push_back (meta.getMessage().getNoteNumber());
+        std::sort (ons.begin(), ons.end());
+        check (ons == std::vector<int> { 62, 74 },
+               "Harmonizer voices run through the downstream pitch chain (Shift)");
+    }
+
     // --- 17. ScaleTables spot checks -----------------------------------------
     {
         check (ScaleTables::isInScale (60, 0, 0), "C is in C major");

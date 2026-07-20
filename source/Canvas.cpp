@@ -111,6 +111,13 @@ juce::String Canvas::strumSublabel (const ModuleSettings& settings)
     return juce::String (ms) + " ms";
 }
 
+juce::String Canvas::harmonizerSublabel (const ModuleSettings& settings)
+{
+    // The chord type it stacks — the module's headline fact at a glance.
+    return ModuleOptions::harmonizerTypeNames()[juce::jlimit (
+        0, ModuleOptions::harmonizerTypeNames().size() - 1, settings.harmType)];
+}
+
 juce::StringArray Canvas::choicesWithGlobal (const char* paramID) const
 {
     juce::StringArray items { "Global" };
@@ -309,6 +316,8 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
         node->setSublabel (droneSublabel (instance.settings));
     else if (instance.type == ModuleType::Strum)
         node->setSublabel (strumSublabel (instance.settings));
+    else if (instance.type == ModuleType::Harmonizer)
+        node->setSublabel (harmonizerSublabel (instance.settings));
     else if (instance.type == ModuleType::ScaleMod)
         node->setSublabel (scaleModSublabel (instance.settings));
     else if (instance.type == ModuleType::Progression)
@@ -371,6 +380,11 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
         if (n.moduleType() == ModuleType::Mirror)
         {
             openMirrorDialog (n);
+            return;
+        }
+        if (n.moduleType() == ModuleType::Harmonizer)
+        {
+            openHarmonizerDialog (n);
             return;
         }
         if (n.moduleType() == ModuleType::Delay)
@@ -981,6 +995,45 @@ void Canvas::openHumanizeDialog (ModuleComponent& node)
             for (auto& n : nodes)
                 if (n->moduleId() == id)
                     n->setSublabel (rateSublabel (ns));
+        }
+        w->getParentComponent()->removeChildComponent (w);
+        delete w;
+    };
+}
+
+void Canvas::openHarmonizerDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    // A pitch modulator that stacks a chord on each played note. Root/Scale in
+    // the menu bar (Off = chromatic stacking, so it can harmonise any input);
+    // the third menu slot stays blank (it has no time base of its own — it rides
+    // each note's timing). Grid: Type, Inversion, Mode (Add/Replace/Top).
+    auto* win = owner.showModuleWindow ("Harmonizer");
+    addRootScaleMenu (*win, s, true);
+    win->setGridCombo (0, "type", ModuleOptions::harmonizerTypeNames(), s.harmType, "Type");
+    win->setGridCombo (1, "inversion", ModuleOptions::chordInversionNames(),
+                       s.harmInversion, "Inversion");
+    win->setGridCombo (2, "mode", ModuleOptions::harmonizerModeNames(), s.harmMode, "Mode");
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
+
+    // Captures the id, not the node — the node can be deleted or rebuilt while
+    // the window is up (host state restore), so it is re-looked-up on OK.
+    win->onResult = [this, id] (int result, ModuleWindow* w)
+    {
+        if (result == 1)
+        {
+            auto ns = proc.getModuleSettings (id);
+            readRootScaleMenu (*w, ns, true);
+            ns.harmType      = w->getComboSelectedIndex ("type");
+            ns.harmInversion = w->getComboSelectedIndex ("inversion");
+            ns.harmMode      = w->getComboSelectedIndex ("mode");
+            proc.setModuleSettings (id, ns);
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (harmonizerSublabel (ns));
         }
         w->getParentComponent()->removeChildComponent (w);
         delete w;
