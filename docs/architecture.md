@@ -140,7 +140,7 @@ own settings, its own runtime state.
   the Scale combo flips), and `setDialChangeCallback`/`setDialValue` (Mirror's
   Low and High dials push each other so the window can't invert). The design decisions behind
   the window (band-by-band rules, dial readouts, the roads not taken) are
-  written up in `design/module-window.md`.
+  written up in `module-window.md`.
 - `tools/engine_smoketest.cpp` — headless engine test, see Testing below.
 - `tools/audition_smoketest.cpp` — headless end-to-end audition-path test,
   see Testing below.
@@ -393,7 +393,7 @@ read-back lambda.
 Two dialogs use `ModuleWindow::setCustomBody`. `openProgressionDialog` installs
 a `ProgressionStepList` — an arranger-style step row (cells with add/remove
 append arrows, plus Degree/Octave combos for the selected step; see
-`design/module-window.md`); the list holds a working copy of the steps and hands
+`module-window.md`); the list holds a working copy of the steps and hands
 them back with `getSteps()` on every live-apply read, with the menu bar still
 carrying Root / Scale / Length through the usual helpers. `openRhythmizeDialog`
 installs a `RhythmizeStepGrid` (the 16 on/off step boxes, working copy read back
