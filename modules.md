@@ -177,7 +177,7 @@ Root and scale each default to Global — the module follows the menu bar, and
 tracks later menu-bar changes — or can be set locally (root C to B, the same
 scale list as the menu bar). The rate sets the step length from 1/32 to 1/1.
 The range is a pair of MIDI notes (inclusive); when the module is dropped it
-defaults to the root at octave 1 up to the root at octave 3 (C1 to C3 for a C
+defaults to the root at octave 2 up to the root at octave 4 (C2 to C4 for a C
 root). If the range boundaries end up reversed the module swaps them, and if
 the range contains no scale note at all it snaps to the nearest one rather
 than fall silent. The node shows its rate as a sublabel.
@@ -187,9 +187,9 @@ User settings:
 - Root — Global (default) or C to B.
 - Scale — Global (default), Off (draw from all twelve chromatic notes), or any
   scale from the global list.
-- Rate — 1/32 to 1/1 (default 1/16).
+- Rate — 1/32 to 1/1 (default 1/8).
 - Gate — 25%, 50% (default), 75%, or 100% of the step.
-- Range from / to — any MIDI note (default root octave 1 to root octave 3).
+- Range from / to — any MIDI note (default root octave 2 to root octave 4).
 
 ### Scale (generator)
 

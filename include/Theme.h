@@ -32,6 +32,8 @@ namespace CurrentTheme
 
         juce::Colour text;            // body text — labels, combos, buttons
         juce::Colour accent;          // selection ring, popup highlight
+        juce::Colour danger;          // the tray's remove-zone highlight (the ✕
+                                      // badges deliberately use quieter colours)
 
         // Per-family node fills. Colour encodes the module family (see the
         // requirements' visual-encoding note); shape encodes the kind
@@ -56,6 +58,7 @@ namespace CurrentTheme
         juce::Colour (0xff3a3a5c),    // widgetBg
         juce::Colour (0xffc8c8d8),    // text
         juce::Colour (0xff00d4ff),    // accent
+        juce::Colour (0xffff5f5f),    // danger
         juce::Colour (0xff7ed957),    // genFill (green)
         juce::Colour (0xffb87bff),    // modFill (purple)
         juce::Colour (0xff4f9bff),    // ioFill  (blue)
@@ -75,6 +78,7 @@ namespace CurrentTheme
         juce::Colour (0xffffffff),    // widgetBg
         juce::Colour (0xff1f3a5c),    // text
         juce::Colour (0xff2070d0),    // accent
+        juce::Colour (0xffd23f3f),    // danger
         juce::Colour (0xff7ed957),    // genFill (green)
         juce::Colour (0xffb87bff),    // modFill (purple)
         juce::Colour (0xff4f9bff),    // ioFill  (blue)

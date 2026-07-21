@@ -14,8 +14,10 @@ class ModuleWindow;
 // The central drop surface. Modules dragged from the palette land here, can be
 // moved around, and are wired port-to-port: dragging from a node's output port
 // draws a live cable that connects on release over a module with an input
-// port. Cables paint as curves with a flow arrow, can be selected by clicking
-// near them, and Delete removes the selection (cable or node).
+// port. Cables paint as curves with a flow arrow and can be selected by
+// clicking near them. Deletion is touch-first: a selected node/cable shows an
+// ✕ badge, a node dragged onto the palette tray is removed there, and
+// Delete/Backspace still removes the selection from the keyboard.
 // The canvas is the bridge between the on-screen nodes and the processor's
 // model (modules + connections) — it rebuilds its nodes from the model on
 // construction and writes adds/moves/connects back to it; cables are painted
@@ -43,6 +45,12 @@ public:
     void itemDragExit  (const SourceDetails&) override;
     void itemDropped   (const SourceDetails&) override;
 
+    // The drag-a-node-onto-the-tray delete gesture, wired by MainView (which
+    // knows both components): a screen-coords hit-test for the tray, and the
+    // tray's armed/hot remove-zone highlight.
+    std::function<bool (juce::Point<int>)>     isOverRemoveZone;
+    std::function<void (bool armed, bool hot)> setRemoveZoneState;
+
 private:
     // Model replaced behind our back (host state restore) — rebuild the nodes.
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
@@ -51,6 +59,17 @@ private:
     void rebuildFromModel();
     void selectNode (ModuleComponent* node);
     void deleteSelected();
+    // The one node-removal path (✕ badge, tray drop, and Delete key all land
+    // here). request… defers via callAsync — the ✕/tray gestures arrive from
+    // inside the doomed node's own mouse callback.
+    void deleteNode (int id);
+    void requestDeleteNode (int id);
+    // Node-move drag stream, forwarded to the tray remove zone.
+    void nodeDragUpdate (const juce::MouseEvent&);
+    void nodeDragEnd (ModuleComponent&, const juce::MouseEvent&);
+    // The selected cable's ✕ badge (replaces its flow arrow); empty when no
+    // cable is selected. Computed on demand so paint and hit-test can't drift.
+    juce::Rectangle<float> selectedCableBadge() const;
 
     // --- Wiring: the connect gesture and cable rendering --------------------
     // The gesture starts in ModuleComponent (output-port press) and is owned

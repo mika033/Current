@@ -103,6 +103,21 @@ arranger-style step row (see below and `design/module-window.md`). `InlineDialog
 now backs only the generic fallback for a module type that has no dedicated
 window yet.
 
+Canvas/palette UX pass (2026-07): the palette tray was reworked — I/O first
+(catalogue order is display order), per-chip short names
+(`ModuleDescriptor::shortName`: Input / Prog / Harmony where the full name is
+long), full-size chips in a horizontally scrolling Viewport strip (scrollbar on
+the tray's bottom edge; chips no longer shrink with the window), and an
+In/Out / Generators / Modulators filter-checkbox row (per-editor state, not
+persisted). Deletion became touch-first with one shared path
+(`Canvas::deleteNode`): a selected node or cable shows an ✕ badge (node:
+top-right, family-coloured; cable: replaces the flow arrow at the midpoint,
+port-coloured), dragging a node onto the tray removes it (the tray arms/goes
+hot in the theme's new plugin-local `danger` red — the badges deliberately
+stay quiet), the cable tap tolerance is fingertip-sized (12 px), and
+Delete/Backspace still works. Random's drop-time defaults moved to root octave
+2–4 (C2–C4 on a C root) at rate 1/8.
+
 ## Port wiring (IMPLEMENTED 2026-07)
 
 Port wiring — the product's core premise — is in. Modules are connected by

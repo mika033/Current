@@ -334,6 +334,10 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
         repaint();   // the cables track their nodes
     };
 
+    node->onDelete      = [this] (ModuleComponent& n) { requestDeleteNode (n.moduleId()); };
+    node->onNodeDrag    = [this] (const juce::MouseEvent& e) { nodeDragUpdate (e); };
+    node->onNodeDragEnd = [this] (ModuleComponent& n, const juce::MouseEvent& e) { nodeDragEnd (n, e); };
+
     node->onPortDragStart = [this] (ModuleComponent& n, const juce::MouseEvent& e) { beginCableDrag (n, e); };
     node->onPortDrag      = [this] (const juce::MouseEvent& e) { updateCableDrag (e); };
     node->onPortDragEnd   = [this] (const juce::MouseEvent& e) { endCableDrag (e); };
@@ -1163,25 +1167,56 @@ void Canvas::selectNode (ModuleComponent* node)
 
 void Canvas::deleteSelected()
 {
+    if (selectedNode != nullptr)
+        deleteNode (selectedNode->moduleId());
+}
+
+void Canvas::deleteNode (int id)
+{
     // Removes from both the view and the model; the model drops the module's
     // cables with it.
-    if (selectedNode == nullptr)
-        return;
-
-    const int id = selectedNode->moduleId();
-
     for (auto it = nodes.begin(); it != nodes.end(); ++it)
     {
-        if (it->get() == selectedNode)
+        if ((*it)->moduleId() == id)
         {
+            if (selectedNode == it->get())
+                selectedNode = nullptr;
             nodes.erase (it);
             break;
         }
     }
-    selectedNode = nullptr;
 
     proc.removeModule (id);
     repaint();   // the module's cables disappear with it
+}
+
+void Canvas::requestDeleteNode (int id)
+{
+    // Deferred one message-loop tick: the request arrives from inside the
+    // doomed node's own mouse callback, and the component must not die there.
+    juce::Component::SafePointer<Canvas> safe (this);
+    juce::MessageManager::callAsync ([safe, id]
+    {
+        if (safe != nullptr)
+            safe->deleteNode (id);
+    });
+}
+
+void Canvas::nodeDragUpdate (const juce::MouseEvent& e)
+{
+    if (setRemoveZoneState != nullptr && isOverRemoveZone != nullptr)
+        setRemoveZoneState (true, isOverRemoveZone (e.getScreenPosition()));
+}
+
+void Canvas::nodeDragEnd (ModuleComponent& node, const juce::MouseEvent& e)
+{
+    if (setRemoveZoneState != nullptr)
+        setRemoveZoneState (false, false);
+
+    // Releasing with the pointer over the tray deletes the node (the node
+    // itself stays clamped inside the canvas — the pointer is the gesture).
+    if (isOverRemoveZone != nullptr && isOverRemoveZone (e.getScreenPosition()))
+        requestDeleteNode (node.moduleId());
 }
 
 // --- Wiring -------------------------------------------------------------------
@@ -1192,6 +1227,21 @@ ModuleComponent* Canvas::nodeForId (int id) const
         if (n->moduleId() == id)
             return n.get();
     return nullptr;
+}
+
+juce::Rectangle<float> Canvas::selectedCableBadge() const
+{
+    if (! selectedCable.valid)
+        return {};
+
+    auto* fromNode = nodeForId (selectedCable.fromId);
+    auto* toNode   = nodeForId (selectedCable.toId);
+    if (fromNode == nullptr || toNode == nullptr)
+        return {};
+
+    const auto path = cablePath (fromNode->outputPortCentre(), toNode->inputPortCentre());
+    const auto mid  = path.getPointAlongPath (path.getLength() * 0.5f);
+    return juce::Rectangle<float> (24.0f, 24.0f).withCentre (mid);
 }
 
 juce::Path Canvas::cablePath (juce::Point<float> from, juce::Point<float> to) const
@@ -1223,6 +1273,25 @@ void Canvas::paintCables (juce::Graphics& g)
         g.strokePath (path, juce::PathStrokeType (sel ? 3.0f : 2.0f,
                                                   juce::PathStrokeType::curved,
                                                   juce::PathStrokeType::rounded));
+
+        if (sel)
+        {
+            // Selection swaps the flow arrow for an ✕ badge at the midpoint —
+            // tapping it deletes the connection. Port-coloured (the cable's
+            // own neutral), with the canvas colour as the ✕ ink so contrast
+            // holds in both themes.
+            const auto badge = selectedCableBadge();
+            g.setColour (s.port);
+            g.fillEllipse (badge);
+            g.setColour (s.panelBorder);
+            g.drawEllipse (badge, 1.0f);
+
+            g.setColour (s.canvasBg);
+            const auto cross = badge.reduced (badge.getWidth() * 0.32f);
+            g.drawLine ({ cross.getTopLeft(), cross.getBottomRight() }, 2.0f);
+            g.drawLine ({ cross.getTopRight(), cross.getBottomLeft() }, 2.0f);
+            continue;
+        }
 
         // Flow arrow at the cable's midpoint (the requirements' signal-
         // direction cue), oriented along the curve.
@@ -1330,8 +1399,20 @@ void Canvas::resized() {}
 
 void Canvas::mouseDown (const juce::MouseEvent& e)
 {
+    // The selected cable's ✕ badge eats the tap first — it can overlap other
+    // cables, and it is the touch path to deleting the connection.
+    if (selectedCable.valid
+        && selectedCableBadge().expanded (4.0f).contains (e.position))
+    {
+        proc.removeConnection (selectedCable.fromId, selectedCable.toId);
+        selectedCable = {};
+        repaint();
+        return;
+    }
+
     // A click near a cable selects it (checked before the empty-canvas
-    // deselect, since cables live on the canvas background).
+    // deselect, since cables live on the canvas background). The tolerance is
+    // fingertip-sized, not pointer-sized.
     for (const auto& c : proc.connections())
     {
         auto* fromNode = nodeForId (c.fromId);
@@ -1341,7 +1422,7 @@ void Canvas::mouseDown (const juce::MouseEvent& e)
         const auto path = cablePath (fromNode->outputPortCentre(), toNode->inputPortCentre());
         juce::Point<float> nearest;
         path.getNearestPoint (e.position, nearest);
-        if (nearest.getDistanceFrom (e.position) <= 6.0f)
+        if (nearest.getDistanceFrom (e.position) <= 12.0f)
         {
             selectNode (nullptr);
             selectedCable = { true, c.fromId, c.toId };

@@ -513,12 +513,14 @@ int CurrentAudioProcessor::addModule (ModuleType type, float x, float y)
 
     if (type == ModuleType::Random)
     {
-        // Default range per the requirements: root at octave 1 up to root at
-        // octave 3 (e.g. C1..C3 = MIDI 24..48), taken from the global root at
-        // drop time since the module's own root starts on Global.
+        // Default range: root at octave 2 up to root at octave 4 (e.g. C2..C4
+        // = MIDI 36..60), taken from the global root at drop time since the
+        // module's own root starts on Global. 1/8 draws — the shared 1/16
+        // default is too frantic for a random line.
         const int root = (int) (rootParam != nullptr ? rootParam->load() : 0.0f);
-        m.settings.rangeFrom = juce::jlimit (0, 127, 24 + root);
-        m.settings.rangeTo   = juce::jlimit (0, 127, 48 + root);
+        m.settings.rangeFrom = juce::jlimit (0, 127, 36 + root);
+        m.settings.rangeTo   = juce::jlimit (0, 127, 60 + root);
+        m.settings.rate      = ModuleOptions::kRate1_8;
     }
     else if (type == ModuleType::ScaleGen)
     {

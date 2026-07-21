@@ -13,6 +13,19 @@ MainView::MainView (CurrentAudioProcessor& processor, CurrentAudioProcessorEdito
     addAndMakeVisible (canvas);
     addAndMakeVisible (palette);
     addChildComponent (settings);   // hidden until the Settings button opens it
+
+    // Dragging a canvas node onto the palette tray deletes it. The canvas owns
+    // the gesture but only this view knows both components, so it provides the
+    // tray hit-test (screen coords — the two don't share a parent space) and
+    // relays the remove-zone highlight.
+    canvas.isOverRemoveZone = [this] (juce::Point<int> screenPos)
+    {
+        return palette.isShowing() && palette.getScreenBounds().contains (screenPos);
+    };
+    canvas.setRemoveZoneState = [this] (bool armed, bool hot)
+    {
+        palette.setRemoveDragState (armed, hot);
+    };
 }
 
 MainView::~MainView() = default;

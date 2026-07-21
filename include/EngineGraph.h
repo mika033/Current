@@ -41,8 +41,8 @@ struct ModuleParams
     int    channel = 0;       // I/O modules: MIDI In filter (0 = All) / Output stamp
 
     // Random.
-    int rangeFrom = 24;
-    int rangeTo   = 48;
+    int rangeFrom = 36;
+    int rangeTo   = 60;
 
     // Scale generator.
     bool endOnRoot = true;

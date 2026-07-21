@@ -42,6 +42,14 @@ public:
 
     // id, new top-left position within the canvas (called live during a drag).
     std::function<void (int, juce::Point<int>)> onMoved;
+    // The node-move drag stream (not the port/cable gesture) — the canvas
+    // forwards these to the tray's remove-zone logic, so dragging a node onto
+    // the palette tray deletes it.
+    std::function<void (const juce::MouseEvent&)> onNodeDrag;
+    std::function<void (ModuleComponent&, const juce::MouseEvent&)> onNodeDragEnd;
+    // Fired by a tap on the ✕ badge (visible while selected). The receiver
+    // must defer the actual deletion — this component is mid-mouse-callback.
+    std::function<void (ModuleComponent&)> onDelete;
     // Fired on double-click — the canvas opens the settings dialog.
     std::function<void (ModuleComponent&)> onOpenSettings;
     // Fired on a single click / drag start so the canvas can update selection.
@@ -59,10 +67,15 @@ public:
     void mouseDoubleClick (const juce::MouseEvent&) override;
 
 private:
+    // The ✕ badge in the top-right corner while selected — the touch path to
+    // deletion (Delete key stays the desktop shortcut).
+    juce::Rectangle<float> deleteBadgeBounds() const;
+
     int          id;
     ModuleType   type;
     bool         selected = false;
     bool         draggingCable = false;
+    bool         pressedDeleteBadge = false;
     juce::String sublabel;
     juce::ComponentDragger dragger;
 

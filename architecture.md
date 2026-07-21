@@ -88,9 +88,19 @@ own settings, its own runtime state.
   generators, circle for modulators, triangle for I/O; colour encodes the
   family; an optional sublabel shows the I/O channel. Ports are live: a press
   on the output port (enlarged hit radius) starts the connect gesture, which
-  the canvas runs via the onPortDrag* callbacks.
+  the canvas runs via the onPortDrag* callbacks. While selected it shows an ✕
+  badge (top-right, family-coloured) — the touch path to deletion, reported
+  via onDelete; the node-move drag stream (onNodeDrag/onNodeDragEnd) feeds the
+  tray remove zone.
 - `PaletteBar` + `ModuleTypes` (PaletteBar.h/.cpp, ModuleTypes.h) — the
-  draggable chips and the module catalogue that drives them.
+  draggable chips and the module catalogue that drives them (catalogue order =
+  display order: I/O first, then generators, then modulators; chips show the
+  descriptor's `shortName`). Chips keep full size at every window width — they
+  live in a horizontal `Viewport` strip with the scrollbar on the tray's
+  bottom edge — and a checkbox row above (In/Out / Generators / Modulators,
+  per-editor state, not persisted) hides whole families. The tray doubles as
+  the remove zone for the drag-a-node-here delete gesture (armed/hot states
+  painted in `paintOverChildren`; `MainView` wires it to the canvas).
 - `Theme` + `CurrentLookAndFeel` (Theme.h, CurrentLookAndFeel.h) — the shared
   two-scheme (Light/Dark) palette and the LookAndFeel that applies it to stock
   JUCE widgets.
@@ -373,10 +383,17 @@ modulator purple, I/O blue) live in the scheme so both themes can tune them.
   processor to connect. `canConnect` refusals (duplicate, cycle, port
   mismatch) just snap the cable back.
 - Selection is single-select across nodes *and* cables (mutually exclusive):
-  clicking within a few pixels of a cable selects it, Delete/Backspace
-  removes the selected cable or node (a node takes its cables with it).
-  Clicking empty canvas deselects and grabs keyboard focus so the Delete key
-  works.
+  clicking near a cable selects it (12 px tolerance — fingertip-sized, not
+  pointer-sized). Clicking empty canvas deselects and grabs keyboard focus so
+  the Delete key works.
+- Deletion has one shared path (`Canvas::deleteNode`) and three gestures: the
+  ✕ badge a selected node/cable shows (the cable's replaces its flow arrow at
+  the midpoint), dragging a node onto the palette tray (the tray arms while a
+  node drag is in flight and goes hot under the pointer; release deletes), and
+  Delete/Backspace on the selection. A node takes its cables with it. The ✕
+  and tray gestures arrive from inside the doomed node's own mouse callback,
+  so they defer the removal via `Canvas::requestDeleteNode` (callAsync +
+  SafePointer).
 - Marquee select, pan, and zoom are later phases.
 
 ## Build and test

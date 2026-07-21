@@ -128,6 +128,30 @@ void ModuleComponent::paint (juce::Graphics& g)
         drawPort (body.getX(), midY);          // input, left
     if (moduleHasOutputPort (type))
         drawPort (body.getRight(), midY);      // output, right
+
+    // ✕ badge, top-right, only while selected — the touch path to deletion.
+    // Family-coloured with the label ink, so it reads as part of the module
+    // rather than an alarm (the tray's remove zone keeps the loud red).
+    if (selected)
+    {
+        const auto badge = deleteBadgeBounds();
+        g.setColour (fill);
+        g.fillEllipse (badge);
+        g.setColour (s.panelBorder);
+        g.drawEllipse (badge, 1.0f);
+
+        g.setColour (juce::Colours::black.withAlpha (0.82f));
+        const auto cross = badge.reduced (badge.getWidth() * 0.32f);
+        g.drawLine ({ cross.getTopLeft(), cross.getBottomRight() }, 1.8f);
+        g.drawLine ({ cross.getTopRight(), cross.getBottomLeft() }, 1.8f);
+    }
+}
+
+juce::Rectangle<float> ModuleComponent::deleteBadgeBounds() const
+{
+    // Floats at the component's top-right corner — outside the body shape for
+    // circles and triangles, but always inside our bounds so it gets the taps.
+    return { (float) getWidth() - 24.0f, 2.0f, 22.0f, 22.0f };
 }
 
 juce::Point<float> ModuleComponent::inputPortCentre() const
@@ -144,6 +168,14 @@ juce::Point<float> ModuleComponent::outputPortCentre() const
 
 void ModuleComponent::mouseDown (const juce::MouseEvent& e)
 {
+    // Button semantics for the ✕ badge: arm on press, act on release, and a
+    // finger can cancel by sliding off. Slightly enlarged hit zone for touch.
+    if (selected && deleteBadgeBounds().expanded (5.0f).contains (e.position))
+    {
+        pressedDeleteBadge = true;
+        return;
+    }
+
     // A press on the output port starts the connect gesture, not a node move —
     // the canvas draws the live cable and resolves the drop.
     if (moduleHasOutputPort (type) && onPortDragStart != nullptr)
@@ -165,6 +197,9 @@ void ModuleComponent::mouseDown (const juce::MouseEvent& e)
 
 void ModuleComponent::mouseDrag (const juce::MouseEvent& e)
 {
+    if (pressedDeleteBadge)
+        return;
+
     if (draggingCable)
     {
         if (onPortDrag)
@@ -180,16 +215,33 @@ void ModuleComponent::mouseDrag (const juce::MouseEvent& e)
 
     if (onMoved)
         onMoved (id, getPosition());
+
+    // The node stays clamped inside the canvas, but the pointer can travel
+    // beyond it — onto the palette tray, which arms as a remove zone.
+    if (onNodeDrag)
+        onNodeDrag (e);
 }
 
 void ModuleComponent::mouseUp (const juce::MouseEvent& e)
 {
+    if (pressedDeleteBadge)
+    {
+        pressedDeleteBadge = false;
+        if (deleteBadgeBounds().expanded (5.0f).contains (e.position) && onDelete)
+            onDelete (*this);
+        return;
+    }
+
     if (draggingCable)
     {
         draggingCable = false;
         if (onPortDragEnd)
             onPortDragEnd (e);
+        return;
     }
+
+    if (onNodeDragEnd)
+        onNodeDragEnd (*this, e);
 }
 
 void ModuleComponent::mouseDoubleClick (const juce::MouseEvent&)

@@ -439,9 +439,9 @@ struct ModuleSettings
 
     // Random only: inclusive MIDI note range to draw from. Defaults are
     // recomputed from the effective root when the module is created (root at
-    // octave 1 up to root at octave 3); these values are the C-root case.
-    int rangeFrom = 24;   // C1
-    int rangeTo   = 48;   // C3
+    // octave 2 up to root at octave 4); these values are the C-root case.
+    int rangeFrom = 36;   // C2
+    int rangeTo   = 60;   // C4
 
     // Scale generator only.
     bool endOnRoot = true;   // true = append the octave root as a final step,

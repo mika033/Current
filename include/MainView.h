@@ -33,7 +33,8 @@ private:
     void toggleSettings();
 
     static constexpr int kMenuBarH = 52;
-    static constexpr int kPaletteH = 96;
+    // Tall enough for the filter row + full-size chips + the strip's scrollbar.
+    static constexpr int kPaletteH = 130;
     static constexpr int kGap      = 10;
     static constexpr int kPad      = 12;
 

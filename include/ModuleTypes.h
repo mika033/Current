@@ -63,6 +63,7 @@ struct ModuleDescriptor
     ModuleType  type;
     ModuleKind  kind;
     const char* name;
+    const char* shortName;   // palette-chip label; short enough to never truncate
 
     juce::Colour familyColour() const
     {
@@ -77,30 +78,31 @@ struct ModuleDescriptor
     }
 };
 
-// The palette, in display order: generators, modulators, I/O. The Scale
-// modulator shares its display name with the Scale generator on purpose (the
-// user asked for a "scale modulator"); shape and colour keep them apart, and
-// their persistence ids differ ("Scale" vs "ScaleMod").
+// The palette, in display order: I/O first (the modules every patch needs),
+// then generators, then modulators. The Scale modulator shares its display
+// name with the Scale generator on purpose (the user asked for a "scale
+// modulator"); shape and colour keep them apart, and their persistence ids
+// differ ("Scale" vs "ScaleMod").
 inline const std::array<ModuleDescriptor, 17>& moduleCatalogue()
 {
     static const std::array<ModuleDescriptor, 17> kCatalogue = {{
-        { ModuleType::Random,      ModuleKind::Generator, "Random"      },
-        { ModuleType::ScaleGen,    ModuleKind::Generator, "Scale"       },
-        { ModuleType::Lfo,         ModuleKind::Generator, "LFO"         },
-        { ModuleType::Chord,       ModuleKind::Generator, "Chord"       },
-        { ModuleType::Drone,       ModuleKind::Generator, "Drone"       },
-        { ModuleType::Arp,         ModuleKind::Modulator, "Arp"         },
-        { ModuleType::Quantize,    ModuleKind::Modulator, "Quantize"    },
-        { ModuleType::ScaleMod,    ModuleKind::Modulator, "Scale"       },
-        { ModuleType::Progression, ModuleKind::Modulator, "Progression" },
-        { ModuleType::Shift,       ModuleKind::Modulator, "Shift"       },
-        { ModuleType::Mirror,      ModuleKind::Modulator, "Mirror"      },
-        { ModuleType::Harmonizer,  ModuleKind::Modulator, "Harmonizer"  },
-        { ModuleType::Delay,       ModuleKind::Modulator, "Delay"       },
-        { ModuleType::Strum,       ModuleKind::Modulator, "Strum"       },
-        { ModuleType::Humanize,    ModuleKind::Modulator, "Humanize"    },
-        { ModuleType::MidiIn,      ModuleKind::IO,        "MIDI In"     },
-        { ModuleType::Output,      ModuleKind::IO,        "Output"      }
+        { ModuleType::MidiIn,      ModuleKind::IO,        "MIDI In",     "Input"    },
+        { ModuleType::Output,      ModuleKind::IO,        "Output",      "Output"   },
+        { ModuleType::Random,      ModuleKind::Generator, "Random",      "Random"   },
+        { ModuleType::ScaleGen,    ModuleKind::Generator, "Scale",       "Scale"    },
+        { ModuleType::Lfo,         ModuleKind::Generator, "LFO",         "LFO"      },
+        { ModuleType::Chord,       ModuleKind::Generator, "Chord",       "Chord"    },
+        { ModuleType::Drone,       ModuleKind::Generator, "Drone",       "Drone"    },
+        { ModuleType::Arp,         ModuleKind::Modulator, "Arp",         "Arp"      },
+        { ModuleType::Quantize,    ModuleKind::Modulator, "Quantize",    "Quantize" },
+        { ModuleType::ScaleMod,    ModuleKind::Modulator, "Scale",       "Scale"    },
+        { ModuleType::Progression, ModuleKind::Modulator, "Progression", "Prog"     },
+        { ModuleType::Shift,       ModuleKind::Modulator, "Shift",       "Shift"    },
+        { ModuleType::Mirror,      ModuleKind::Modulator, "Mirror",      "Mirror"   },
+        { ModuleType::Harmonizer,  ModuleKind::Modulator, "Harmonizer",  "Harmony"  },
+        { ModuleType::Delay,       ModuleKind::Modulator, "Delay",       "Delay"    },
+        { ModuleType::Strum,       ModuleKind::Modulator, "Strum",       "Strum"    },
+        { ModuleType::Humanize,    ModuleKind::Modulator, "Humanize",    "Humanize" }
     }};
     return kCatalogue;
 }
