@@ -74,6 +74,11 @@ public:
 
     juce::AudioProcessorValueTreeState& apvts() { return parameters; }
 
+    // Bus layout depends on the wrapper: the Standalone drops the audio input
+    // bus (see the definition for why), so it must be picked before the base
+    // AudioProcessor ctor runs — hence a static helper fed into the init list.
+    static BusesProperties makeBusesProperties();
+
     // --- Internal transport (Standalone / playhead-less hosts) --------------
     // The Standalone's playhead reports isPlaying == false forever (there is
     // no host transport), which would leave every stepped module silent; the

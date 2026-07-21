@@ -52,15 +52,51 @@ MenuBar::MenuBar (CurrentAudioProcessor& processor,
     scaleAtt = std::make_unique<ComboAttachment> (state, ParamIDs::scale, scaleCombo);
 
     configLabel (themeLabel, "Theme");
-    addAndMakeVisible (themeCombo);
-    populateFromChoiceParam (themeCombo, ParamIDs::theme);
-    themeAtt = std::make_unique<ComboAttachment> (state, ParamIDs::theme, themeCombo);
-    // The attachment writes the parameter; we additionally repaint the editor so
-    // the theme swap is visible immediately (the parameter has no audio effect).
-    themeCombo.onChange = [this]() { if (themeChanged) themeChanged(); };
+    addAndMakeVisible (themeButton);
+    refreshThemeButtonText();
+    // Click cycles the choice param (two values => toggle). We drive the param
+    // directly the way a ComboBoxAttachment would, so state saves / automation
+    // see a normal edit, then apply the skin and refresh the label right here
+    // (we're on the message thread) rather than waiting on the async listener.
+    themeButton.onClick = [this]()
+    {
+        if (auto* pc = dynamic_cast<juce::AudioParameterChoice*> (
+                state.getParameter (ParamIDs::theme)))
+        {
+            const int n = pc->choices.size();
+            if (n <= 0) return;
+            *pc = (pc->getIndex() + 1) % n;
+            if (themeChanged) themeChanged();
+            refreshThemeButtonText();
+        }
+    };
+    // Observe external writes (state restore, preset apply, automation) so the
+    // button label and applied skin stay in sync when we didn't drive the edit.
+    state.addParameterListener (ParamIDs::theme, this);
 }
 
-MenuBar::~MenuBar() = default;
+MenuBar::~MenuBar()
+{
+    state.removeParameterListener (ParamIDs::theme, this);
+}
+
+void MenuBar::refreshThemeButtonText()
+{
+    if (auto* pc = dynamic_cast<juce::AudioParameterChoice*> (
+            state.getParameter (ParamIDs::theme)))
+        themeButton.setButtonText (pc->getCurrentChoiceName());
+}
+
+void MenuBar::parameterChanged (const juce::String&, float)
+{
+    // parameterChanged can arrive off the message thread; marshal the UI work.
+    juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<MenuBar> (this)]()
+    {
+        if (safe == nullptr) return;
+        if (safe->themeChanged) safe->themeChanged();
+        safe->refreshThemeButtonText();
+    });
+}
 
 void MenuBar::populateFromChoiceParam (juce::ComboBox& combo, const juce::String& paramID)
 {
@@ -113,10 +149,13 @@ void MenuBar::resized()
     place (rootLabel,  rootCombo,  comboW);
     place (scaleLabel, scaleCombo, comboW);
 
-    // Theme sits at the far right.
-    auto rightSlot = area.removeFromRight (labelW + 90 + gap);
+    // Theme sits at the far right: a "Theme" label + a toggle button whose text
+    // is the active theme name. Narrower than the old dropdown — the button need
+    // only hold "Light" / "Dark", not a full combo.
+    constexpr int themeBtnW = 64;
+    auto rightSlot = area.removeFromRight (labelW + themeBtnW + gap);
     rightSlot = rightSlot.withSizeKeepingCentre (rightSlot.getWidth(), rowH);
     themeLabel.setBounds (rightSlot.removeFromLeft (labelW));
     rightSlot.removeFromLeft (4);
-    themeCombo.setBounds (rightSlot.removeFromLeft (90));
+    themeButton.setBounds (rightSlot.removeFromLeft (themeBtnW));
 }

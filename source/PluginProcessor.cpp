@@ -60,12 +60,44 @@ namespace
     }
 }
 
+// Bus layout is asymmetric by wrapper:
+//
+//  * Standalone drops the audio input bus. JUCE's StandaloneFilterWindow paints
+//    a persistent "Audio input is muted to avoid feedback loop" notification
+//    whenever the processor declares both an input AND an output bus — its
+//    feedback-loop heuristic is purely "numIn > 0 && numOut > 0", with no way
+//    to opt out. We never read audio, so we just drop the input; the output
+//    bus stays so the AudioDeviceManager still spins up a normal audio device.
+//
+//  * The VST3 plugin keeps a stereo input we never fill: some VST3 hosts (Live)
+//    reject an effect-category plugin that exposes no audio input bus, even a
+//    MIDI effect. processBlock() clears the buffer.
+//
+// getPluginLoadedAs() reads the same thread-local JUCE's AudioProcessor base
+// ctor uses to set wrapperType, so it is safe to call before that ctor runs.
+juce::AudioProcessor::BusesProperties CurrentAudioProcessor::makeBusesProperties()
+{
+    const auto wrapper = juce::PluginHostType::getPluginLoadedAs();
+
+    // The macOS AU registers as an 'aumi' MIDI processor. auval rejects a MIDI
+    // processor that also declares audio buses ("Default Format ... does not
+    // match reported Channel handling capabilities"), so the AU gets none.
+    // Detecting the wrapper at runtime lets one target serve every format —
+    // where Little Arp Monster instead splits the AU into a separate
+    // IS_MIDI_EFFECT target to shed the bus at compile time.
+    if (wrapper == wrapperType_AudioUnit)
+        return BusesProperties();
+
+    if (wrapper == wrapperType_Standalone)
+        return BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true);
+
+    return BusesProperties()
+        .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
+        .withOutput ("Output", juce::AudioChannelSet::stereo(), true);
+}
+
 CurrentAudioProcessor::CurrentAudioProcessor()
-    : juce::AudioProcessor (BusesProperties()
-          // A stereo bus we never fill with audio: some VST3 hosts (Live) reject
-          // an effect plugin that exposes no audio bus, even a MIDI effect.
-          .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
-          .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+    : juce::AudioProcessor (makeBusesProperties()),
       parameters (*this, nullptr, "STATE", createLayout())
 {
     rootParam  = parameters.getRawParameterValue (ParamIDs::root);
@@ -81,8 +113,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout CurrentAudioProcessor::creat
     layout.add (std::make_unique<juce::AudioParameterChoice> (
         juce::ParameterID { ParamIDs::root, 1 }, "Root", kRootNames, 0));
 
+    // Default index 1 = Minor (kScaleNames order: Major, Minor, …), so a fresh
+    // instance comes up in C Minor rather than C Major.
     layout.add (std::make_unique<juce::AudioParameterChoice> (
-        juce::ParameterID { ParamIDs::scale, 1 }, "Scale", kScaleNames, 0));
+        juce::ParameterID { ParamIDs::scale, 1 }, "Scale", kScaleNames, 1));
 
     // Default index 1 = Dark, matching CurrentTheme::gActive's default.
     layout.add (std::make_unique<juce::AudioParameterChoice> (

@@ -35,15 +35,28 @@ endif()
 
 # ---------------------------------------------------------------------------
 # Current — Phase 2 canvas skeleton. A MIDI-effect plugin: VST3 + Standalone on
-# desktop. macOS would also ship an AU MIDI-FX variant like Little Arp Monster,
-# but Phase 2 is developed and build-tested on Linux, where only VST3 +
-# Standalone exist.
+# every desktop OS, plus an AU on macOS.
 #
 # NEEDS_MIDI_INPUT/OUTPUT + IS_MIDI_EFFECT mark it as a MIDI processor.
 # makeBusesProperties in the processor still exposes a stereo bus it never fills,
 # because some VST3 hosts (Live) reject an effect with no audio bus.
+#
+# The macOS AU is where IS_MIDI_EFFECT earns its keep: with that flag the AU
+# registers as an 'aumi' MIDI processor — the only plugin type Logic Pro /
+# GarageBand surface in their MIDI-FX insert slot (no DAW gives a VST3 such a
+# slot). AU rides this one target rather than a separate one as in Little Arp
+# Monster: LAM splits so its VST3 (IS_MIDI_EFFECT FALSE) keeps a stereo bus while
+# its AU (TRUE) sheds it at compile time — the shed being what makes an 'aumi'
+# AU pass auval. Current instead sheds the AU's buses at runtime in
+# makeBusesProperties (via getPluginLoadedAs), so all three formats share one
+# target and one plugin code with no auval conflict (hosts disambiguate by
+# format; the .component / .vst3 live in separate folders — nothing collides).
+# AU is macOS-only; Linux/Windows stay VST3 + Standalone.
 # ---------------------------------------------------------------------------
 set(CURRENT_FORMATS VST3 Standalone)
+if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    list(APPEND CURRENT_FORMATS AU)
+endif()
 
 juce_add_plugin(Current
     COMPANY_NAME "${COMPANY_NAME}"

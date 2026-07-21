@@ -48,9 +48,9 @@ void StepperControl::resized()
 {
     auto bounds = getLocalBounds();
 
-    // Plus on the left, minus on the right, value in the middle.
-    incrButton.setBounds (bounds.removeFromLeft (kButtonW));
-    decrButton.setBounds (bounds.removeFromRight (kButtonW));
+    // Minus on the left, plus on the right, value in the middle (matches LAM).
+    decrButton.setBounds (bounds.removeFromLeft (kButtonW));
+    incrButton.setBounds (bounds.removeFromRight (kButtonW));
     valueLabel.setBounds (bounds);
 }
 
