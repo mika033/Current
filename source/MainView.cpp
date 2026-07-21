@@ -4,16 +4,27 @@
 #include "Theme.h"
 
 MainView::MainView (CurrentAudioProcessor& processor, CurrentAudioProcessorEditor& editor)
-    : menuBar (processor, [&editor]() { editor.applyTheme(); }),
-      canvas  (processor, editor),
-      palette ()
+    : menuBar  (processor, [this]() { toggleSettings(); }),
+      canvas   (processor, editor),
+      palette  (),
+      settings (processor, [&editor]() { editor.applyTheme(); })
 {
     addAndMakeVisible (menuBar);
     addAndMakeVisible (canvas);
     addAndMakeVisible (palette);
+    addChildComponent (settings);   // hidden until the Settings button opens it
 }
 
 MainView::~MainView() = default;
+
+void MainView::toggleSettings()
+{
+    settingsOpen = ! settingsOpen;
+    canvas.setVisible (! settingsOpen);
+    palette.setVisible (! settingsOpen);
+    settings.setVisible (settingsOpen);
+    menuBar.setSettingsOpen (settingsOpen);
+}
 
 void MainView::paint (juce::Graphics& g)
 {
@@ -26,6 +37,10 @@ void MainView::resized()
 
     menuBar.setBounds (area.removeFromTop (kMenuBarH));
     area.removeFromTop (kGap);
+
+    // The settings space always spans the full below-the-bar area (canvas +
+    // palette region); visibility, not bounds, decides which surface shows.
+    settings.setBounds (area);
 
     palette.setBounds (area.removeFromBottom (kPaletteH));
     area.removeFromBottom (kGap);

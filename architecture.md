@@ -47,12 +47,38 @@ own settings, its own runtime state.
   `CurrentLookAndFeel`, hosts `MainView`, provides `showInlineDialog()` and
   `applyTheme()`.
 - `MainView` (MainView.h/.cpp) — pure layout: `MenuBar` top, `Canvas` middle,
-  `PaletteBar` bottom.
+  `PaletteBar` bottom. Also owns the `SettingsView` and the swap: the menu
+  bar's Settings button toggles everything below the bar (canvas + palette —
+  a palette over a settings page would invite meaningless drags) between the
+  two surfaces by visibility; the settings space always has the full
+  below-the-bar bounds.
 - `MenuBar` (MenuBar.h/.cpp) — global-settings combos (root, scale), bound to
-  the APVTS via attachments, plus the Theme combo. In the Standalone it also
+  the APVTS via attachments, plus the Settings button at the far right (reads
+  "Back" while the settings space is open; the theme switch that used to sit
+  there lives in the settings space now). In the Standalone it also
   carries the internal transport's Play toggle and Tempo stepper (see
   Transport and clocks below); plugin wrappers never show them. Edit and
   Load/Save menus are deferred phases.
+- `SettingsView` (SettingsView.h/.cpp) — the settings space, laid out in
+  LAM's Settings-tab language (stacked rounded panels, a section-name column
+  followed by uniform label-over-control columns): a Global panel holding the
+  Theme button (click cycles the choice param; an APVTS listener keeps label
+  and skin in sync with external writes), and an Audition Synth panel — enable
+  toggle plus the five tone dials in signal-flow order, each label a live
+  "name: value" readout (the `ModuleWindow` dial idiom, standing in for LAM's
+  messaging area). The synth panel hides where the synth can't be heard
+  (`isAuditionSynthSupported()`, i.e. the AU MIDI-FX).
+- `AuditionSynth` (AuditionSynth.h/.cpp) — the built-in monitoring synth,
+  ported verbatim from LAM (supersaw pluck voices, TPT low-pass with its own
+  fast envelope, sub-octave sine; delay → reverb insert chain on one Space
+  dial; CC 70/71/74/75 modulation; raised-cosine declick on the enable
+  toggle). `processBlock` feeds it the outgoing MIDI right after
+  `engine.process`, so it voices exactly what the plugin emits. Voiceless
+  (and skipped entirely) in the AU, the one wrapper with no audio output bus.
+  Two deliberate divergences from LAM: the amp envelope is pinned to the
+  sustaining shape (Current's note lengths are user-authored content — Gate,
+  Length, the Drone's holds — so the voice must honour note-offs), and the
+  enable state defaults ON in the Standalone / OFF in DAWs via a runtime seed.
 - `Canvas` (Canvas.h/.cpp) — the drop surface and the bridge between on-screen
   nodes and the processor's model. Owns the connect gesture (live cable from
   an output port to the drop target), paints the cables (bezier curves with a
@@ -94,6 +120,8 @@ own settings, its own runtime state.
   the window (band-by-band rules, dial readouts, the roads not taken) are
   written up in `design/module-window.md`.
 - `tools/engine_smoketest.cpp` — headless engine test, see Testing below.
+- `tools/audition_smoketest.cpp` — headless end-to-end audition-path test,
+  see Testing below.
 
 ## The canvas model and who owns it
 
@@ -115,7 +143,13 @@ ports exist (generators/MIDI In have no input, Output has no output — see
 no duplicate, and no cycle (DFS at connect time), so the engine can always
 run the graph in topological order. `removeModule` drops the module's cables
 with it. A fresh processor constructs the default patch (MIDI In → Output,
-wired).
+wired) — except in the Standalone, which boots an **empty canvas**: the
+Standalone is the dev/test app, so it deliberately reports no state at all
+(`get/setStateInformation` early-return there, the LAM approach) and every
+launch is a clean slate. Its two keep-worthy preferences — theme and manual
+tempo — survive in a small `PropertiesFile`
+(`~/Library/Application Support/Snorkel Audio/Current.settings`) instead, and
+the audition synth re-seeds ON each launch.
 
 The `Canvas` component mirrors that model as `ModuleComponent` children:
 
@@ -316,11 +350,13 @@ Root / Scale / Length through the usual helpers.
 SnorkelAudioStandards two-theme convention. Everything paints by reading
 `CurrentTheme::active()` fresh every frame, so a theme swap is: set the active
 scheme, re-apply the LookAndFeel colours (`applyScheme`), repaint the editor
-root. The Theme choice is an APVTS parameter so it persists with the project;
-`applyTheme()` in the editor syncs the active scheme from the parameter before
-first paint (avoids a wrong-theme flash) and after combo changes. Family
-colours for nodes (generator green, modulator purple, I/O blue) live in the
-scheme so both themes can tune them.
+root. The theme control is the settings space's Theme button (`SettingsView`).
+The Theme choice is an APVTS parameter so it persists with the project (in the
+Standalone, which persists no plugin state, it rides the preferences file
+instead — see the canvas-model section); `applyTheme()` in the editor syncs
+the active scheme from the parameter before first paint (avoids a wrong-theme
+flash) and on every switch. Family colours for nodes (generator green,
+modulator purple, I/O blue) live in the scheme so both themes can tune them.
 
 ## UI interaction details worth knowing
 
@@ -349,9 +385,15 @@ scheme so both themes can tune them.
   installs the VST3 to `~/.vst3`, launches the Standalone; `--no-run` for
   headless builds. JUCE 8.0.12 arrives via CMake FetchContent on first
   configure.
-- The processor exposes a stereo audio bus it never fills because some VST3
-  hosts (notably Live) reject an effect plugin with no audio bus; processBlock
-  clears the buffer and only touches MIDI.
+- The processor exposes a stereo audio bus because some VST3 hosts (notably
+  Live) reject an effect plugin with no audio bus; processBlock clears it
+  every block, and the only thing that ever writes into it is the audition
+  synth (after the engine has produced the block's MIDI).
+- The Standalone answers `isMidiEffect() == false` (the one wrapper that
+  does): JUCE's `AudioProcessorPlayer` hands a MIDI-effect processor a
+  zero-channel buffer and zeroes the device output itself, which would mute
+  the audition synth. LAM sidesteps the same trap by building its Standalone
+  from an `IS_SYNTH` target; Current's single target answers per-wrapper.
 - `-DCURRENT_BUILD_TESTS=ON` adds `current_engine_test`, a headless console
   app (tools/engine_smoketest.cpp) asserting the module behaviours and, above
   all, note-on/note-off balance across pass-through, modulators, generators,
@@ -359,6 +401,13 @@ scheme so both themes can tune them.
   a helper lays out as an explicit graph in the classic chain order; a
   dedicated section exercises fan-out/fan-in, empty-graph silence, and the
   topology-change flush directly. Run it after any engine change.
+- The same flag adds `current_audition_test` (tools/audition_smoketest.cpp):
+  the full processor headless — Random wired into Output, transport
+  free-running, synth enabled — asserting that note-ons leave processBlock
+  AND that audio lands in the buffer. It links the whole plugin source list
+  (createEditor drags the editor in), which works because Current's bus setup
+  is runtime-only, no JucePlugin_* macros. Run it after audition-synth or
+  processBlock changes.
 - The VST3 passes pluginval at strictness 10 (including Steinberg's embedded
   vst3validator — which is what required the named default program in
   getProgramName, and the editor/state/automation stress tests). pluginval

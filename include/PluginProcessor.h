@@ -8,6 +8,7 @@
 #include "ModuleSettings.h"
 #include "EngineGraph.h"
 #include "Engine.h"
+#include "AuditionSynth.h"
 
 // Parameter ids for the global settings. Central so the editor's combos and the
 // processor's APVTS layout can't drift.
@@ -54,7 +55,8 @@ struct ModuleConnection
 // the newest snapshot and otherwise keeps using its previous one, so the audio
 // thread never blocks. This replaced the per-module-type atomic flags of the
 // fixed-chain era once real wiring landed.
-class CurrentAudioProcessor : public juce::AudioProcessor
+class CurrentAudioProcessor : public juce::AudioProcessor,
+                              private juce::AudioProcessorValueTreeState::Listener
 {
 public:
     CurrentAudioProcessor();
@@ -71,7 +73,14 @@ public:
     const juce::String getName() const override { return "Current"; }
     bool acceptsMidi() const override  { return true; }
     bool producesMidi() const override { return true; }
-    bool isMidiEffect() const override { return true; }
+    // Everywhere except the Standalone this is a MIDI effect. The Standalone
+    // must NOT claim to be one: JUCE's AudioProcessorPlayer hands a MIDI
+    // effect a zero-channel buffer (findMostSuitableLayout returns {0,0}) and
+    // zeroes the device output itself, which would keep the audition synth
+    // silent — audio out is the Standalone's whole point. LAM sidesteps this
+    // by building its Standalone from an IS_SYNTH target; Current's single
+    // target answers per-wrapper instead.
+    bool isMidiEffect() const override { return wrapperType != wrapperType_Standalone; }
     double getTailLengthSeconds() const override { return 0.0; }
 
     int getNumPrograms() override { return 1; }
@@ -91,6 +100,11 @@ public:
     // AudioProcessor ctor runs — hence a static helper fed into the init list.
     static BusesProperties makeBusesProperties();
 
+    // True in every wrapper with an audio output bus (Standalone, VST3). False
+    // only in the AU MIDI-FX, which sheds its buses for auval — the Settings
+    // view hides the Audition Synth panel there.
+    bool isAuditionSynthSupported() const { return auditionSynthSupported; }
+
     // --- Internal transport (Standalone / playhead-less hosts) --------------
     // The Standalone's playhead reports isPlaying == false forever (there is
     // no host transport), which would leave every stepped module silent; the
@@ -100,7 +114,18 @@ public:
     bool isStandalone() const { return wrapperType == wrapperType_Standalone; }
     void setStandalonePlay (bool on)   { standalonePlay.store (on, std::memory_order_release); }
     bool getStandalonePlay() const     { return standalonePlay.load (std::memory_order_acquire); }
-    void   setInternalBpm (double bpm) { internalBpm.store (bpm, std::memory_order_relaxed); }
+    void   setInternalBpm (double bpm)
+    {
+        internalBpm.store (bpm, std::memory_order_relaxed);
+        // Manual tempo is a user preference, kept across Standalone launches
+        // (plugin-state persistence is off there). Called from the message
+        // thread (the menu bar's stepper), so the file write is safe.
+        if (standaloneProps != nullptr)
+        {
+            standaloneProps->setValue ("internalBpm", bpm);
+            standaloneProps->saveIfNeeded();
+        }
+    }
     double getInternalBpm() const      { return internalBpm.load (std::memory_order_relaxed); }
 
     // --- Canvas model (message thread only) ---------------------------------
@@ -152,6 +177,12 @@ private:
 
     Engine engine;
 
+    // The audition synth voices the outgoing MIDI right after the engine runs,
+    // so the user hears exactly what the plugin emits. Voiceless (and never
+    // prepared or processed) where the wrapper has no audio output bus.
+    AuditionSynth auditionSynth;
+    bool auditionSynthSupported = false;
+
     // The published snapshot and the audio thread's adopted copy. The lock
     // guards only the shared_ptr swap; the audio thread try-locks, so a
     // rebuild can never block processBlock (it just keeps last block's graph
@@ -166,11 +197,19 @@ private:
     std::atomic<float>* rootParam  = nullptr;
     std::atomic<float>* scaleParam = nullptr;
 
+    // Standalone-only preferences (theme, manual tempo). The Standalone
+    // reports no plugin state (see getStateInformation), so these survive in
+    // a small per-user file instead. Null in plugin wrappers.
+    std::unique_ptr<juce::PropertiesFile> standaloneProps;
+
+    // Standalone-only: persists the Theme parameter into standaloneProps.
+    void parameterChanged (const juce::String& paramID, float newValue) override;
+
     // Internal-transport state (see the accessors above). The atomics are the
     // UI -> audio handoff for the menu bar's Play/Tempo controls; internalQn
     // and prevInternalPlay are audio-thread-only. Tempo is a runtime
-    // preference, not patch content, so it is not an APVTS parameter and
-    // resets to 120 each launch.
+    // preference, not patch content, so it is not an APVTS parameter; the
+    // Standalone keeps it in standaloneProps.
     std::atomic<bool>   standalonePlay { false };
     std::atomic<double> internalBpm { 120.0 };
     double internalQn = 0.0;        // synthesized song position, quarter notes

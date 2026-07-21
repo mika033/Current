@@ -85,6 +85,8 @@ target_sources(Current PRIVATE
     source/InlineDialog.cpp
     source/ModuleWindow.cpp
     source/ProgressionStepList.cpp
+    source/SettingsView.cpp
+    source/AuditionSynth.cpp
 )
 
 target_include_directories(Current PRIVATE include)
@@ -126,6 +128,40 @@ if(CURRENT_BUILD_TESTS)
         juce::juce_audio_processors
         juce::juce_audio_basics
         juce::juce_core
+        juce::juce_recommended_config_flags
+    )
+
+    # End-to-end audition-path test: links the full processor (and, because
+    # createEditor drags it in, the editor sources), no plugin wrappers.
+    # Current's makeBusesProperties is runtime-only (no JucePlugin_* macros),
+    # so the plugin sources compile fine in a console app.
+    juce_add_console_app(current_audition_test)
+    target_sources(current_audition_test PRIVATE
+        tools/audition_smoketest.cpp
+        source/PluginProcessor.cpp
+        source/PluginEditor.cpp
+        source/Engine.cpp
+        source/MainView.cpp
+        source/MenuBar.cpp
+        source/StepperControl.cpp
+        source/Canvas.cpp
+        source/ModuleComponent.cpp
+        source/PaletteBar.cpp
+        source/InlineDialog.cpp
+        source/ModuleWindow.cpp
+        source/ProgressionStepList.cpp
+        source/SettingsView.cpp
+        source/AuditionSynth.cpp
+    )
+    target_include_directories(current_audition_test PRIVATE include)
+    target_compile_definitions(current_audition_test PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+    )
+    target_link_libraries(current_audition_test PRIVATE
+        juce::juce_audio_utils
+        juce::juce_audio_processors
+        juce::juce_gui_basics
         juce::juce_recommended_config_flags
     )
 endif()

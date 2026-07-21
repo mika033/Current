@@ -37,7 +37,8 @@ public:
 
     /** Re-skin the editor from the Theme parameter: pushes the active scheme into
      *  the shared LookAndFeel and repaints so paint-time theme reads take effect.
-     *  Called from the ctor and whenever the Theme combo changes. */
+     *  Called from the ctor and whenever the theme is switched (the settings
+     *  space's Theme button, or an external parameter write). */
     void applyTheme();
 
 private:

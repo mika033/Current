@@ -8,10 +8,11 @@
 class CurrentAudioProcessor;
 
 // The bar above the canvas. Phase 2 carries the global settings only — root
-// and scale — plus a Theme switch. (Quantizing lives in the Quantize / Scale
-// modules now; the old global Quantize toggle is gone.) The Edit and
-// Load/Save menus described in the requirements are deferred (Phase 2 has no
-// Load/Save), so they aren't shown yet.
+// and scale — plus the Settings button that swaps the canvas for the settings
+// space (theme moved there). (Quantizing lives in the Quantize / Scale modules
+// now; the old global Quantize toggle is gone.) The Edit and Load/Save menus
+// described in the requirements are deferred (Phase 2 has no Load/Save), so
+// they aren't shown yet.
 //
 // In the Standalone the bar also carries the internal transport — a Play
 // toggle and a Tempo stepper — because there is no host transport to sync
@@ -20,16 +21,19 @@ class CurrentAudioProcessor;
 //
 // The combos are bound straight to the processor's APVTS, so the global
 // settings are real parameters that persist and (later) automate.
-class MenuBar : public juce::Component,
-                private juce::AudioProcessorValueTreeState::Listener
+class MenuBar : public juce::Component
 {
 public:
     MenuBar (CurrentAudioProcessor& processor,
-             std::function<void()> onThemeChanged);
+             std::function<void()> onSettingsClicked);
     ~MenuBar() override;
 
     void paint (juce::Graphics&) override;
     void resized() override;
+
+    // MainView owns the open/closed state; it calls back here so the button
+    // reads "Back" while the settings space is showing.
+    void setSettingsOpen (bool open);
 
 private:
     using ComboAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
@@ -39,11 +43,9 @@ private:
     juce::Label    rootLabel, scaleLabel;
     juce::ComboBox rootCombo, scaleCombo;
 
-    // Theme is a two-value choice, so a click-to-toggle button (label reads the
-    // active theme name) replaces a dropdown — cheaper real estate for two
-    // options, and the text doubles as the value readout (the LAM approach).
-    juce::Label      themeLabel;
-    juce::TextButton themeButton;
+    // Far right: toggles the settings space in and out (replacing the old
+    // in-bar Theme switch, which now lives inside the settings space).
+    juce::TextButton settingsButton { "Settings" };
 
     // Standalone-only internal transport (never created in plugin wrappers):
     // the Play toggle is the leftmost item, immediately followed by the BPM
@@ -54,16 +56,7 @@ private:
 
     std::unique_ptr<ComboAttachment> rootAtt, scaleAtt;
 
-    std::function<void()> themeChanged;
-
     void populateFromChoiceParam (juce::ComboBox& combo, const juce::String& paramID);
-
-    // Set the theme button text from the current Theme parameter value.
-    void refreshThemeButtonText();
-
-    // Keeps the button label (and the applied skin) in sync with external
-    // writes to the Theme parameter — state restore, preset apply, automation.
-    void parameterChanged (const juce::String& paramID, float newValue) override;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MenuBar)
 };

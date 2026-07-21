@@ -4,12 +4,16 @@
 #include "MenuBar.h"
 #include "Canvas.h"
 #include "PaletteBar.h"
+#include "SettingsView.h"
 
 class CurrentAudioProcessor;
 class CurrentAudioProcessorEditor;
 
 // Assembles the Phase 2 editor layout: the global-settings menu bar on top, the
-// canvas filling the middle, and the module palette tray along the bottom.
+// canvas filling the middle, and the module palette tray along the bottom. The
+// menu bar's Settings button swaps everything below the bar (canvas + palette —
+// a palette over a settings page would invite meaningless drags) for the
+// settings space, and back.
 class MainView : public juce::Component
 {
 public:
@@ -20,9 +24,13 @@ public:
     void resized() override;
 
 private:
-    MenuBar    menuBar;
-    Canvas     canvas;
-    PaletteBar palette;
+    MenuBar      menuBar;
+    Canvas       canvas;
+    PaletteBar   palette;
+    SettingsView settings;
+
+    bool settingsOpen = false;
+    void toggleSettings();
 
     static constexpr int kMenuBarH = 52;
     static constexpr int kPaletteH = 96;

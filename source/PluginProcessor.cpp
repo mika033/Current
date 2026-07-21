@@ -90,16 +90,81 @@ CurrentAudioProcessor::CurrentAudioProcessor()
     rootParam  = parameters.getRawParameterValue (ParamIDs::root);
     scaleParam = parameters.getRawParameterValue (ParamIDs::scale);
 
-    // A fresh instance starts as a wired pass-through — MIDI In → Output — so
-    // the plugin makes sound out of the box and the user meets a working cable
-    // as an example of the connect gesture. A host restoring a saved project
-    // replaces this via setStateInformation.
-    const int inId  = addModule (ModuleType::MidiIn, 80.0f, 170.0f);
-    const int outId = addModule (ModuleType::Output, 660.0f, 170.0f);
-    addConnection (inId, outId);
+    // A fresh DAW instance starts as a wired pass-through — MIDI In → Output —
+    // so the plugin makes sound out of the box and the user meets a working
+    // cable as an example of the connect gesture. A host restoring a saved
+    // project replaces this via setStateInformation. The Standalone instead
+    // boots with an empty canvas: it is the dev/test app, state persistence is
+    // off there (see getStateInformation), and a clean slate each launch beats
+    // meeting last session's leftovers.
+    if (! isStandalone())
+    {
+        const int inId  = addModule (ModuleType::MidiIn, 80.0f, 170.0f);
+        const int outId = addModule (ModuleType::Output, 660.0f, 170.0f);
+        addConnection (inId, outId);
+    }
+
+    // Standalone-only preferences file (the LAM approach). With state
+    // persistence off in the Standalone, the two things worth keeping across
+    // launches — theme and manual tempo — live here instead: they are user
+    // preferences, not patch content.
+    if (isStandalone())
+    {
+        juce::PropertiesFile::Options opts;
+        opts.applicationName     = "Current";
+        opts.filenameSuffix      = "settings";
+        opts.osxLibrarySubFolder = "Application Support";
+        opts.folderName          = "Snorkel Audio";
+        opts.storageFormat       = juce::PropertiesFile::storeAsXML;
+        standaloneProps = std::make_unique<juce::PropertiesFile> (opts);
+
+        // Default fallback (no settings file yet) matches the APVTS default of
+        // index 1 = Dark, so a first-run Standalone lands on Dark.
+        const int storedThemeIdx = juce::jlimit (0, 1,
+            standaloneProps->getIntValue ("themeIndex", 1));
+        if (auto* p = parameters.getParameter (ParamIDs::theme))
+            p->setValueNotifyingHost (p->convertTo0to1 ((float) storedThemeIdx));
+        parameters.addParameterListener (ParamIDs::theme, this);
+
+        internalBpm.store (juce::jlimit (20.0, 300.0,
+            standaloneProps->getDoubleValue ("internalBpm", 120.0)),
+            std::memory_order_relaxed);
+    }
+
+    // The audition synth can be heard in any wrapper with an audio output bus
+    // — everything except the AU MIDI-FX, which sheds its buses (see
+    // makeBusesProperties). Where unsupported the synth stays voiceless and
+    // processBlock never touches it.
+    auditionSynthSupported = (wrapperType != wrapperType_AudioUnit);
+    auditionSynth.attach (parameters, auditionSynthSupported);
+
+    // The synth defaults ON in the Standalone (there is no downstream
+    // instrument to route to, so booting silent would read as broken) and OFF
+    // in a DAW, where the user opts in. Seeded at runtime because the APVTS
+    // layout default is compile-time and can't tell wrapper types apart; with
+    // Standalone state persistence off this re-seeds on every launch, so the
+    // dev app always opens with the monitoring voice live.
+    if (isStandalone())
+        if (auto* p = parameters.getParameter (AuditionSynth::enabledId))
+            p->setValueNotifyingHost (1.0f);
 }
 
-CurrentAudioProcessor::~CurrentAudioProcessor() = default;
+CurrentAudioProcessor::~CurrentAudioProcessor()
+{
+    parameters.removeParameterListener (ParamIDs::theme, this);
+}
+
+void CurrentAudioProcessor::parameterChanged (const juce::String&, float newValue)
+{
+    // Only ever registered for the Theme parameter, Standalone only. Theme
+    // edits come from the Settings view on the message thread, so writing the
+    // file here is safe.
+    if (standaloneProps != nullptr)
+    {
+        standaloneProps->setValue ("themeIndex", (int) newValue);
+        standaloneProps->saveIfNeeded();
+    }
+}
 
 juce::AudioProcessorValueTreeState::ParameterLayout CurrentAudioProcessor::createLayout()
 {
@@ -117,12 +182,16 @@ juce::AudioProcessorValueTreeState::ParameterLayout CurrentAudioProcessor::creat
     layout.add (std::make_unique<juce::AudioParameterChoice> (
         juce::ParameterID { ParamIDs::theme, 1 }, "Theme", kThemeNames, 1));
 
+    AuditionSynth::addParameters (layout);
+
     return layout;
 }
 
-void CurrentAudioProcessor::prepareToPlay (double sampleRate, int)
+void CurrentAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     engine.prepare (sampleRate);
+    if (auditionSynthSupported)
+        auditionSynth.prepare (sampleRate, samplesPerBlock);
     internalQn = 0.0;
     // Cleared so a Play toggle already on at re-init gets a fresh off->on
     // edge (and with it the rewind to bar 1) on the first block.
@@ -149,7 +218,9 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 {
     juce::ScopedNoDenormals noDenormals;
 
-    // We produce no audio — clear whatever the host handed us.
+    // The engine produces no audio — clear whatever the host handed us. The
+    // audition synth (when enabled) writes into the cleared buffer after the
+    // engine runs, so it is the only audio the plugin ever emits.
     for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
         buffer.clear (ch, 0, buffer.getNumSamples());
 
@@ -200,6 +271,15 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     engine.process (midi, buffer.getNumSamples(), pos,
                     root, scaleIndex, audioGraph.get());
+
+    // Voice the outgoing MIDI through the audition synth — after the engine,
+    // so the user monitors exactly what the plugin emits (every module,
+    // including the timing post-passes, has already run).
+    if (auditionSynthSupported)
+    {
+        const double bpm = pos.hasValue() ? pos->getBpm().orFallback (120.0) : 120.0;
+        auditionSynth.process (buffer, midi, buffer.getNumSamples(), bpm);
+    }
 }
 
 juce::AudioProcessorEditor* CurrentAudioProcessor::createEditor()
@@ -602,6 +682,13 @@ void CurrentAudioProcessor::removeConnection (int fromId, int toId)
 
 void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
+    // The Standalone deliberately reports no state: it is the dev/test app,
+    // and every launch boots the empty canvas + defaults (the LAM approach).
+    // Theme and manual tempo survive via standaloneProps instead, and the
+    // audition synth re-seeds ON in the ctor.
+    if (isStandalone())
+        return;
+
     // Root of the saved state is the APVTS tree; the canvas layout rides along
     // as a child node. This is DAW-project persistence, not the user-facing
     // Load/Save of patches (which is a later phase).
@@ -757,6 +844,11 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 
 void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
+    // See getStateInformation — the Standalone never saves, and ignoring a
+    // stray restore keeps old saved blobs from resurrecting last session.
+    if (isStandalone())
+        return;
+
     auto xml = getXmlFromBinary (data, sizeInBytes);
     if (xml == nullptr)
         return;

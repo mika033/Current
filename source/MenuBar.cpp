@@ -1,11 +1,10 @@
 #include "MenuBar.h"
 #include "PluginProcessor.h"
 #include "Theme.h"
-#include "CurrentLookAndFeel.h"
 
 MenuBar::MenuBar (CurrentAudioProcessor& processor,
-                  std::function<void()> onThemeChanged)
-    : state (processor.apvts()), themeChanged (std::move (onThemeChanged))
+                  std::function<void()> onSettingsClicked)
+    : state (processor.apvts())
 {
     auto configLabel = [this] (juce::Label& l, const juce::String& text)
     {
@@ -51,51 +50,15 @@ MenuBar::MenuBar (CurrentAudioProcessor& processor,
     rootAtt  = std::make_unique<ComboAttachment> (state, ParamIDs::root,  rootCombo);
     scaleAtt = std::make_unique<ComboAttachment> (state, ParamIDs::scale, scaleCombo);
 
-    configLabel (themeLabel, "Theme");
-    addAndMakeVisible (themeButton);
-    refreshThemeButtonText();
-    // Click cycles the choice param (two values => toggle). We drive the param
-    // directly the way a ComboBoxAttachment would, so state saves / automation
-    // see a normal edit, then apply the skin and refresh the label right here
-    // (we're on the message thread) rather than waiting on the async listener.
-    themeButton.onClick = [this]()
-    {
-        if (auto* pc = dynamic_cast<juce::AudioParameterChoice*> (
-                state.getParameter (ParamIDs::theme)))
-        {
-            const int n = pc->choices.size();
-            if (n <= 0) return;
-            *pc = (pc->getIndex() + 1) % n;
-            if (themeChanged) themeChanged();
-            refreshThemeButtonText();
-        }
-    };
-    // Observe external writes (state restore, preset apply, automation) so the
-    // button label and applied skin stay in sync when we didn't drive the edit.
-    state.addParameterListener (ParamIDs::theme, this);
+    settingsButton.onClick = std::move (onSettingsClicked);
+    addAndMakeVisible (settingsButton);
 }
 
-MenuBar::~MenuBar()
-{
-    state.removeParameterListener (ParamIDs::theme, this);
-}
+MenuBar::~MenuBar() = default;
 
-void MenuBar::refreshThemeButtonText()
+void MenuBar::setSettingsOpen (bool open)
 {
-    if (auto* pc = dynamic_cast<juce::AudioParameterChoice*> (
-            state.getParameter (ParamIDs::theme)))
-        themeButton.setButtonText (pc->getCurrentChoiceName());
-}
-
-void MenuBar::parameterChanged (const juce::String&, float)
-{
-    // parameterChanged can arrive off the message thread; marshal the UI work.
-    juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<MenuBar> (this)]()
-    {
-        if (safe == nullptr) return;
-        if (safe->themeChanged) safe->themeChanged();
-        safe->refreshThemeButtonText();
-    });
+    settingsButton.setButtonText (open ? "Back" : "Settings");
 }
 
 void MenuBar::populateFromChoiceParam (juce::ComboBox& combo, const juce::String& paramID)
@@ -149,13 +112,10 @@ void MenuBar::resized()
     place (rootLabel,  rootCombo,  comboW);
     place (scaleLabel, scaleCombo, comboW);
 
-    // Theme sits at the far right: a "Theme" label + a toggle button whose text
-    // is the active theme name. Narrower than the old dropdown — the button need
-    // only hold "Light" / "Dark", not a full combo.
-    constexpr int themeBtnW = 64;
-    auto rightSlot = area.removeFromRight (labelW + themeBtnW + gap);
-    rightSlot = rightSlot.withSizeKeepingCentre (rightSlot.getWidth(), rowH);
-    themeLabel.setBounds (rightSlot.removeFromLeft (labelW));
-    rightSlot.removeFromLeft (4);
-    themeButton.setBounds (rightSlot.removeFromLeft (themeBtnW));
+    // Settings sits at the far right, wide enough for its longer "Settings"
+    // reading so the width doesn't jump when the text flips to "Back".
+    constexpr int settingsBtnW = 76;
+    auto rightSlot = area.removeFromRight (settingsBtnW);
+    rightSlot = rightSlot.withSizeKeepingCentre (settingsBtnW, rowH);
+    settingsButton.setBounds (rightSlot);
 }

@@ -7,7 +7,7 @@
 // labels / popup menus pick up the active theme's colours without a
 // per-component setColour on every widget. applyScheme() pushes the current
 // CurrentTheme scheme into the colour map; the editor calls it from its ctor and
-// whenever the Theme combo changes.
+// whenever the theme is switched.
 class CurrentLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
