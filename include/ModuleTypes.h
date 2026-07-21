@@ -26,6 +26,7 @@ enum class ModuleType
     // Modulators (Arp transforms held input notes into an arpeggio, so it is a
     // modulator, not a generator)
     Arp,
+    Rhythmize,     // retriggers the held input set on a 16-step on/off pattern
     Quantize,
     ScaleMod,      // the "Scale" modulator — forces passing notes onto a scale
     Progression,
@@ -45,7 +46,8 @@ enum class ModuleType
 // sources, Output is the one sink, modulators have both.
 inline bool moduleHasInputPort (ModuleType t)
 {
-    return t == ModuleType::Arp || t == ModuleType::Quantize
+    return t == ModuleType::Arp || t == ModuleType::Rhythmize
+        || t == ModuleType::Quantize
         || t == ModuleType::ScaleMod || t == ModuleType::Progression
         || t == ModuleType::Shift || t == ModuleType::Mirror
         || t == ModuleType::Harmonizer || t == ModuleType::Delay
@@ -83,9 +85,9 @@ struct ModuleDescriptor
 // name with the Scale generator on purpose (the user asked for a "scale
 // modulator"); shape and colour keep them apart, and their persistence ids
 // differ ("Scale" vs "ScaleMod").
-inline const std::array<ModuleDescriptor, 17>& moduleCatalogue()
+inline const std::array<ModuleDescriptor, 18>& moduleCatalogue()
 {
-    static const std::array<ModuleDescriptor, 17> kCatalogue = {{
+    static const std::array<ModuleDescriptor, 18> kCatalogue = {{
         { ModuleType::MidiIn,      ModuleKind::IO,        "MIDI In",     "Input"    },
         { ModuleType::Output,      ModuleKind::IO,        "Output",      "Output"   },
         { ModuleType::Random,      ModuleKind::Generator, "Random",      "Random"   },
@@ -94,6 +96,7 @@ inline const std::array<ModuleDescriptor, 17>& moduleCatalogue()
         { ModuleType::Chord,       ModuleKind::Generator, "Chord",       "Chord"    },
         { ModuleType::Drone,       ModuleKind::Generator, "Drone",       "Drone"    },
         { ModuleType::Arp,         ModuleKind::Modulator, "Arp",         "Arp"      },
+        { ModuleType::Rhythmize,   ModuleKind::Modulator, "Rhythmize",   "Rhythm"   },
         { ModuleType::Quantize,    ModuleKind::Modulator, "Quantize",    "Quantize" },
         { ModuleType::ScaleMod,    ModuleKind::Modulator, "Scale",       "Scale"    },
         { ModuleType::Progression, ModuleKind::Modulator, "Progression", "Prog"     },
@@ -121,7 +124,8 @@ inline juce::String moduleTypeToString (ModuleType type)
 {
     switch (type)
     {
-        case ModuleType::Arp:      return "Arp";
+        case ModuleType::Arp:       return "Arp";
+        case ModuleType::Rhythmize: return "Rhythmize";
         case ModuleType::Random:   return "Random";
         case ModuleType::ScaleGen: return "Scale";
         case ModuleType::Lfo:      return "LFO";
@@ -144,6 +148,7 @@ inline juce::String moduleTypeToString (ModuleType type)
 
 inline ModuleType moduleTypeFromString (const juce::String& s)
 {
+    if (s == "Rhythmize") return ModuleType::Rhythmize;
     if (s == "Random")   return ModuleType::Random;
     if (s == "Scale")    return ModuleType::ScaleGen;
     if (s == "LFO")      return ModuleType::Lfo;
@@ -169,4 +174,13 @@ inline ModuleType moduleTypeFromString (const juce::String& s)
 inline int defaultChannelFor (ModuleType type)
 {
     return type == ModuleType::Output ? 1 : 0;
+}
+
+// The help-bar key for a module type's one-line description in help.json
+// ("module.random"). Defined here, next to the persistence id it derives
+// from, because two surfaces fire it — the palette chips and the canvas
+// node selection — and the two must never drift apart.
+inline juce::String moduleHelpKey (ModuleType type)
+{
+    return "module." + moduleTypeToString (type).toLowerCase();
 }

@@ -2,6 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <array>
+#include <atomic>
 #include <map>
 #include <vector>
 #include "EngineGraph.h"
@@ -49,6 +50,10 @@
 //  - Arp: consumes its input notes while playing (they are its input data) and
 //    walks the currently held set on its grid; when stopped, input passes
 //    through so live playing stays audible.
+//  - Rhythmize: the Arp's input contract (consume while playing, pass through
+//    while stopped), but instead of walking one note per step it retriggers
+//    the whole held set — at the held velocities — on every step its 16-step
+//    pattern marks active, and stays silent on the inactive ones.
 //  - Harmonizer: stacks voices on each input note-on (Add/Replace/Top over its
 //    input held set); the voices ride the played note's on/off.
 //  - Pitch mappers (Scale, Progression, Shift, Mirror): map each note-on's
@@ -62,8 +67,9 @@
 //    cumulative per-echo shift in semitones or degrees). Echoes run regardless
 //    of transport; stop discards booked echoes and releases sounding ones.
 //  - Strum: groups near-simultaneous note-ons (a fixed detection window — its
-//    added latency) and fans them out over the spread; each note-off is
-//    delayed like its note-on so lengths and order hold.
+//    added latency) and fans them out one tempo-synced spread gap apart (up to
+//    an 1/8 note between consecutive notes); each note-off is delayed like its
+//    note-on so lengths and order hold.
 //  - Humanize: delay-only feel warp of its whole input stream (pair-based
 //    swing as a continuous nudge, lay-back, deterministic timing/velocity/
 //    length jitter hashed from song position so loops repeat).
@@ -96,6 +102,15 @@ public:
                   const juce::Optional<juce::AudioPlayHead::PositionInfo>& pos,
                   int root, int scaleIndex,
                   const GraphSnapshot* graph);
+
+    // The engine's resolved transport clock as of the last processed block
+    // (song position at block start in quarter notes, and whether the
+    // transport ran), published for UI playhead displays — the engine is the
+    // one place the ppq/fallback resolution lives, so a playhead computed from
+    // these can't drift from what the grids actually did. Written once per
+    // block on the audio thread; read from the message thread at timer rate.
+    std::atomic<double> uiSongQn  { 0.0 };
+    std::atomic<bool>   uiPlaying { false };
 
     // Per-block context shared by the node processors (public so the free
     // helper functions in Engine.cpp can take it).
@@ -158,7 +173,10 @@ public:
     struct NodeState
     {
         std::array<bool, 128>     held {};         // Arp: input notes down
-        std::vector<KeyRef>       passedOn;        // Arp: notes passed through while stopped
+        std::array<juce::uint8, 128> heldVel {};   // Rhythmize: input notes down, with
+                                                   // velocity (0 = not held) so retriggers
+                                                   // keep the played dynamics
+        std::vector<KeyRef>       passedOn;        // Arp/Rhythmize: notes passed through while stopped
         std::vector<KeyRef>       inHeld;          // MIDI In: note-ons admitted
         std::vector<ActiveNote>   activeGen;       // gate countdowns (generators, Arp,
                                                    // Delay echoes, Quantize converted notes)
@@ -190,6 +208,7 @@ private:
     void processChord      (const GraphNode&, NodeState&, const juce::MidiBuffer&, juce::MidiBuffer&, const BlockContext&);
     void processDrone      (const GraphNode&, NodeState&, const juce::MidiBuffer&, juce::MidiBuffer&, const BlockContext&);
     void processArp        (const GraphNode&, NodeState&, const juce::MidiBuffer&, juce::MidiBuffer&, const BlockContext&);
+    void processRhythmize  (const GraphNode&, NodeState&, const juce::MidiBuffer&, juce::MidiBuffer&, const BlockContext&);
     void processHarmonizer (const GraphNode&, NodeState&, const juce::MidiBuffer&, juce::MidiBuffer&, const BlockContext&);
     void processScaleMod   (const GraphNode&, NodeState&, const juce::MidiBuffer&, juce::MidiBuffer&, const BlockContext&);
     void processProgression(const GraphNode&, NodeState&, const juce::MidiBuffer&, juce::MidiBuffer&, const BlockContext&);

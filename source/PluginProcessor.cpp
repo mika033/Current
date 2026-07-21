@@ -45,6 +45,24 @@ namespace
             steps.push_back ({});   // the list is never empty — default step I
         return steps;
     }
+
+    // Persistence form of Rhythmize's pattern: a 16-char '0'/'1' string,
+    // step 0 first — readable in the saved XML like the progression steps.
+    juce::String rhythmStepsToString (const std::array<bool, ModuleOptions::kRhythmSteps>& steps)
+    {
+        juce::String s;
+        for (bool on : steps)
+            s << (on ? "1" : "0");
+        return s;
+    }
+
+    std::array<bool, ModuleOptions::kRhythmSteps> rhythmStepsFromString (const juce::String& text)
+    {
+        auto steps = ModuleOptions::defaultRhythmSteps();
+        for (int i = 0; i < ModuleOptions::kRhythmSteps && i < text.length(); ++i)
+            steps[(size_t) i] = text[i] != '0';
+        return steps;
+    }
 }
 
 // Bus layout is asymmetric by wrapper:
@@ -269,6 +287,17 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         pos = pi;
     }
 
+    // Remember the tempo this block ran at for UI readouts (matches the
+    // engine's own bpm resolution: a valid host/internal bpm, else 120).
+    {
+        double bpm = 120.0;
+        if (pos.hasValue())
+            if (auto b = pos->getBpm())
+                if (*b > 0.0)
+                    bpm = *b;
+        lastKnownBpm.store (bpm, std::memory_order_relaxed);
+    }
+
     engine.process (midi, buffer.getNumSamples(), pos,
                     root, scaleIndex, audioGraph.get());
 
@@ -276,10 +305,8 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // so the user monitors exactly what the plugin emits (every module,
     // including the timing post-passes, has already run).
     if (auditionSynthSupported)
-    {
-        const double bpm = pos.hasValue() ? pos->getBpm().orFallback (120.0) : 120.0;
-        auditionSynth.process (buffer, midi, buffer.getNumSamples(), bpm);
-    }
+        auditionSynth.process (buffer, midi, buffer.getNumSamples(),
+                               lastKnownBpm.load (std::memory_order_relaxed));
 }
 
 juce::AudioProcessorEditor* CurrentAudioProcessor::createEditor()
@@ -357,6 +384,14 @@ ModuleParams CurrentAudioProcessor::paramsFor (const ModuleInstance& m) const
             p.octaves  = s.octaves;
             p.mode     = s.mode;
             break;
+        case ModuleType::Rhythmize:
+            p.stepQn   = ModuleOptions::rateQuarterNotes (s.rate);
+            p.gateFrac = ModuleOptions::gateFraction (s.gate);
+            p.rhythmMask = 0;
+            for (int i = 0; i < ModuleOptions::kRhythmSteps; ++i)
+                if (s.rhythmSteps[(size_t) i])
+                    p.rhythmMask |= (1u << i);
+            break;
         case ModuleType::Quantize:
             p.stepQn = ModuleOptions::rateQuarterNotes (s.rate);
             p.swing  = ModuleOptions::swingFraction (s.swing);
@@ -397,10 +432,10 @@ ModuleParams CurrentAudioProcessor::paramsFor (const ModuleInstance& m) const
         case ModuleType::Strum:
             p.mode           = s.mode;
             p.repeatQn       = ModuleOptions::repeatQuarterNotes (s.repeat);
-            p.strumSpreadSec = ModuleOptions::strumSpreadSeconds (s.strumSpread);
+            p.strumGapQn     = ModuleOptions::strumGapQn (s.strumSpread);
             p.strumCurve     = s.strumCurve;
             p.strumVelTilt   = (double) s.strumVelTilt / (double) ModuleOptions::kStrumVelTiltRange;
-            p.strumJitter    = (double) s.strumJitter  / (double) ModuleOptions::kStrumJitterSteps;
+            p.strumJitter    = (double) s.strumJitter  / (double) ModuleOptions::kStrumJitterMax;
             break;
         case ModuleType::Humanize:
             p.stepQn          = ModuleOptions::rateQuarterNotes (s.rate);
@@ -720,12 +755,15 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen
             || m.type == ModuleType::Arp || m.type == ModuleType::Lfo
             || m.type == ModuleType::Delay || m.type == ModuleType::Quantize
-            || m.type == ModuleType::Humanize)
+            || m.type == ModuleType::Humanize || m.type == ModuleType::Rhythmize)
             node.setProperty ("rate", m.settings.rate, nullptr);
         // Gate ships on every note-emitting Rate module.
         if (m.type == ModuleType::Random || m.type == ModuleType::ScaleGen
-            || m.type == ModuleType::Lfo || m.type == ModuleType::Arp)
+            || m.type == ModuleType::Lfo || m.type == ModuleType::Arp
+            || m.type == ModuleType::Rhythmize)
             node.setProperty ("gate", m.settings.gate, nullptr);
+        if (m.type == ModuleType::Rhythmize)
+            node.setProperty ("rhythmSteps", rhythmStepsToString (m.settings.rhythmSteps), nullptr);
         // Quantize and Humanize share the swing field (same meaning); Humanize
         // adds its five feel amounts.
         if (m.type == ModuleType::Quantize || m.type == ModuleType::Humanize)
@@ -859,6 +897,11 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
     if (! state.isValid())
         return;
 
+    // Open the help-bar suppression window (see isRestoringState) before any
+    // of the restore work retriggers UI attachments.
+    stateRestoreEndsAt.store (juce::Time::getMillisecondCounter() + 200,
+                              std::memory_order_release);
+
     moduleList.clear();
     connectionList.clear();
     nextModuleId = 1;
@@ -913,6 +956,9 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             m.settings.humanizeTimeJit = (int) node.getProperty ("humanizeTimeJit", def.humanizeTimeJit);
             m.settings.humanizeVelJit  = (int) node.getProperty ("humanizeVelJit",  def.humanizeVelJit);
             m.settings.humanizeLenJit  = (int) node.getProperty ("humanizeLenJit",  def.humanizeLenJit);
+            m.settings.rhythmSteps   = rhythmStepsFromString (
+                                           node.getProperty ("rhythmSteps",
+                                                             rhythmStepsToString (def.rhythmSteps)).toString());
             m.settings.progRate      = (int)  node.getProperty ("progRate", def.progRate);
             m.settings.progSteps     = progStepsFromString (
                                            node.getProperty ("progSteps",

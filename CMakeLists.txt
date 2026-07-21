@@ -85,11 +85,18 @@ target_sources(Current PRIVATE
     source/InlineDialog.cpp
     source/ModuleWindow.cpp
     source/ProgressionStepList.cpp
+    source/RhythmizeStepGrid.cpp
     source/SettingsView.cpp
+    source/MessageStrip.cpp
+    source/HelpText.cpp
     source/AuditionSynth.cpp
 )
 
 target_include_directories(Current PRIVATE include)
+
+# Per-control help descriptions for the bottom help bar (messaging-area spec):
+# resources/help.json is compiled into the binary and lazy-parsed by HelpText.
+juce_add_binary_data(CurrentHelpData SOURCES resources/help.json)
 
 juce_generate_juce_header(Current)
 
@@ -100,6 +107,7 @@ target_compile_definitions(Current PUBLIC
 )
 
 target_link_libraries(Current PRIVATE
+    CurrentHelpData
     juce::juce_audio_utils
     juce::juce_audio_processors
     juce::juce_gui_basics
@@ -150,7 +158,10 @@ if(CURRENT_BUILD_TESTS)
         source/InlineDialog.cpp
         source/ModuleWindow.cpp
         source/ProgressionStepList.cpp
+        source/RhythmizeStepGrid.cpp
         source/SettingsView.cpp
+        source/MessageStrip.cpp
+        source/HelpText.cpp
         source/AuditionSynth.cpp
     )
     target_include_directories(current_audition_test PRIVATE include)
@@ -159,6 +170,7 @@ if(CURRENT_BUILD_TESTS)
         JUCE_USE_CURL=0
     )
     target_link_libraries(current_audition_test PRIVATE
+        CurrentHelpData
         juce::juce_audio_utils
         juce::juce_audio_processors
         juce::juce_gui_basics

@@ -1,6 +1,7 @@
 #include "ModuleWindow.h"
 #include "Theme.h"
 #include "CurrentLookAndFeel.h"   // kUiFontSize — dial/title sizing
+#include "HelpText.h"             // per-option help-key resolution for combos
 
 ModuleWindow::ModuleWindow (const juce::String& title)
     : titleText (title)
@@ -47,13 +48,27 @@ void ModuleWindow::setMenuCombo (int slot,
 {
     jassert (juce::isPositiveAndBelow (slot, kMenuSlots));
     auto& s = menuSlots[(size_t) slot];
-    s.name = name;
+    s.name    = name;
+    s.helpKey = name;
     makeLabel (s.label, label, juce::Justification::centredRight);
 
     s.combo = std::make_unique<juce::ComboBox>();
     s.combo->addItemList (items, 1);   // ids are 1-based
     s.combo->setSelectedItemIndex (juce::jlimit (0, items.size() - 1, selectedIndex),
                                    juce::dontSendNotification);
+    // The window owns onChange: per-control reaction first, then the window-wide
+    // change signal (live-apply), then the help-bar report.
+    auto* entry = &s;
+    s.combo->onChange = [this, entry]()
+    {
+        if (entry->changeCb)
+            entry->changeCb();
+        if (onChanged)
+            onChanged();
+        if (onFeedback)
+            onFeedback (entry->label->getText() + ": " + entry->combo->getText(),
+                        HelpText::keyForOption (entry->helpKey, entry->combo->getText()));
+    };
     addAndMakeVisible (s.combo.get());
 
     if (getParentComponent())
@@ -68,13 +83,26 @@ void ModuleWindow::setGridCombo (int slot,
 {
     jassert (juce::isPositiveAndBelow (slot, kGridSlots));
     auto& c = gridCells[(size_t) slot];
-    c.name = name;
+    c.name    = name;
+    c.helpKey = name;
     makeLabel (c.label, label, juce::Justification::centred);
 
     c.combo = std::make_unique<juce::ComboBox>();
     c.combo->addItemList (items, 1);
     c.combo->setSelectedItemIndex (juce::jlimit (0, items.size() - 1, selectedIndex),
                                    juce::dontSendNotification);
+    // Same onChange ownership as the menu combos: reaction, live-apply, report.
+    auto* cell = &c;
+    c.combo->onChange = [this, cell]()
+    {
+        if (cell->comboChangeCb)
+            cell->comboChangeCb();
+        if (onChanged)
+            onChanged();
+        if (onFeedback)
+            onFeedback (cell->label->getText() + ": " + cell->combo->getText(),
+                        HelpText::keyForOption (cell->helpKey, cell->combo->getText()));
+    };
     addAndMakeVisible (c.combo.get());
 
     if (getParentComponent())
@@ -91,6 +119,7 @@ void ModuleWindow::setGridDial (int slot,
     jassert (juce::isPositiveAndBelow (slot, kGridSlots));
     auto& c = gridCells[(size_t) slot];
     c.name       = name;
+    c.helpKey    = name;
     c.baseLabel  = label;
     c.dialFormat = std::move (valueText);
     makeLabel (c.label, label, juce::Justification::centred);
@@ -107,6 +136,15 @@ void ModuleWindow::setGridDial (int slot,
         refreshDialLabel (*cell);
         if (cell->dialChangeCb)
             cell->dialChangeCb();
+        if (onChanged)
+            onChanged();
+        // The refreshed label already reads "<Label>: <value>" for formatted
+        // dials, so it is the help-bar message verbatim.
+        if (onFeedback)
+            onFeedback (cell->dialFormat
+                            ? cell->label->getText()
+                            : cell->baseLabel + ": " + juce::String (cell->dial->getValue()),
+                        cell->helpKey);
     };
     addAndMakeVisible (c.dial.get());
     refreshDialLabel (c);   // initial text (setValue above was silent)
@@ -162,12 +200,20 @@ void ModuleWindow::refreshDial (const juce::String& name)
         }
 }
 
+void ModuleWindow::setHelpKey (const juce::String& controlName, const juce::String& helpKey)
+{
+    for (auto& s : menuSlots)
+        if (s.filled() && s.name == controlName) { s.helpKey = helpKey; return; }
+    for (auto& c : gridCells)
+        if (c.filled() && c.name == controlName) { c.helpKey = helpKey; return; }
+}
+
 void ModuleWindow::setComboChangeCallback (const juce::String& name, std::function<void()> cb)
 {
     for (auto& s : menuSlots)
-        if (s.filled() && s.name == name) { s.combo->onChange = cb; return; }
+        if (s.filled() && s.name == name) { s.changeCb = std::move (cb); return; }
     for (auto& c : gridCells)
-        if (c.combo != nullptr && c.name == name) { c.combo->onChange = cb; return; }
+        if (c.combo != nullptr && c.name == name) { c.comboChangeCb = std::move (cb); return; }
 }
 
 void ModuleWindow::setDialChangeCallback (const juce::String& name, std::function<void()> cb)
@@ -206,14 +252,29 @@ void ModuleWindow::addButton (const juce::String& text, int returnValue)
         resized();
 }
 
+int ModuleWindow::gridBoxHeight() const
+{
+    if (customBody == nullptr)
+        return 2 * cellRowH + rowGap + 2 * gridInset;   // the fixed default body
+
+    int rows = 0;
+    for (int slot = 0; slot < kGridSlots; ++slot)
+        if (gridCells[(size_t) slot].filled())
+            rows = juce::jmax (rows, slot / 3 + 1);
+    return rows == 0 ? 0 : rows * cellRowH + (rows - 1) * rowGap + 2 * gridInset;
+}
+
 int ModuleWindow::calculatePanelHeight() const
 {
     int h = padding;
     h += titleHeight;
     h += sectionGap + menuStripH;
-    // Body: the custom body's height when one is installed, else the 3x2 grid box.
-    h += sectionGap + (customBody != nullptr ? customBodyHeight
-                                             : 2 * cellRowH + rowGap + 2 * gridInset);
+    // Body sections: the custom body when one is installed, and/or the grid box
+    // (see gridBoxHeight for when each is present).
+    if (customBody != nullptr)
+        h += sectionGap + customBodyHeight;
+    if (const int gridH = gridBoxHeight(); gridH > 0)
+        h += sectionGap + gridH;
     h += sectionGap + buttonHeight;
     h += padding;
     return h;
@@ -242,16 +303,20 @@ void ModuleWindow::paint (juce::Graphics& g)
                 titleHeight,
                 juce::Justification::centredLeft);
 
-    // Menu-bar strip and grid box drawn as nested section boxes (canvasBg is a
-    // touch offset from panelBg, so they read as recessed panels).
+    // Menu-bar strip and body/grid boxes drawn as nested section boxes
+    // (canvasBg is a touch offset from panelBg, so they read as recessed
+    // panels). A section a window doesn't have keeps an empty rect.
     auto section = [&] (juce::Rectangle<int> r)
     {
+        if (r.isEmpty())
+            return;
         g.setColour (s.canvasBg);
         g.fillRoundedRectangle (r.toFloat(), sectionCorner);
         g.setColour (s.panelBorder);
         g.drawRoundedRectangle (r.toFloat().reduced (0.5f), sectionCorner, 1.0f);
     };
     section (menuStripBounds);
+    section (bodyBoxBounds);
     section (gridBoxBounds);
 }
 
@@ -289,17 +354,24 @@ void ModuleWindow::resized()
     }
     y += menuStripH + sectionGap;
 
-    // ----- Body: a custom body component, or the default 3x2 grid box -----
-    const int gridBoxH = customBody != nullptr ? customBodyHeight
-                                               : 2 * cellRowH + rowGap + 2 * gridInset;
-    gridBoxBounds = { contentX, y, contentW, gridBoxH };
+    // ----- Body sections: the custom body and/or the grid box -----
     if (customBody != nullptr)
     {
         // The body draws itself inside the recessed section box paint() lays
         // down; give it the full box so it owns the whole area.
-        customBody->setBounds (gridBoxBounds);
+        bodyBoxBounds = { contentX, y, contentW, customBodyHeight };
+        customBody->setBounds (bodyBoxBounds);
+        y += customBodyHeight + sectionGap;
     }
     else
+    {
+        bodyBoxBounds = {};
+    }
+
+    const int gridBoxH = gridBoxHeight();
+    gridBoxBounds = gridBoxH > 0 ? juce::Rectangle<int> { contentX, y, contentW, gridBoxH }
+                                 : juce::Rectangle<int>();
+    if (gridBoxH > 0)
     {
         const int innerX = gridBoxBounds.getX() + gridInset;
         const int innerY = gridBoxBounds.getY() + gridInset;
@@ -332,7 +404,6 @@ void ModuleWindow::resized()
             }
         }
     }
-    y += gridBoxH + sectionGap;
 
     // ----- Action buttons, bottom-right -----
     const int count = buttons.size();

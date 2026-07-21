@@ -35,6 +35,7 @@ namespace
     struct TestConfig
     {
         bool hasArp         = false;
+        bool hasRhythmize   = false;
         bool hasRandom      = false;
         bool hasScaleGen    = false;
         bool hasLfo         = false;
@@ -57,6 +58,10 @@ namespace
         int    arpOctaves  = 1;
         double arpGateFrac = 0.5;
         double arpRepeatQn = 0.0;
+
+        double        rhythmStepQn   = 0.25;
+        double        rhythmGateFrac = 0.5;
+        std::uint32_t rhythmMask     = 0xffff;
 
         int    randomRoot     = -1;
         int    randomScale    = -1;
@@ -135,7 +140,7 @@ namespace
         int    delayScale    = -1;
         int    delayRoot     = -1;
 
-        double strumSpreadSec = 0.04;
+        double strumGapQn     = 0.2;
         int    strumMode      = 0;
         int    strumCurve     = 0;
         double strumVelTilt   = 0.0;
@@ -205,6 +210,12 @@ namespace
             {
                 p.mode = cfg.arpMode; p.stepQn = cfg.arpStepQn; p.octaves = cfg.arpOctaves;
                 p.gateFrac = cfg.arpGateFrac; p.repeatQn = cfg.arpRepeatQn;
+            }));
+        if (cfg.hasRhythmize)
+            chainInto (add (ModuleType::Rhythmize, [&] (ModuleParams& p)
+            {
+                p.stepQn = cfg.rhythmStepQn; p.gateFrac = cfg.rhythmGateFrac;
+                p.rhythmMask = cfg.rhythmMask;
             }));
         if (cfg.hasHarmonizer)
             chainInto (add (ModuleType::Harmonizer, [&] (ModuleParams& p)
@@ -298,7 +309,7 @@ namespace
         if (cfg.hasStrum)
             chainInto (add (ModuleType::Strum, [&] (ModuleParams& p)
             {
-                p.strumSpreadSec = cfg.strumSpreadSec; p.mode = cfg.strumMode;
+                p.strumGapQn = cfg.strumGapQn; p.mode = cfg.strumMode;
                 p.strumCurve = cfg.strumCurve; p.strumVelTilt = cfg.strumVelTilt;
                 p.strumJitter = cfg.strumJitter; p.repeatQn = cfg.strumRepeatQn;
             }));
@@ -867,6 +878,90 @@ int main()
         // everything still balances.
         arpPitches (ModuleOptions::kModeUp, 1, 0.0, 1.0, 8, ons, offs);
         check (ons > 0 && ons == offs, "Arp 100% gate: balanced after stop");
+    }
+
+    // --- 5c. Rhythmize: retriggers the held set on its active steps only ----
+    {
+        // Steps 0 and 2 active (of 16): a held C+E fires at 0.0 and 0.5 qn of
+        // every 4-qn pattern pass, keeping each note's own pitch and velocity.
+        Engine e; e.prepare (sr);
+        TestConfig cfg;
+        cfg.hasRhythmize = true;
+        cfg.rhythmMask   = 0x5;   // steps 0 and 2
+
+        std::vector<std::pair<int, int>> onsSeen;   // (pitch, velocity)
+        int ons = 0, offs = 0;
+        auto collect = [&] (const juce::MidiBuffer& midi)
+        {
+            for (const auto meta : midi)
+                if (meta.getMessage().isNoteOn())
+                    onsSeen.push_back ({ meta.getMessage().getNoteNumber(),
+                                         (int) meta.getMessage().getVelocity() });
+        };
+        {
+            juce::MidiBuffer midi;
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+            midi.addEvent (juce::MidiMessage::noteOn (1, 64, (juce::uint8) 80), 0);
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
+            tally (midi, ons, offs);
+            collect (midi);
+        }
+        // One 16-step pattern at 1/16 = 4 qn = 172.27 blocks; stay inside it so
+        // the next pattern pass's step 0 can't join the tally.
+        for (int i = 0; i < 171; ++i)
+        {
+            juce::MidiBuffer midi;
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
+            tally (midi, ons, offs);
+            collect (midi);
+        }
+        check (onsSeen == std::vector<std::pair<int, int>> {
+                   { 60, 100 }, { 64, 80 }, { 60, 100 }, { 64, 80 } },
+               "Rhythmize fires the held set on its two active steps, keeping pitch + velocity");
+        { juce::MidiBuffer midi; processCfg (e, midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
+        check (ons > 0 && ons == offs, "Rhythmize: every note-on balanced after stop");
+    }
+
+    // --- 5d. Rhythmize: inactive steps are silent; stopped input passes -----
+    {
+        Engine e; e.prepare (sr);
+        TestConfig cfg;
+        cfg.hasRhythmize = true;
+        cfg.rhythmMask   = 0;   // every step off
+
+        int ons = 0, offs = 0;
+        {
+            auto midi = noteOnBuf (60);
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
+            tally (midi, ons, offs);
+        }
+        for (int i = 0; i < 50; ++i)
+        {
+            juce::MidiBuffer midi;
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
+            tally (midi, ons, offs);
+        }
+        check (ons == 0, "Rhythmize with an all-off pattern emits nothing while playing");
+
+        // Stopped: input passes through so live playing stays audible.
+        Engine e2; e2.prepare (sr);
+        auto midi = noteOnBuf (60);
+        processCfg (e2, midi, block, playing (false), 0, 0, cfg);
+        int ons2 = 0, offs2 = 0; tally (midi, ons2, offs2);
+        check (ons2 == 1, "Rhythmize passes input through while the transport is stopped");
+    }
+
+    // --- 5e. The engine publishes its clock for UI playheads ----------------
+    {
+        Engine e; e.prepare (sr);
+        TestConfig cfg;
+        juce::MidiBuffer midi;
+        processCfg (e, midi, block, playingAt (3.0), 0, 0, cfg);
+        check (e.uiPlaying.load() && e.uiSongQn.load() == 3.0,
+               "engine publishes song position + playing flag for UI playheads");
+        juce::MidiBuffer midi2;
+        processCfg (e, midi2, block, playing (false), 0, 0, cfg);
+        check (! e.uiPlaying.load(), "published playing flag clears on stop");
     }
 
     // --- 6. MIDI In: channel filter drops non-matching input ----------------
@@ -1627,19 +1722,19 @@ int main()
 
     // --- 15d. Strum: fans a chord over the spread window, direction, balance -
     {
-        // A 3-note chord played together, spread 100 ms. Collect the resulting
-        // note-ons (absolute sample, pitch, velocity) as the fan plays out, then
-        // release and drain; report the on/off tally.
-        auto runStrum = [&] (int mode, double spreadSec, double velTilt,
+        // A 3-note chord played together, a 0.1-qn gap between fanned notes.
+        // Collect the resulting note-ons (absolute sample, pitch, velocity) as
+        // the fan plays out, then release and drain; report the on/off tally.
+        auto runStrum = [&] (int mode, double gapQn, double velTilt,
                              std::vector<std::tuple<int, int, int>>& ons,
                              int& onsN, int& offsN)
         {
             Engine e; e.prepare (sr);
             TestConfig cfg;
-            cfg.hasStrum       = true;
-            cfg.strumMode      = mode;
-            cfg.strumSpreadSec = spreadSec;
-            cfg.strumVelTilt   = velTilt;
+            cfg.hasStrum     = true;
+            cfg.strumMode    = mode;
+            cfg.strumGapQn   = gapQn;
+            cfg.strumVelTilt = velTilt;
             int blockStart = 0, on = 0, off = 0;
             auto pump = [&] (juce::MidiBuffer&& in)
             {
@@ -1685,6 +1780,11 @@ int main()
                 check (std::get<0> (ons[0]) < std::get<0> (ons[1])
                            && std::get<0> (ons[1]) < std::get<0> (ons[2]),
                        "Strum spreads the notes out in time");
+                // Per-note spacing: 0.1 qn at 120 bpm / 44.1 kHz = 2205 samples
+                // between each consecutive note (Even curve, no jitter).
+                check (std::get<0> (ons[1]) - std::get<0> (ons[0]) == 2205
+                           && std::get<0> (ons[2]) - std::get<0> (ons[1]) == 2205,
+                       "Strum spaces consecutive notes one tempo-synced gap apart");
                 check (std::get<0> (ons[0]) == (int) std::llround (0.03 * sr),
                        "Strum's first note lands after the fixed detection window");
             }
@@ -1706,7 +1806,7 @@ int main()
     {
         // Spread 0 = bypass: the chord passes through together at sample 0.
         Engine e; e.prepare (sr);
-        TestConfig cfg; cfg.hasStrum = true; cfg.strumSpreadSec = 0.0;
+        TestConfig cfg; cfg.hasStrum = true; cfg.strumGapQn = 0.0;
         juce::MidiBuffer midi;
         midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
         midi.addEvent (juce::MidiMessage::noteOn (1, 64, (juce::uint8) 100), 0);
@@ -1722,7 +1822,7 @@ int main()
         Engine e; e.prepare (sr);
         TestConfig cfg;
         cfg.hasStrum       = true;
-        cfg.strumSpreadSec = 0.02;
+        cfg.strumGapQn     = 0.02;
         cfg.strumRepeatQn  = 2.0;   // 1/2 bar
         int on = 0, off = 0;
         double qn = 0.0;

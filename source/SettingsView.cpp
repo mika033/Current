@@ -28,6 +28,8 @@ SettingsView::SettingsView (CurrentAudioProcessor& processor,
             *pc = (pc->getIndex() + 1) % n;
             if (themeChanged) themeChanged();
             refreshThemeButtonText();
+            if (onFeedback)
+                onFeedback ("Theme: " + pc->getCurrentChoiceName(), "theme");
         }
     };
     // Observe external writes (state restore, automation) so the button label
@@ -43,20 +45,30 @@ SettingsView::SettingsView (CurrentAudioProcessor& processor,
         addAndMakeVisible (synthEnableToggle);
         synthEnableAtt = std::make_unique<ButtonAttachment> (
             state, AuditionSynth::enabledId, synthEnableToggle);
+        // Help-bar report, gated on the pointer being over the toggle so
+        // attachment-driven flips (state restore, automation) stay silent —
+        // the canonical continuous-control filter (messaging-area spec §1.6).
+        synthEnableToggle.onClick = [this]()
+        {
+            if (synthEnableToggle.isMouseOverOrDragging() && onFeedback)
+                onFeedback (juce::String ("Audition Synth: ")
+                                + (synthEnableToggle.getToggleState() ? "On" : "Off"),
+                            "synth.enabled");
+        };
 
         // Signal-flow order: voice tone (Character, Cutoff, Env Amt, Decay),
         // then the insert FX (Space).
         auto pct = [] (double v) { return juce::String ((int) std::round (v * 100.0)) + "%"; };
-        setupDial (dials[0], AuditionSynth::characterId, "Character", pct);
-        setupDial (dials[1], AuditionSynth::cutoffId, "Cutoff", [] (double v)
+        setupDial (dials[0], AuditionSynth::characterId, "Character", "synth.character", pct);
+        setupDial (dials[1], AuditionSynth::cutoffId, "Cutoff", "synth.cutoff", [] (double v)
         {
             return v >= 1000.0 ? juce::String (v / 1000.0, 1) + " kHz"
                                : juce::String ((int) std::round (v)) + " Hz";
         });
-        setupDial (dials[2], AuditionSynth::envAmtId, "Env Amt", pct);
-        setupDial (dials[3], AuditionSynth::decayId, "Decay",
+        setupDial (dials[2], AuditionSynth::envAmtId, "Env Amt", "synth.envamt", pct);
+        setupDial (dials[3], AuditionSynth::decayId, "Decay", "synth.decay",
                    [] (double v) { return juce::String (v, 2) + " s"; });
-        setupDial (dials[4], AuditionSynth::spaceId, "Space", pct);
+        setupDial (dials[4], AuditionSynth::spaceId, "Space", "synth.space", pct);
     }
 }
 
@@ -67,9 +79,11 @@ SettingsView::~SettingsView()
 
 void SettingsView::setupDial (SynthDial& d, const juce::String& paramID,
                               const juce::String& baseName,
+                              const juce::String& helpKey,
                               std::function<juce::String (double)> format)
 {
     d.baseName = baseName;
+    d.helpKey  = helpKey;
     d.format   = std::move (format);
 
     d.label.setFont (juce::Font (juce::FontOptions (12.0f)));
@@ -87,8 +101,16 @@ void SettingsView::setupDial (SynthDial& d, const juce::String& paramID,
     // Live readout: fold the value into the label on every move. The
     // attachment (below) both seeds the initial value and echoes external
     // writes back through onValueChange, so the label stays true in all cases.
+    // The help-bar report is gated on an actual drag/hover (messaging-area
+    // spec §1.6) so those programmatic echoes stay silent.
     auto* cell = &d;
-    d.dial.onValueChange = [this, cell]() { refreshDialLabel (*cell); };
+    d.dial.onValueChange = [this, cell]()
+    {
+        refreshDialLabel (*cell);
+        if ((cell->dial.isMouseOverOrDragging() || cell->dial.isMouseButtonDown())
+            && onFeedback)
+            onFeedback (cell->label.getText(), cell->helpKey);
+    };
 
     d.attachment = std::make_unique<SliderAttachment> (state, paramID, d.dial);
     refreshDialLabel (d);

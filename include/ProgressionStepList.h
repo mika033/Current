@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <functional>
 #include <vector>
 #include "ModuleSettings.h"   // ProgressionStep, ModuleOptions
 
@@ -16,7 +17,8 @@
  *  cell selects it; the Degree / Octave combos below then edit that step.
  *
  *  Holds its own working copy of the step list; the owning dialog reads it back
- *  with getSteps() on OK. A progression always keeps at least one step, and
+ *  with getSteps() on every live-apply push (see Canvas::wireDialog) and fires
+ *  onChanged after each edit. A progression always keeps at least one step, and
  *  never grows past kMaxProgSteps.
  */
 class ProgressionStepList : public juce::Component
@@ -26,6 +28,15 @@ public:
     ~ProgressionStepList() override;
 
     const std::vector<ProgressionStep>& getSteps() const { return steps; }
+
+    /** Fired after any edit to the step list (add, remove, degree/octave
+     *  change) — not on a mere selection change. The owning dialog uses it to
+     *  push the settings to the engine live. */
+    std::function<void()> onChanged;
+
+    /** Help-bar reporting (message, help key) for the step cells, the append
+     *  arrows, and the Degree/Octave combos. Wired by the owning dialog. */
+    std::function<void (const juce::String&, const juce::String&)> onFeedback;
 
     /** The body section height this component wants, so the caller can size the
      *  ModuleWindow to it. */

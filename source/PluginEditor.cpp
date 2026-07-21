@@ -52,7 +52,27 @@ ModuleWindow* CurrentAudioProcessorEditor::showModuleWindow (const juce::String&
     win->setBounds (getLocalBounds());   // cover the whole editor
     win->toFront (true);
     win->grabKeyboardFocus();
+
+    // The window reports every control touch to the help bar itself (it knows
+    // each control's label, value, and help key); opening it announces the
+    // live-apply contract once.
+    win->onFeedback = [this] (const juce::String& msg, const juce::String& key)
+    {
+        showFeedback (msg, key);
+    };
+    showFeedback (title + " settings", "action.window");
     return win;
+}
+
+void CurrentAudioProcessorEditor::showFeedback (const juce::String& message)
+{
+    mainView.showFeedback (message);
+}
+
+void CurrentAudioProcessorEditor::showFeedback (const juce::String& message,
+                                                juce::StringRef helpKey)
+{
+    mainView.showFeedback (message, helpKey);
 }
 
 void CurrentAudioProcessorEditor::applyTheme()

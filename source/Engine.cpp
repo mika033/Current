@@ -125,9 +125,9 @@ namespace
     // chord is in — kept short enough to feel immediate, long enough to catch a
     // hand-played chord roll.
     constexpr double kStrumGroupWindowSec = 0.03;   // 30 ms
-    // Full-jitter maxima: the random late nudge (as a share of the spread) and
-    // the velocity wobble, reached at the 100% Jitter setting.
-    constexpr double kStrumJitterTimeFrac = 0.5;    // up to half the spread, late
+    // Full-jitter maxima: the random late nudge (as a share of the per-note
+    // spread gap) and the velocity wobble, reached at the 100% Jitter setting.
+    constexpr double kStrumJitterTimeFrac = 0.5;    // up to half a gap, late
     constexpr double kStrumJitterVelRange = 20.0;   // +/-20 velocity
     constexpr double kStrumVelTiltDepth   = 0.6;    // full tilt = +/-60% across the fan
     constexpr int    kStrumSaltTime = 11, kStrumSaltVel = 12;
@@ -303,6 +303,12 @@ void Engine::process (juce::MidiBuffer& midi,
     const bool justStopped = ! isPlaying && wasPlaying;
     wasPlaying = isPlaying;
 
+    // Publish the resolved clock for UI playhead displays (Rhythmize's step
+    // grid) — written before the empty-graph early-outs so the playhead runs
+    // whatever the patch looks like.
+    uiSongQn.store (blockStartQn, std::memory_order_relaxed);
+    uiPlaying.store (isPlaying, std::memory_order_relaxed);
+
     // Capture the host's incoming events; the buffer is rebuilt from the
     // Output nodes' streams.
     juce::MidiBuffer incoming;
@@ -389,6 +395,7 @@ void Engine::processNode (const GraphNode& node, NodeState& st,
         case ModuleType::Chord:       processChord       (node, st, in, out, ctx); break;
         case ModuleType::Drone:       processDrone       (node, st, in, out, ctx); break;
         case ModuleType::Arp:         processArp         (node, st, in, out, ctx); break;
+        case ModuleType::Rhythmize:   processRhythmize   (node, st, in, out, ctx); break;
         case ModuleType::Harmonizer:  processHarmonizer  (node, st, in, out, ctx); break;
         case ModuleType::ScaleMod:    processScaleMod    (node, st, in, out, ctx); break;
         case ModuleType::Progression: processProgression (node, st, in, out, ctx); break;
@@ -876,6 +883,65 @@ void Engine::processArp (const GraphNode& node, NodeState& st,
             }
             out.addEvent (juce::MidiMessage::noteOn (kGenChannel, raw, (juce::uint8) kGenVelocity), s);
             st.activeGen.push_back ({ raw, kGenChannel, s + gate });
+        });
+    }
+
+    releaseDueGates (st.activeGen, out, ctx.numSamples);
+}
+
+void Engine::processRhythmize (const GraphNode& node, NodeState& st,
+                               const juce::MidiBuffer& in, juce::MidiBuffer& out,
+                               const BlockContext& ctx)
+{
+    if (ctx.justStopped)
+        flushActive (st.activeGen, out, 0);
+
+    // The Arp's input contract: input notes are the module's data, consumed
+    // while playing and passed through while stopped so live playing stays
+    // audible. Unlike the Arp the held velocities are kept (heldVel), so a
+    // retriggered chord preserves the played dynamics.
+    for (const auto meta : in)
+    {
+        const auto m = meta.getMessage();
+        const int  s = meta.samplePosition;
+        if (m.isNoteOn())
+        {
+            st.heldVel[(size_t) m.getNoteNumber()] = m.getVelocity();
+            if (! ctx.isPlaying)
+            {
+                out.addEvent (m, s);
+                st.passedOn.push_back ({ m.getChannel(), m.getNoteNumber() });
+            }
+        }
+        else if (m.isNoteOff())
+        {
+            st.heldVel[(size_t) m.getNoteNumber()] = 0;
+            if (eraseKey (st.passedOn, m.getChannel(), m.getNoteNumber()))
+                out.addEvent (m, s);
+        }
+        else
+        {
+            out.addEvent (m, s);
+        }
+    }
+
+    if (ctx.isPlaying)
+    {
+        const auto& p = node.params;
+        runSteps (ctx, p.stepQn, p.gateFrac, [&] (juce::int64 k, int s, int gate)
+        {
+            // The pattern position is the grid index modded into the 16 steps —
+            // a pure function of song position, so the pattern sits identically
+            // on every host loop pass and play can start mid-pattern.
+            if ((p.rhythmMask & (1u << wrapIndex (k, ModuleOptions::kRhythmSteps))) == 0)
+                return;
+            for (int nn = 0; nn < 128; ++nn)
+                if (st.heldVel[(size_t) nn] != 0)
+                {
+                    out.addEvent (juce::MidiMessage::noteOn (kGenChannel, nn,
+                                                             st.heldVel[(size_t) nn]), s);
+                    st.activeGen.push_back ({ nn, kGenChannel, s + gate });
+                }
         });
     }
 
@@ -1466,12 +1532,14 @@ void Engine::processStrum (const GraphNode& node, NodeState& st,
         st.strumHeld.clear();
     }
 
-    const double spreadSamples = juce::jmax (0.0, p.strumSpreadSec) * sr;
+    // The spread gap is per consecutive note (tempo-synced): a 3-note chord at
+    // a 1/16 gap lands at 0, +1/16, +2/16 — the whole fan spans (n-1) gaps.
+    const double gapSamples = juce::jmax (0.0, p.strumGapQn) * ctx.samplesPerQn;
     // The fan only needs a detection window when it actually reshapes the
     // chord. With spread and both reshapers off, notes pass straight through
     // (window 0 = each note is its own one-note group, zero added latency).
-    const bool fanActive = spreadSamples > 0.0 || p.strumVelTilt != 0.0
-                                               || p.strumJitter != 0.0;
+    const bool fanActive = gapSamples > 0.0 || p.strumVelTilt != 0.0
+                                            || p.strumJitter != 0.0;
     const int  groupWindow = fanActive
                                  ? juce::jmax (1, (int) std::llround (kStrumGroupWindowSec * sr))
                                  : 0;
@@ -1494,7 +1562,7 @@ void Engine::processStrum (const GraphNode& node, NodeState& st,
 
     // Fan a finished chord out from `baseSample`: sort by pitch, order per
     // Direction, then emit each note delayed by its curve position (+jitter)
-    // over the spread, ramping velocity across the fan. Records each note as
+    // across the (n-1)-gap fan span, ramping velocity across the fan. Records each note as
     // sounding (for its off's matching delay and for Repeat), and re-times any
     // off that arrived before the chord finished.
     auto finalizeStrum = [&] (std::vector<StrumInNote>& notes,
@@ -1538,8 +1606,11 @@ void Engine::processStrum (const GraphNode& node, NodeState& st,
 
             const int key = note.note * 16 + note.channel;
             const double jitterSamples = hash01 (gi, key, kStrumSaltTime)
-                                             * p.strumJitter * kStrumJitterTimeFrac * spreadSamples;
-            const int emit = baseSample + (int) std::llround (f * spreadSamples + jitterSamples);
+                                             * p.strumJitter * kStrumJitterTimeFrac * gapSamples;
+            // The curve fraction f scales the whole fan span: (n-1) gaps.
+            const int emit = baseSample
+                             + (int) std::llround (f * (double) (nNotes - 1) * gapSamples
+                                                   + jitterSamples);
 
             const double ramp   = 2.0 * pos - 1.0;   // first struck note -1, last +1
             const double velJit = (hash01 (gi, key, kStrumSaltVel) * 2.0 - 1.0)

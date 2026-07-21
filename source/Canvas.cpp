@@ -2,6 +2,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "ProgressionStepList.h"
+#include "RhythmizeStepGrid.h"
 #include "Theme.h"
 #include <cmath>
 
@@ -107,11 +108,22 @@ juce::String Canvas::droneSublabel (const ModuleSettings& settings)
         0, ModuleOptions::droneVoicingNames().size() - 1, settings.droneVoicing)];
 }
 
-juce::String Canvas::strumSublabel (const ModuleSettings& settings)
+juce::String Canvas::strumSpreadText (int percent) const
 {
-    // The spread in ms — the module's headline setting (0 ms = bypass).
-    const int ms = juce::jlimit (0, ModuleOptions::kStrumSpreadSteps, settings.strumSpread) * 10;
-    return juce::String (ms) + " ms";
+    percent = juce::jlimit (0, ModuleOptions::kStrumSpreadMax, percent);
+    if (percent == 0)   return "Off";
+    if (percent == 50)  return "1/16";
+    if (percent == 100) return "1/8";
+    // Between the detents: the per-note gap in real time at the current tempo
+    // (gap = percent% of an 1/8 note; an 1/8 note is 30000/bpm ms).
+    const double bpm = juce::jmax (1.0, proc.getCurrentBpm());
+    return juce::String (juce::roundToInt ((double) percent * 300.0 / bpm)) + " ms";
+}
+
+juce::String Canvas::strumSublabel (const ModuleSettings& settings) const
+{
+    // The spread gap — the module's headline setting (Off = bypass).
+    return strumSpreadText (settings.strumSpread);
 }
 
 juce::String Canvas::harmonizerSublabel (const ModuleSettings& settings)
@@ -119,6 +131,44 @@ juce::String Canvas::harmonizerSublabel (const ModuleSettings& settings)
     // The chord type it stacks — the module's headline fact at a glance.
     return ModuleOptions::harmonizerTypeNames()[juce::jlimit (
         0, ModuleOptions::harmonizerTypeNames().size() - 1, settings.harmType)];
+}
+
+juce::String Canvas::sublabelFor (const ModuleInstance& m) const
+{
+    switch (m.type)
+    {
+        case ModuleType::MidiIn:
+        case ModuleType::Output:      return channelSublabel (m.type, m.channel);
+        case ModuleType::Random:
+        case ModuleType::ScaleGen:
+        case ModuleType::Arp:
+        case ModuleType::Rhythmize:
+        case ModuleType::Lfo:
+        case ModuleType::Delay:
+        case ModuleType::Quantize:
+        case ModuleType::Humanize:    return rateSublabel (m.settings);
+        case ModuleType::Shift:       return shiftSublabel (m.settings);
+        case ModuleType::Mirror:      return mirrorSublabel (m.settings);
+        case ModuleType::Chord:       return chordSublabel (m.settings);
+        case ModuleType::Drone:       return droneSublabel (m.settings);
+        case ModuleType::Strum:       return strumSublabel (m.settings);
+        case ModuleType::Harmonizer:  return harmonizerSublabel (m.settings);
+        case ModuleType::ScaleMod:    return scaleModSublabel (m.settings);
+        case ModuleType::Progression: return progressionSublabel (m.settings);
+    }
+    return {};
+}
+
+void Canvas::refreshSublabel (int id)
+{
+    for (const auto& m : proc.modules())
+        if (m.id == id)
+        {
+            for (auto& n : nodes)
+                if (n->moduleId() == id)
+                    n->setSublabel (sublabelFor (m));
+            return;
+        }
 }
 
 juce::StringArray Canvas::choicesWithGlobal (const char* paramID) const
@@ -209,13 +259,11 @@ void Canvas::readHoldLengthMenu (const ModuleWindow& win, ModuleSettings& s)
 void Canvas::addGateDial (ModuleWindow& win, int slot, const ModuleSettings& s)
 {
     // Gate is a dial everywhere it appears; its label reads the active percentage
-    // back live ("Gate: 50%") since a dial has no text box.
-    auto gateText = [] (double v)
-    {
-        return ModuleOptions::gateNames()[juce::jlimit (0, ModuleOptions::gateNames().size() - 1,
-                                                        juce::roundToInt (v))];
-    };
-    win.setGridDial (slot, "gate", 0.0, (double) (ModuleOptions::gateNames().size() - 1), 1.0,
+    // back live ("Gate: 63%") since a dial has no text box.
+    auto gateText = [] (double v) { return juce::String (juce::roundToInt (v)) + "%"; };
+    win.setGridDial (slot, "gate",
+                     (double) ModuleOptions::kGatePctMin,
+                     (double) ModuleOptions::kGatePctMax, 1.0,
                      s.gate, "Gate", gateText);
 }
 
@@ -297,34 +345,43 @@ int Canvas::readAmountDial (const ModuleWindow& win, const juce::String& name)
     return juce::roundToInt (win.getDialValue (name));
 }
 
+void Canvas::wireDialog (ModuleWindow* win, int id, const ModuleSettings& snapshot,
+                         std::function<void (const ModuleWindow&, ModuleSettings&)> read)
+{
+    // Settings edits keep notes ringing in the engine (same topologyVersion),
+    // so pushing on every dial tick is safe — the graph snapshot is rebaked on
+    // the message thread and swapped in atomically.
+    auto apply = [this, id, read] (ModuleWindow* w)
+    {
+        auto ns = proc.getModuleSettings (id);
+        read (*w, ns);
+        proc.setModuleSettings (id, ns);
+        refreshSublabel (id);
+    };
+
+    win->onChanged = [apply, win]() { apply (win); };
+
+    win->onResult = [this, id, snapshot, apply] (int result, ModuleWindow* w)
+    {
+        if (result == 1)
+            apply (w);   // OK: keep (a no-op re-push if nothing changed since)
+        else
+        {
+            // Cancel: undo the live pushes.
+            proc.setModuleSettings (id, snapshot);
+            refreshSublabel (id);
+        }
+        w->getParentComponent()->removeChildComponent (w);
+        delete w;
+    };
+}
+
 void Canvas::addNodeComponent (const ModuleInstance& instance)
 {
     auto node = std::make_unique<ModuleComponent> (instance.id, instance.type);
     node->setTopLeftPosition ((int) instance.x, (int) instance.y);
 
-    if (instance.type == ModuleType::MidiIn || instance.type == ModuleType::Output)
-        node->setSublabel (channelSublabel (instance.type, instance.channel));
-    else if (instance.type == ModuleType::Random || instance.type == ModuleType::ScaleGen
-             || instance.type == ModuleType::Arp || instance.type == ModuleType::Lfo
-             || instance.type == ModuleType::Delay || instance.type == ModuleType::Quantize
-             || instance.type == ModuleType::Humanize)
-        node->setSublabel (rateSublabel (instance.settings));
-    else if (instance.type == ModuleType::Shift)
-        node->setSublabel (shiftSublabel (instance.settings));
-    else if (instance.type == ModuleType::Mirror)
-        node->setSublabel (mirrorSublabel (instance.settings));
-    else if (instance.type == ModuleType::Chord)
-        node->setSublabel (chordSublabel (instance.settings));
-    else if (instance.type == ModuleType::Drone)
-        node->setSublabel (droneSublabel (instance.settings));
-    else if (instance.type == ModuleType::Strum)
-        node->setSublabel (strumSublabel (instance.settings));
-    else if (instance.type == ModuleType::Harmonizer)
-        node->setSublabel (harmonizerSublabel (instance.settings));
-    else if (instance.type == ModuleType::ScaleMod)
-        node->setSublabel (scaleModSublabel (instance.settings));
-    else if (instance.type == ModuleType::Progression)
-        node->setSublabel (progressionSublabel (instance.settings));
+    node->setSublabel (sublabelFor (instance));
 
     node->onSelected = [this] (ModuleComponent& n) { selectNode (&n); };
 
@@ -352,6 +409,11 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
         if (n.moduleType() == ModuleType::Arp)
         {
             openArpDialog (n);
+            return;
+        }
+        if (n.moduleType() == ModuleType::Rhythmize)
+        {
+            openRhythmizeDialog (n);
             return;
         }
         if (n.moduleType() == ModuleType::Random)
@@ -461,24 +523,34 @@ void Canvas::openChannelDialog (ModuleComponent& node)
     auto* win = owner.showModuleWindow (juce::String (descriptorFor (type).name));
     win->setGridCombo (0, "channel", items, isIn ? chan : chan - 1,
                        isIn ? "Input channel" : "Output channel");
+    // The channel filters input on MIDI In but stamps output on Output — two
+    // different help lines behind the one control.
+    win->setHelpKey ("channel", isIn ? "channel.in" : "channel.out");
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
 
-    // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the window is up (host state restore), so it is re-looked-up on OK.
-    win->onResult = [this, id, isIn] (int result, ModuleWindow* w)
+    // The channel lives outside ModuleSettings, so this dialog carries its own
+    // live-apply/revert plumbing instead of wireDialog — same contract: every
+    // pick is audible immediately, Cancel restores the open-time channel.
+    auto apply = [this, id, isIn] (ModuleWindow* w)
+    {
+        const int idx = w->getComboSelectedIndex ("channel");
+        if (idx >= 0)
+        {
+            proc.setModuleChannel (id, isIn ? idx : idx + 1);
+            refreshSublabel (id);
+        }
+    };
+    win->onChanged = [apply, win]() { apply (win); };
+
+    win->onResult = [this, id, chan, apply] (int result, ModuleWindow* w)
     {
         if (result == 1)
+            apply (w);
+        else
         {
-            const int idx = w->getComboSelectedIndex ("channel");
-            if (idx >= 0)
-            {
-                const int newChannel = isIn ? idx : idx + 1;
-                proc.setModuleChannel (id, newChannel);
-                for (auto& n : nodes)
-                    if (n->moduleId() == id)
-                        n->setSublabel (channelSublabel (n->moduleType(), newChannel));
-            }
+            proc.setModuleChannel (id, chan);
+            refreshSublabel (id);
         }
         w->getParentComponent()->removeChildComponent (w);
         delete w;
@@ -502,25 +574,64 @@ void Canvas::openArpDialog (ModuleComponent& node)
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
 
-    // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the window is up (host state restore), so it is re-looked-up on OK.
-    win->onResult = [this, id] (int result, ModuleWindow* w)
+    wireDialog (win, id, s, [] (const ModuleWindow& w, ModuleSettings& ns)
     {
-        if (result == 1)
-        {
-            auto ns = proc.getModuleSettings (id);
-            readModeCombo (*w, ns);
-            readRateMenu (*w, ns);
-            readOctavesDial (*w, ns);
-            readGateDial (*w, ns);
-            readRepeatCombo (*w, ns);
-            proc.setModuleSettings (id, ns);
-            for (auto& n : nodes)
-                if (n->moduleId() == id)
-                    n->setSublabel (rateSublabel (ns));
-        }
-        w->getParentComponent()->removeChildComponent (w);
-        delete w;
+        readModeCombo (w, ns);
+        readRateMenu (w, ns);
+        readOctavesDial (w, ns);
+        readGateDial (w, ns);
+        readRepeatCombo (w, ns);
+    });
+}
+
+void Canvas::openRhythmizeDialog (ModuleComponent& node)
+{
+    const int  id = node.moduleId();
+    const auto s  = proc.getModuleSettings (id);
+
+    // A note-emitting Rate modulator with no pitch mapping, like the Arp:
+    // Root/Scale stay blank, Rate sits in the menu bar, Gate is the shared
+    // grid dial. The 16-step pattern is the custom body (two rows of eight
+    // LAM-style step boxes) above the grid row — the first window to use the
+    // body + grid combination.
+    auto* win = owner.showModuleWindow ("Rhythmize");
+    addRateMenu (*win, s);
+
+    auto body = std::make_unique<RhythmizeStepGrid> (s.rhythmSteps);
+    auto* grid = body.get();   // owned by the window; valid inside the reads
+    win->setCustomBody (std::move (body), RhythmizeStepGrid::preferredHeight);
+    addGateDial (*win, 0, s);
+
+    win->addButton ("OK", 1);
+    win->addButton ("Cancel", 0);
+
+    // Rhythmize's Rate is the length of one pattern step, not a firing grid.
+    win->setHelpKey ("rate", "rate.rhythmize");
+
+    wireDialog (win, id, s, [grid] (const ModuleWindow& w, ModuleSettings& ns)
+    {
+        readRateMenu (w, ns);
+        readGateDial (w, ns);
+        ns.rhythmSteps = grid->getPattern();
+    });
+    // Step toggles live outside the window's own controls, so forward the
+    // grid's change and help-bar signals into the window's paths.
+    grid->onChanged  = win->onChanged;
+    grid->onFeedback = win->onFeedback;
+
+    // Playhead: the step the engine is on is a pure function of its published
+    // song position and the module's current rate (mirroring runSteps'
+    // song-position derivation), so no per-node feedback is needed and the
+    // halo stays correct while Rate is edited live. Mathematical mod, so a
+    // negative position (host pre-roll) wraps into the pattern.
+    grid->playingStep = [this, id]() -> int
+    {
+        if (! proc.transportPlaying())
+            return -1;
+        const double stepQn = ModuleOptions::rateQuarterNotes (proc.getModuleSettings (id).rate);
+        const auto k = (juce::int64) std::floor (proc.playheadQn() / stepQn);
+        const int  m = (int) (k % (juce::int64) ModuleOptions::kRhythmSteps);
+        return m < 0 ? m + ModuleOptions::kRhythmSteps : m;
     };
 }
 
@@ -549,29 +660,17 @@ void Canvas::openRandomDialog (ModuleComponent& node)
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
 
-    // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the window is up (host state restore), so it is re-looked-up on OK.
-    win->onResult = [this, id] (int result, ModuleWindow* w)
+    wireDialog (win, id, s, [this] (const ModuleWindow& w, ModuleSettings& ns)
     {
-        if (result == 1)
-        {
-            auto ns = proc.getModuleSettings (id);
-            readRootScaleMenu (*w, ns, true);
-            readRateMenu (*w, ns);
-            readGateDial (*w, ns);
-            ns.rangeFrom     = juce::roundToInt (w->getDialValue ("from"));
-            ns.rangeTo       = juce::roundToInt (w->getDialValue ("to"));
-            // A backwards range is a slip, not an intent — normalise it.
-            if (ns.rangeFrom > ns.rangeTo)
-                std::swap (ns.rangeFrom, ns.rangeTo);
-            proc.setModuleSettings (id, ns);
-            for (auto& n : nodes)
-                if (n->moduleId() == id)
-                    n->setSublabel (rateSublabel (ns));
-        }
-        w->getParentComponent()->removeChildComponent (w);
-        delete w;
-    };
+        readRootScaleMenu (w, ns, true);
+        readRateMenu (w, ns);
+        readGateDial (w, ns);
+        ns.rangeFrom = juce::roundToInt (w.getDialValue ("from"));
+        ns.rangeTo   = juce::roundToInt (w.getDialValue ("to"));
+        // A backwards range is a slip, not an intent — normalise it.
+        if (ns.rangeFrom > ns.rangeTo)
+            std::swap (ns.rangeFrom, ns.rangeTo);
+    });
 }
 
 void Canvas::openScaleGenDialog (ModuleComponent& node)
@@ -595,26 +694,16 @@ void Canvas::openScaleGenDialog (ModuleComponent& node)
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
 
-    win->onResult = [this, id] (int result, ModuleWindow* w)
+    wireDialog (win, id, s, [this] (const ModuleWindow& w, ModuleSettings& ns)
     {
-        if (result == 1)
-        {
-            auto ns = proc.getModuleSettings (id);
-            readRootScaleMenu (*w, ns, false);
-            readRateMenu (*w, ns);
-            readModeCombo (*w, ns);
-            readOctavesDial (*w, ns);
-            ns.endOnRoot = w->getComboSelectedIndex ("endOn") == 0;
-            readGateDial (*w, ns);
-            readRepeatCombo (*w, ns);
-            proc.setModuleSettings (id, ns);
-            for (auto& n : nodes)
-                if (n->moduleId() == id)
-                    n->setSublabel (rateSublabel (ns));
-        }
-        w->getParentComponent()->removeChildComponent (w);
-        delete w;
-    };
+        readRootScaleMenu (w, ns, false);
+        readRateMenu (w, ns);
+        readModeCombo (w, ns);
+        readOctavesDial (w, ns);
+        ns.endOnRoot = w.getComboSelectedIndex ("endOn") == 0;
+        readGateDial (w, ns);
+        readRepeatCombo (w, ns);
+    });
 }
 
 void Canvas::openLfoDialog (ModuleComponent& node)
@@ -643,29 +732,17 @@ void Canvas::openLfoDialog (ModuleComponent& node)
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
 
-    // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the window is up (host state restore), so it is re-looked-up on OK.
-    win->onResult = [this, id] (int result, ModuleWindow* w)
+    wireDialog (win, id, s, [this] (const ModuleWindow& w, ModuleSettings& ns)
     {
-        if (result == 1)
-        {
-            auto ns = proc.getModuleSettings (id);
-            readRootScaleMenu (*w, ns, true);
-            readRateMenu (*w, ns);
-            ns.lfoShape      = w->getComboSelectedIndex ("shape");
-            ns.lfoCycle      = w->getComboSelectedIndex ("cycle");
-            ns.lfoDepthOct   = juce::roundToInt (w->getDialValue ("depthOct"));
-            ns.lfoDepthSteps = juce::roundToInt (w->getDialValue ("depthSteps"));
-            readGateDial (*w, ns);
-            ns.lfoPhase      = w->getComboSelectedIndex ("phase");
-            proc.setModuleSettings (id, ns);
-            for (auto& n : nodes)
-                if (n->moduleId() == id)
-                    n->setSublabel (rateSublabel (ns));
-        }
-        w->getParentComponent()->removeChildComponent (w);
-        delete w;
-    };
+        readRootScaleMenu (w, ns, true);
+        readRateMenu (w, ns);
+        ns.lfoShape      = w.getComboSelectedIndex ("shape");
+        ns.lfoCycle      = w.getComboSelectedIndex ("cycle");
+        ns.lfoDepthOct   = juce::roundToInt (w.getDialValue ("depthOct"));
+        ns.lfoDepthSteps = juce::roundToInt (w.getDialValue ("depthSteps"));
+        readGateDial (w, ns);
+        ns.lfoPhase      = w.getComboSelectedIndex ("phase");
+    });
 }
 
 void Canvas::openQuantizeDialog (ModuleComponent& node)
@@ -674,30 +751,22 @@ void Canvas::openQuantizeDialog (ModuleComponent& node)
     const auto s  = proc.getModuleSettings (id);
 
     // Re-times passing notes onto the Rate grid (no pitch, no gate — it keeps
-    // the played duration). Menu bar: Rate only. Grid: swing.
+    // the played duration). Menu bar: Rate only. Grid: swing, a 0..100% dial
+    // reading its percent back live (same control as Humanize's Swing).
     auto* win = owner.showModuleWindow ("Quantize");
     addRateMenu (*win, s);
-    win->setGridCombo (0, "swing", ModuleOptions::swingNames(), s.swing, "Swing");
+    win->setHelpKey ("rate", "rate.quantize");   // the grid notes snap to
+    win->setGridDial (0, "swing", 0.0, (double) ModuleOptions::kSwingPctMax, 1.0,
+                      (double) s.swing, "Swing",
+                      [] (double v) { return juce::String (juce::roundToInt (v)) + "%"; });
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
 
-    // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the window is up (host state restore), so it is re-looked-up on OK.
-    win->onResult = [this, id] (int result, ModuleWindow* w)
+    wireDialog (win, id, s, [] (const ModuleWindow& w, ModuleSettings& ns)
     {
-        if (result == 1)
-        {
-            auto ns = proc.getModuleSettings (id);
-            readRateMenu (*w, ns);
-            ns.swing = w->getComboSelectedIndex ("swing");
-            proc.setModuleSettings (id, ns);
-            for (auto& n : nodes)
-                if (n->moduleId() == id)
-                    n->setSublabel (rateSublabel (ns));
-        }
-        w->getParentComponent()->removeChildComponent (w);
-        delete w;
-    };
+        readRateMenu (w, ns);
+        ns.swing = juce::roundToInt (w.getDialValue ("swing"));
+    });
 }
 
 void Canvas::openScaleModDialog (ModuleComponent& node)
@@ -712,20 +781,10 @@ void Canvas::openScaleModDialog (ModuleComponent& node)
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
 
-    win->onResult = [this, id] (int result, ModuleWindow* w)
+    wireDialog (win, id, s, [this] (const ModuleWindow& w, ModuleSettings& ns)
     {
-        if (result == 1)
-        {
-            auto ns = proc.getModuleSettings (id);
-            readRootScaleMenu (*w, ns, true);
-            proc.setModuleSettings (id, ns);
-            for (auto& n : nodes)
-                if (n->moduleId() == id)
-                    n->setSublabel (scaleModSublabel (ns));
-        }
-        w->getParentComponent()->removeChildComponent (w);
-        delete w;
-    };
+        readRootScaleMenu (w, ns, true);
+    });
 }
 
 void Canvas::openProgressionDialog (ModuleComponent& node)
@@ -744,28 +803,22 @@ void Canvas::openProgressionDialog (ModuleComponent& node)
     win->setMenuCombo (2, "progRate", ModuleOptions::barLengthNames(), s.progRate, "Length");
 
     auto body = std::make_unique<ProgressionStepList> (s.progSteps);
-    auto* stepList = body.get();   // owned by the window; valid inside onResult
+    auto* stepList = body.get();   // owned by the window; valid inside the reads
     win->setCustomBody (std::move (body), ProgressionStepList::preferredHeight);
 
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
 
-    win->onResult = [this, id, stepList] (int result, ModuleWindow* w)
+    wireDialog (win, id, s, [this, stepList] (const ModuleWindow& w, ModuleSettings& ns)
     {
-        if (result == 1)
-        {
-            auto ns = proc.getModuleSettings (id);
-            readRootScaleMenu (*w, ns, true);
-            ns.progRate  = w->getComboSelectedIndex ("progRate");
-            ns.progSteps = stepList->getSteps();
-            proc.setModuleSettings (id, ns);
-            for (auto& n : nodes)
-                if (n->moduleId() == id)
-                    n->setSublabel (progressionSublabel (ns));
-        }
-        w->getParentComponent()->removeChildComponent (w);
-        delete w;
-    };
+        readRootScaleMenu (w, ns, true);
+        ns.progRate  = w.getComboSelectedIndex ("progRate");
+        ns.progSteps = stepList->getSteps();
+    });
+    // Step-list edits live outside the window's own controls, so forward its
+    // change and help-bar signals into the window's paths.
+    stepList->onChanged  = win->onChanged;
+    stepList->onFeedback = win->onFeedback;
 }
 
 void Canvas::openShiftDialog (ModuleComponent& node)
@@ -784,21 +837,11 @@ void Canvas::openShiftDialog (ModuleComponent& node)
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
 
-    win->onResult = [this, id] (int result, ModuleWindow* w2)
+    wireDialog (win, id, s, [this] (const ModuleWindow& w, ModuleSettings& ns)
     {
-        if (result == 1)
-        {
-            auto ns = proc.getModuleSettings (id);
-            readRootScaleMenu (*w2, ns, true);
-            ns.shiftAmount = readAmountDial (*w2, "amount");
-            proc.setModuleSettings (id, ns);
-            for (auto& n : nodes)
-                if (n->moduleId() == id)
-                    n->setSublabel (shiftSublabel (ns));
-        }
-        w2->getParentComponent()->removeChildComponent (w2);
-        delete w2;
-    };
+        readRootScaleMenu (w, ns, true);
+        ns.shiftAmount = readAmountDial (w, "amount");
+    });
 }
 
 void Canvas::openMirrorDialog (ModuleComponent& node)
@@ -831,43 +874,33 @@ void Canvas::openMirrorDialog (ModuleComponent& node)
 
     // Low and High can't cross: turning one past the other pushes it along, so
     // the window never inverts (setDialValue fires no callback, so no recursion).
-    auto* w = win;
-    win->setDialChangeCallback ("low", [w]()
+    auto* mw = win;
+    win->setDialChangeCallback ("low", [mw]()
     {
-        if (w->getDialValue ("low") > w->getDialValue ("high"))
-            w->setDialValue ("high", w->getDialValue ("low"));
+        if (mw->getDialValue ("low") > mw->getDialValue ("high"))
+            mw->setDialValue ("high", mw->getDialValue ("low"));
     });
-    win->setDialChangeCallback ("high", [w]()
+    win->setDialChangeCallback ("high", [mw]()
     {
-        if (w->getDialValue ("high") < w->getDialValue ("low"))
-            w->setDialValue ("low", w->getDialValue ("high"));
+        if (mw->getDialValue ("high") < mw->getDialValue ("low"))
+            mw->setDialValue ("low", mw->getDialValue ("high"));
     });
 
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
 
-    win->onResult = [this, id] (int result, ModuleWindow* w2)
+    wireDialog (win, id, s, [this] (const ModuleWindow& w, ModuleSettings& ns)
     {
-        if (result == 1)
-        {
-            auto ns = proc.getModuleSettings (id);
-            readRootScaleMenu (*w2, ns, true);
-            ns.mirrorCenter = juce::roundToInt (w2->getDialValue ("center"));
-            ns.mirrorLow    = juce::roundToInt (w2->getDialValue ("low"));
-            ns.mirrorHigh   = juce::roundToInt (w2->getDialValue ("high"));
-            // The push keeps them ordered live; normalise anyway in case a value
-            // arrived some other way.
-            if (ns.mirrorLow > ns.mirrorHigh)
-                std::swap (ns.mirrorLow, ns.mirrorHigh);
-            ns.mirrorBounds = w2->getComboSelectedIndex ("bounds");
-            proc.setModuleSettings (id, ns);
-            for (auto& n : nodes)
-                if (n->moduleId() == id)
-                    n->setSublabel (mirrorSublabel (ns));
-        }
-        w2->getParentComponent()->removeChildComponent (w2);
-        delete w2;
-    };
+        readRootScaleMenu (w, ns, true);
+        ns.mirrorCenter = juce::roundToInt (w.getDialValue ("center"));
+        ns.mirrorLow    = juce::roundToInt (w.getDialValue ("low"));
+        ns.mirrorHigh   = juce::roundToInt (w.getDialValue ("high"));
+        // The push keeps them ordered live; normalise anyway in case a value
+        // arrived some other way.
+        if (ns.mirrorLow > ns.mirrorHigh)
+            std::swap (ns.mirrorLow, ns.mirrorHigh);
+        ns.mirrorBounds = w.getComboSelectedIndex ("bounds");
+    });
 }
 
 void Canvas::openDelayDialog (ModuleComponent& node)
@@ -877,36 +910,28 @@ void Canvas::openDelayDialog (ModuleComponent& node)
 
     // Delay maps pitch through its per-echo shift, so it carries the shared
     // Root/Scale pair (Off = shift in semitones, a scale = shift in degrees).
-    // Menu bar: Root / Scale / Rate. Grid: feedback, plus the per-echo shift as
-    // the same live-unit amount dial Shift uses.
+    // Menu bar: Root / Scale / Rate. Grid: feedback (a 0..90% dial — the cap
+    // keeps the echo tail finite), plus the per-echo shift as the same
+    // live-unit amount dial Shift uses.
     auto* win = owner.showModuleWindow ("Delay");
     addRootScaleMenu (*win, s, true);
     addRateMenu (*win, s);
-    win->setGridCombo (0, "feedback", ModuleOptions::feedbackNames(), s.delayFeedback, "Feedback");
+    win->setHelpKey ("rate", "rate.delay");   // the echo spacing
+    win->setGridDial (0, "feedback", 0.0, (double) ModuleOptions::kFeedbackPctMax, 1.0,
+                      (double) s.delayFeedback, "Feedback",
+                      [] (double v) { return juce::String (juce::roundToInt (v)) + "%"; });
     addAmountDial (*win, 1, "shift", s.delayShift, ModuleOptions::kDelayShiftRange);
 
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
 
-    // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the window is up (host state restore), so it is re-looked-up on OK.
-    win->onResult = [this, id] (int result, ModuleWindow* w2)
+    wireDialog (win, id, s, [this] (const ModuleWindow& w, ModuleSettings& ns)
     {
-        if (result == 1)
-        {
-            auto ns = proc.getModuleSettings (id);
-            readRootScaleMenu (*w2, ns, true);
-            readRateMenu (*w2, ns);
-            ns.delayFeedback = w2->getComboSelectedIndex ("feedback");
-            ns.delayShift    = readAmountDial (*w2, "shift");
-            proc.setModuleSettings (id, ns);
-            for (auto& n : nodes)
-                if (n->moduleId() == id)
-                    n->setSublabel (rateSublabel (ns));
-        }
-        w2->getParentComponent()->removeChildComponent (w2);
-        delete w2;
-    };
+        readRootScaleMenu (w, ns, true);
+        readRateMenu (w, ns);
+        ns.delayFeedback = juce::roundToInt (w.getDialValue ("feedback"));
+        ns.delayShift    = readAmountDial (w, "shift");
+    });
 }
 
 void Canvas::openStrumDialog (ModuleComponent& node)
@@ -921,10 +946,12 @@ void Canvas::openStrumDialog (ModuleComponent& node)
     // the shaping row Velocity / Jitter / Repeat.
     auto* win = owner.showModuleWindow ("Strum");
 
-    // Spread: 0..10 dial reading milliseconds (0 = bypass), 10 ms per step.
-    win->setGridDial (0, "spread", 0.0, (double) ModuleOptions::kStrumSpreadSteps, 1.0,
+    // Spread: the tempo-synced gap between consecutive fanned notes, stored as
+    // a percent of an 1/8 note. The readout names the musical detents (Off /
+    // 1/16 / 1/8) and shows ms at the current tempo in between.
+    win->setGridDial (0, "spread", 0.0, (double) ModuleOptions::kStrumSpreadMax, 1.0,
                       (double) s.strumSpread, "Spread",
-                      [] (double v) { return juce::String (juce::roundToInt (v) * 10) + " ms"; });
+                      [this] (double v) { return strumSpreadText (juce::roundToInt (v)); });
     addModeCombo (*win, 1, s, ModuleOptions::modeNames().size());   // Direction (shared Mode)
     win->setGridCombo (2, "curve", ModuleOptions::strumCurveNames(), s.strumCurve, "Curve");
     // Velocity tilt: signed dial reading a signed percent (− fades, + swells).
@@ -934,37 +961,29 @@ void Canvas::openStrumDialog (ModuleComponent& node)
                       (double) s.strumVelTilt, "Velocity",
                       [] (double v)
                       {
-                          const int p = juce::roundToInt (v) * 10;
+                          const int p = juce::roundToInt (v);
                           return (p > 0 ? "+" + juce::String (p) : juce::String (p)) + "%";
                       });
-    win->setGridDial (4, "jitter", 0.0, (double) ModuleOptions::kStrumJitterSteps, 1.0,
+    win->setGridDial (4, "jitter", 0.0, (double) ModuleOptions::kStrumJitterMax, 1.0,
                       (double) s.strumJitter, "Jitter",
-                      [] (double v) { return juce::String (juce::roundToInt (v) * 10) + "%"; });
+                      [] (double v) { return juce::String (juce::roundToInt (v)) + "%"; });
     addRepeatCombo (*win, 5, s);
+    // The shared Mode is Strum's fan direction and its Repeat re-strums a held
+    // chord — both mean something different here than on the Arp.
+    win->setHelpKey ("mode",   "direction");
+    win->setHelpKey ("repeat", "repeat.strum");
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
 
-    // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the window is up (host state restore), so it is re-looked-up on OK.
-    win->onResult = [this, id] (int result, ModuleWindow* w)
+    wireDialog (win, id, s, [] (const ModuleWindow& w, ModuleSettings& ns)
     {
-        if (result == 1)
-        {
-            auto ns = proc.getModuleSettings (id);
-            ns.strumSpread  = juce::roundToInt (w->getDialValue ("spread"));
-            readModeCombo (*w, ns);   // Direction -> shared mode
-            ns.strumCurve   = w->getComboSelectedIndex ("curve");
-            ns.strumVelTilt = juce::roundToInt (w->getDialValue ("velTilt"));
-            ns.strumJitter  = juce::roundToInt (w->getDialValue ("jitter"));
-            readRepeatCombo (*w, ns);
-            proc.setModuleSettings (id, ns);
-            for (auto& n : nodes)
-                if (n->moduleId() == id)
-                    n->setSublabel (strumSublabel (ns));
-        }
-        w->getParentComponent()->removeChildComponent (w);
-        delete w;
-    };
+        ns.strumSpread  = juce::roundToInt (w.getDialValue ("spread"));
+        readModeCombo (w, ns);   // Direction -> shared mode
+        ns.strumCurve   = w.getComboSelectedIndex ("curve");
+        ns.strumVelTilt = juce::roundToInt (w.getDialValue ("velTilt"));
+        ns.strumJitter  = juce::roundToInt (w.getDialValue ("jitter"));
+        readRepeatCombo (w, ns);
+    });
 }
 
 void Canvas::openHumanizeDialog (ModuleComponent& node)
@@ -977,40 +996,30 @@ void Canvas::openHumanizeDialog (ModuleComponent& node)
     // signal-flow order — top row = the structured groove (Swing, Lay-back,
     // Accent), bottom row = the random touch (Timing, Velocity, Length). Every
     // amount is a 0..100% dial reading its percent back live.
-    auto pct = [] (double v) { return juce::String (juce::roundToInt (v) * 10) + "%"; };
+    auto pct = [] (double v) { return juce::String (juce::roundToInt (v)) + "%"; };
+    const double mx = (double) ModuleOptions::kSwingPctMax;
     auto* win = owner.showModuleWindow ("Humanize");
     addRateMenu (*win, s);
-    win->setGridDial (0, "swing",   0.0, 10.0, 1.0, (double) s.swing,           "Swing",    pct);
-    win->setGridDial (1, "layback", 0.0, 10.0, 1.0, (double) s.humanizeLayback, "Lay-back", pct);
-    win->setGridDial (2, "accent",  0.0, 10.0, 1.0, (double) s.humanizeAccent,  "Accent",   pct);
-    win->setGridDial (3, "timeJit", 0.0, 10.0, 1.0, (double) s.humanizeTimeJit, "Timing",   pct);
-    win->setGridDial (4, "velJit",  0.0, 10.0, 1.0, (double) s.humanizeVelJit,  "Velocity", pct);
-    win->setGridDial (5, "lenJit",  0.0, 10.0, 1.0, (double) s.humanizeLenJit,  "Length",   pct);
+    win->setHelpKey ("rate", "rate.humanize");   // the groove grid
+    win->setGridDial (0, "swing",   0.0, mx, 1.0, (double) s.swing,           "Swing",    pct);
+    win->setGridDial (1, "layback", 0.0, mx, 1.0, (double) s.humanizeLayback, "Lay-back", pct);
+    win->setGridDial (2, "accent",  0.0, mx, 1.0, (double) s.humanizeAccent,  "Accent",   pct);
+    win->setGridDial (3, "timeJit", 0.0, mx, 1.0, (double) s.humanizeTimeJit, "Timing",   pct);
+    win->setGridDial (4, "velJit",  0.0, mx, 1.0, (double) s.humanizeVelJit,  "Velocity", pct);
+    win->setGridDial (5, "lenJit",  0.0, mx, 1.0, (double) s.humanizeLenJit,  "Length",   pct);
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
 
-    // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the window is up (host state restore), so it is re-looked-up on OK.
-    win->onResult = [this, id] (int result, ModuleWindow* w)
+    wireDialog (win, id, s, [] (const ModuleWindow& w, ModuleSettings& ns)
     {
-        if (result == 1)
-        {
-            auto ns = proc.getModuleSettings (id);
-            readRateMenu (*w, ns);
-            ns.swing           = juce::roundToInt (w->getDialValue ("swing"));
-            ns.humanizeLayback = juce::roundToInt (w->getDialValue ("layback"));
-            ns.humanizeAccent  = juce::roundToInt (w->getDialValue ("accent"));
-            ns.humanizeTimeJit = juce::roundToInt (w->getDialValue ("timeJit"));
-            ns.humanizeVelJit  = juce::roundToInt (w->getDialValue ("velJit"));
-            ns.humanizeLenJit  = juce::roundToInt (w->getDialValue ("lenJit"));
-            proc.setModuleSettings (id, ns);
-            for (auto& n : nodes)
-                if (n->moduleId() == id)
-                    n->setSublabel (rateSublabel (ns));
-        }
-        w->getParentComponent()->removeChildComponent (w);
-        delete w;
-    };
+        readRateMenu (w, ns);
+        ns.swing           = juce::roundToInt (w.getDialValue ("swing"));
+        ns.humanizeLayback = juce::roundToInt (w.getDialValue ("layback"));
+        ns.humanizeAccent  = juce::roundToInt (w.getDialValue ("accent"));
+        ns.humanizeTimeJit = juce::roundToInt (w.getDialValue ("timeJit"));
+        ns.humanizeVelJit  = juce::roundToInt (w.getDialValue ("velJit"));
+        ns.humanizeLenJit  = juce::roundToInt (w.getDialValue ("lenJit"));
+    });
 }
 
 void Canvas::openHarmonizerDialog (ModuleComponent& node)
@@ -1028,28 +1037,18 @@ void Canvas::openHarmonizerDialog (ModuleComponent& node)
     win->setGridCombo (1, "inversion", ModuleOptions::chordInversionNames(),
                        s.harmInversion, "Inversion");
     win->setGridCombo (2, "mode", ModuleOptions::harmonizerModeNames(), s.harmMode, "Mode");
+    // Harmonizer's Mode is how held notes interact, not a pattern direction.
+    win->setHelpKey ("mode", "harmmode");
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
 
-    // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the window is up (host state restore), so it is re-looked-up on OK.
-    win->onResult = [this, id] (int result, ModuleWindow* w)
+    wireDialog (win, id, s, [this] (const ModuleWindow& w, ModuleSettings& ns)
     {
-        if (result == 1)
-        {
-            auto ns = proc.getModuleSettings (id);
-            readRootScaleMenu (*w, ns, true);
-            ns.harmType      = w->getComboSelectedIndex ("type");
-            ns.harmInversion = w->getComboSelectedIndex ("inversion");
-            ns.harmMode      = w->getComboSelectedIndex ("mode");
-            proc.setModuleSettings (id, ns);
-            for (auto& n : nodes)
-                if (n->moduleId() == id)
-                    n->setSublabel (harmonizerSublabel (ns));
-        }
-        w->getParentComponent()->removeChildComponent (w);
-        delete w;
-    };
+        readRootScaleMenu (w, ns, true);
+        ns.harmType      = w.getComboSelectedIndex ("type");
+        ns.harmInversion = w.getComboSelectedIndex ("inversion");
+        ns.harmMode      = w.getComboSelectedIndex ("mode");
+    });
 }
 
 void Canvas::openChordDialog (ModuleComponent& node)
@@ -1071,27 +1070,15 @@ void Canvas::openChordDialog (ModuleComponent& node)
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
 
-    // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the window is up (host state restore), so it is re-looked-up on OK.
-    win->onResult = [this, id] (int result, ModuleWindow* w)
+    wireDialog (win, id, s, [this] (const ModuleWindow& w, ModuleSettings& ns)
     {
-        if (result == 1)
-        {
-            auto ns = proc.getModuleSettings (id);
-            readRootScaleMenu (*w, ns, false);
-            readHoldLengthMenu (*w, ns);
-            ns.chordDegree    = w->getComboSelectedIndex ("degree");
-            ns.chordType      = w->getComboSelectedIndex ("type");
-            ns.chordInversion = w->getComboSelectedIndex ("inversion");
-            readHoldRepeatCombo (*w, ns);
-            proc.setModuleSettings (id, ns);
-            for (auto& n : nodes)
-                if (n->moduleId() == id)
-                    n->setSublabel (chordSublabel (ns));
-        }
-        w->getParentComponent()->removeChildComponent (w);
-        delete w;
-    };
+        readRootScaleMenu (w, ns, false);
+        readHoldLengthMenu (w, ns);
+        ns.chordDegree    = w.getComboSelectedIndex ("degree");
+        ns.chordType      = w.getComboSelectedIndex ("type");
+        ns.chordInversion = w.getComboSelectedIndex ("inversion");
+        readHoldRepeatCombo (w, ns);
+    });
 }
 
 void Canvas::openDroneDialog (ModuleComponent& node)
@@ -1122,26 +1109,14 @@ void Canvas::openDroneDialog (ModuleComponent& node)
     win->addButton ("OK", 1);
     win->addButton ("Cancel", 0);
 
-    // Captures the id, not the node — the node can be deleted or rebuilt while
-    // the window is up (host state restore), so it is re-looked-up on OK.
-    win->onResult = [this, id] (int result, ModuleWindow* w)
+    wireDialog (win, id, s, [this] (const ModuleWindow& w, ModuleSettings& ns)
     {
-        if (result == 1)
-        {
-            auto ns = proc.getModuleSettings (id);
-            readRootScaleMenu (*w, ns, false);
-            readHoldLengthMenu (*w, ns);
-            ns.droneVoicing = w->getComboSelectedIndex ("voicing");
-            ns.droneOctave  = juce::roundToInt (w->getDialValue ("octave"));
-            readHoldRepeatCombo (*w, ns);
-            proc.setModuleSettings (id, ns);
-            for (auto& n : nodes)
-                if (n->moduleId() == id)
-                    n->setSublabel (droneSublabel (ns));
-        }
-        w->getParentComponent()->removeChildComponent (w);
-        delete w;
-    };
+        readRootScaleMenu (w, ns, false);
+        readHoldLengthMenu (w, ns);
+        ns.droneVoicing = w.getComboSelectedIndex ("voicing");
+        ns.droneOctave  = juce::roundToInt (w.getDialValue ("octave"));
+        readHoldRepeatCombo (w, ns);
+    });
 }
 
 void Canvas::selectNode (ModuleComponent* node)
@@ -1162,7 +1137,13 @@ void Canvas::selectNode (ModuleComponent* node)
     selectedNode = node;
 
     if (selectedNode != nullptr)
+    {
         selectedNode->setSelected (true);
+        // Selecting a node reads its one-line description into the help bar —
+        // the canvas side of the built-in module manual.
+        owner.showFeedback (descriptorFor (node->moduleType()).name,
+                            moduleHelpKey (node->moduleType()));
+    }
 }
 
 void Canvas::deleteSelected()
@@ -1173,6 +1154,12 @@ void Canvas::deleteSelected()
 
 void Canvas::deleteNode (int id)
 {
+    // Name captured before removal so the help bar can announce what went.
+    juce::String name;
+    for (const auto& m : proc.modules())
+        if (m.id == id)
+            name = descriptorFor (m.type).name;
+
     // Removes from both the view and the model; the model drops the module's
     // cables with it.
     for (auto it = nodes.begin(); it != nodes.end(); ++it)
@@ -1188,6 +1175,9 @@ void Canvas::deleteNode (int id)
 
     proc.removeModule (id);
     repaint();   // the module's cables disappear with it
+
+    if (name.isNotEmpty())
+        owner.showFeedback (name + " removed");
 }
 
 void Canvas::requestDeleteNode (int id)
@@ -1323,6 +1313,8 @@ void Canvas::beginCableDrag (ModuleComponent& fromNode, const juce::MouseEvent& 
     cableDrag.fromId = fromNode.moduleId();
     cableDrag.toPos  = e.getEventRelativeTo (this).position;
     repaint();
+
+    owner.showFeedback ("Release on the module that should receive the notes");
 }
 
 void Canvas::updateCableDrag (const juce::MouseEvent& e)
@@ -1355,7 +1347,17 @@ void Canvas::endCableDrag (const juce::MouseEvent& e)
                                 <= (float) ModuleComponent::kPortHitRadius;
         if (onNode || onPort)
         {
-            proc.addConnection (cableDrag.fromId, n->moduleId());
+            const auto* from = nodeForId (cableDrag.fromId);
+            if (proc.addConnection (cableDrag.fromId, n->moduleId()))
+                owner.showFeedback ("Connected "
+                                        + juce::String (from != nullptr
+                                              ? descriptorFor (from->moduleType()).name : "module")
+                                        + " to "
+                                        + juce::String (descriptorFor (n->moduleType()).name),
+                                    "action.connect");
+            else
+                owner.showFeedback ("Can't connect - the cable would double an "
+                                    "existing one or create a loop");
             break;
         }
     }
@@ -1407,6 +1409,7 @@ void Canvas::mouseDown (const juce::MouseEvent& e)
         proc.removeConnection (selectedCable.fromId, selectedCable.toId);
         selectedCable = {};
         repaint();
+        owner.showFeedback ("Connection removed");
         return;
     }
 
@@ -1428,6 +1431,11 @@ void Canvas::mouseDown (const juce::MouseEvent& e)
             selectedCable = { true, c.fromId, c.toId };
             grabKeyboardFocus();
             repaint();
+            owner.showFeedback ("Cable: "
+                                    + juce::String (descriptorFor (fromNode->moduleType()).name)
+                                    + " to "
+                                    + juce::String (descriptorFor (toNode->moduleType()).name),
+                                "action.cable");
             return;
         }
     }
@@ -1448,6 +1456,7 @@ bool Canvas::keyPressed (const juce::KeyPress& key)
             proc.removeConnection (selectedCable.fromId, selectedCable.toId);
             selectedCable = {};
             repaint();
+            owner.showFeedback ("Connection removed");
             return true;
         }
         deleteSelected();
@@ -1500,4 +1509,8 @@ void Canvas::itemDropped (const SourceDetails& details)
     selectNode (nodes.back().get());
 
     repaint();   // clear the empty-state hint
+
+    // After selectNode's description message, so the placement hint wins.
+    owner.showFeedback (juce::String (descriptorFor (type).name) + " added",
+                        "action.add");
 }

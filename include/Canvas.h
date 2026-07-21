@@ -87,6 +87,7 @@ private:
     // settings) and the node sublabels that mirror the choices.
     void openChannelDialog (ModuleComponent& node);
     void openArpDialog (ModuleComponent& node);
+    void openRhythmizeDialog (ModuleComponent& node);
     void openRandomDialog (ModuleComponent& node);
     void openScaleGenDialog (ModuleComponent& node);
     void openLfoDialog (ModuleComponent& node);
@@ -109,8 +110,18 @@ private:
     static juce::String progressionSublabel (const ModuleSettings& settings);
     static juce::String chordSublabel (const ModuleSettings& settings);
     static juce::String droneSublabel (const ModuleSettings& settings);
-    static juce::String strumSublabel (const ModuleSettings& settings);
+    juce::String strumSublabel (const ModuleSettings& settings) const;
+    // Strum's Spread readout: "Off" (0), "1/16" (50), "1/8" (100), otherwise
+    // the per-note gap in ms at the tempo the engine last ran at.
+    juce::String strumSpreadText (int percent) const;
     static juce::String harmonizerSublabel (const ModuleSettings& settings);
+    // The per-type sublabel choice, in one place so node creation and the
+    // dialogs' live-apply/revert paths can't disagree on what a node reads.
+    juce::String sublabelFor (const ModuleInstance& instance) const;
+    // Re-derive a node's sublabel from the processor model. The dialogs call it
+    // after every settings push (live-apply, OK, and Cancel's revert alike);
+    // a stale id (module deleted while its window was open) is a no-op.
+    void refreshSublabel (int id);
 
     // Shared dialog controls, one add/read pair per shared setting (see
     // modules.md "Shared settings"). Every dialog builds its combos through
@@ -149,6 +160,16 @@ private:
     static void addAmountDial (ModuleWindow&, int slot, const juce::String& name,
                                int value, int range);
     static int  readAmountDial (const ModuleWindow&, const juce::String& name);
+
+    // Shared dialog plumbing behind every settings window: each edit is pushed
+    // to the engine immediately (live-apply — the change is audible with the
+    // window still open), OK keeps the last push, and Cancel / Esc /
+    // click-outside restores the open-time snapshot. `read` is the one
+    // per-dialog piece: copy the window's controls into a settings struct.
+    // Everything captures the module id, not the node — the module can be
+    // deleted or rebuilt while its window is up, and a stale id no-ops.
+    void wireDialog (ModuleWindow* win, int id, const ModuleSettings& snapshot,
+                     std::function<void (const ModuleWindow&, ModuleSettings&)> read);
 
     // "Global" followed by the choices of a global APVTS parameter — the
     // dialogs' root/scale lists, sourced from the parameter so they can't

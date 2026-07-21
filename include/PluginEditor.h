@@ -41,6 +41,13 @@ public:
      *  space's Theme button, or an external parameter write). */
     void applyTheme();
 
+    /** The editor-level messaging-area API (standards repo, messaging-area
+     *  spec): show a message in the bottom help bar, optionally with the
+     *  help.json description for helpKey appended. Forwards to
+     *  MainView::showFeedback, the one funnel. */
+    void showFeedback (const juce::String& message);
+    void showFeedback (const juce::String& message, juce::StringRef helpKey);
+
 private:
     CurrentAudioProcessor& processor;
 

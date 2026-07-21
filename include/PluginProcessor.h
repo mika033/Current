@@ -105,6 +105,19 @@ public:
     // view hides the Audition Synth panel there.
     bool isAuditionSynthSupported() const { return auditionSynthSupported; }
 
+    // True while a host state-restore is in flight (or just settled). Honoured
+    // by MainView::showFeedback so the help bar doesn't show a random
+    // parameter's restored value after a project load — replaceState()
+    // retriggers every APVTS attachment. Time-based rather than flag-based
+    // (the LAM approach): attachments deliver their UI updates through the
+    // message queue, so a flag cleared right after replaceState() would
+    // already be false when the deferred callbacks fire.
+    bool isRestoringState() const
+    {
+        return juce::Time::getMillisecondCounter()
+                 < stateRestoreEndsAt.load (std::memory_order_acquire);
+    }
+
     // --- Internal transport (Standalone / playhead-less hosts) --------------
     // The Standalone's playhead reports isPlaying == false forever (there is
     // no host transport), which would leave every stepped module silent; the
@@ -127,6 +140,19 @@ public:
         }
     }
     double getInternalBpm() const      { return internalBpm.load (std::memory_order_relaxed); }
+
+    // The tempo the engine last ran at (host bpm, or the internal transport's
+    // in the Standalone / playhead-less hosts). For UI readouts that convert
+    // musical time to ms — e.g. Strum's Spread dial; before the first block it
+    // reports the 120 default.
+    double getCurrentBpm() const       { return lastKnownBpm.load (std::memory_order_relaxed); }
+
+    // The engine's resolved transport clock as of the last audio block, for UI
+    // playhead displays (Rhythmize's step grid). Reading the engine's own
+    // published values — not the host playhead directly — keeps a playhead in
+    // step with what the grids actually did (ppq fallback included).
+    double playheadQn() const       { return engine.uiSongQn.load (std::memory_order_relaxed); }
+    bool   transportPlaying() const { return engine.uiPlaying.load (std::memory_order_relaxed); }
 
     // --- Canvas model (message thread only) ---------------------------------
     const std::vector<ModuleInstance>& modules() const { return moduleList; }
@@ -210,8 +236,13 @@ private:
     // and prevInternalPlay are audio-thread-only. Tempo is a runtime
     // preference, not patch content, so it is not an APVTS parameter; the
     // Standalone keeps it in standaloneProps.
+    // End of the feedback-suppression window isRestoringState() reads; opened
+    // by setStateInformation.
+    std::atomic<juce::uint32> stateRestoreEndsAt { 0 };
+
     std::atomic<bool>   standalonePlay { false };
     std::atomic<double> internalBpm { 120.0 };
+    std::atomic<double> lastKnownBpm { 120.0 };   // audio -> UI, see getCurrentBpm
     double internalQn = 0.0;        // synthesized song position, quarter notes
     bool   prevInternalPlay = false;
 

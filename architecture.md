@@ -11,9 +11,9 @@ phases. File references are relative to the repo root; headers live in
 
 A JUCE MIDI-effect plugin (VST3 + Standalone + macOS AU). The editor shows a
 menu bar (global root / scale + theme switch), a canvas that modules can be
-dragged onto from a palette of seventeen (generators Random, Scale, LFO,
-Chord, and Drone, modulators Arp, Quantize, Scale, Progression, Shift,
-Mirror, Harmonizer, Delay, Strum, and Humanize, I/O modules MIDI In and
+dragged onto from a palette of eighteen (generators Random, Scale, LFO,
+Chord, and Drone, modulators Arp, Rhythmize, Quantize, Scale, Progression,
+Shift, Mirror, Harmonizer, Delay, Strum, and Humanize, I/O modules MIDI In and
 Output), **port wiring** — cables dragged from output ports to input ports
 that define the signal flow — and an engine that executes exactly the wired
 graph: host MIDI enters only through MIDI In nodes, only what reaches an
@@ -44,14 +44,20 @@ own settings, its own runtime state.
 - `CurrentAudioProcessorEditor` (PluginEditor.h/.cpp) — top-level editor.
   Derives from `juce::DragAndDropContainer` (it must be a common ancestor of
   the palette and the canvas for JUCE drag-and-drop to connect them). Owns the
-  `CurrentLookAndFeel`, hosts `MainView`, provides `showInlineDialog()` and
-  `applyTheme()`.
-- `MainView` (MainView.h/.cpp) — pure layout: `MenuBar` top, `Canvas` middle,
-  `PaletteBar` bottom. Also owns the `SettingsView` and the swap: the menu
-  bar's Settings button toggles everything below the bar (canvas + palette —
-  a palette over a settings page would invite meaningless drags) between the
-  two surfaces by visibility; the settings space always has the full
-  below-the-bar bounds.
+  `CurrentLookAndFeel`, hosts `MainView`, provides `showInlineDialog()`,
+  `applyTheme()`, and the editor-level `showFeedback()` pair (the
+  messaging-area API — see "Messaging area" below).
+- `MainView` (MainView.h/.cpp) — layout plus the messaging-area funnel:
+  `MenuBar` top, `Canvas` middle, `PaletteBar` bottom, `MessageStrip` help bar
+  beneath everything. Also owns the `SettingsView` and the swap: the menu
+  bar's Settings button toggles the canvas + palette (a palette over a
+  settings page would invite meaningless drags) against the settings space by
+  visibility; the menu bar and help bar stay through the swap.
+  `MainView::showFeedback` is where every help-bar message is composed (see
+  "Messaging area" below).
+- `MessageStrip` + `HelpText` (MessageStrip.h/.cpp, HelpText.h/.cpp,
+  resources/help.json) — the help bar itself and the per-control description
+  table behind it. See "Messaging area" below.
 - `MenuBar` (MenuBar.h/.cpp) — global-settings combos (root, scale), bound to
   the APVTS via attachments, plus the Settings button at the far right (reads
   "Back" while the settings space is open; the theme switch that used to sit
@@ -65,9 +71,9 @@ own settings, its own runtime state.
   Theme button (click cycles the choice param; an APVTS listener keeps label
   and skin in sync with external writes), and an Audition Synth panel — enable
   toggle plus the five tone dials in signal-flow order, each label a live
-  "name: value" readout (the `ModuleWindow` dial idiom, standing in for LAM's
-  messaging area). The synth panel hides where the synth can't be heard
-  (`isAuditionSynthSupported()`, i.e. the AU MIDI-FX).
+  "name: value" readout (the `ModuleWindow` dial idiom). The synth panel hides
+  where the synth can't be heard (`isAuditionSynthSupported()`, i.e. the AU
+  MIDI-FX).
 - `AuditionSynth` (AuditionSynth.h/.cpp) — the built-in monitoring synth,
   ported verbatim from LAM (supersaw pluck voices, TPT low-pass with its own
   fast envelope, sub-octave sine; delay → reverb insert chain on one Space
@@ -117,11 +123,17 @@ own settings, its own runtime state.
   a thin menu bar echoing the global one (three slots — Root, Scale, and a Rate
   or Length combo, unused slots left blank), a 3x2 grid of combo/dial cells
   (labels above, Little Arp Monster section-box sizing; dials for knob-friendly
-  values like octaves/gate), and an action-button row. All seventeen modules are
+  values like octaves/gate), and an action-button row. All eighteen modules are
   on it, routing shared settings through `Canvas`'s `ModuleWindow` helper pairs.
-  For a module whose body the six cells can't hold, `setCustomBody` swaps the
-  grid for a caller-supplied component and sizes the panel to it, keeping the
-  rest of the chrome — **Progression** uses this for its step list (see below).
+  For a module whose body the six cells can't hold, `setCustomBody` installs a
+  caller-supplied component in its own recessed section box, keeping the rest of
+  the chrome. Grid cells may be filled alongside the body — the grid box then
+  sits below it, shrunk to the rows the filled cells use — or left empty, which
+  drops the grid box: **Progression** is the body-only case (its step list, see
+  below), **Rhythmize** the body-plus-grid case (its `RhythmizeStepGrid` — two
+  rows of eight LAM-styled on/off step boxes, cached-rect hit-testing like the
+  step list, plus a 20 Hz-polled playhead halo around the playing step (see
+  Transport and clocks) — above the shared Gate dial).
   Three hooks let one cell react to another: `setComboChangeCallback` and
   `refreshDial` (wrapped in `Canvas`'s shared `addAmountDial`/`readAmountDial`
   pair so Shift/Delay's amount dial rewords its unit ("steps"/"semitones") when
@@ -235,6 +247,18 @@ single code path:
   `isPlaying`/BPM; the engine falls back to counting quarter notes from
   transport start for that host (`Engine::fallbackQn`).
 
+**Clock feedback for UI playheads.** The engine publishes its resolved clock —
+block-start song position and playing flag, fallback included — as two atomics
+(`Engine::uiSongQn` / `uiPlaying`), written once per block before the
+empty-graph early-outs and exposed on the processor as
+`playheadQn()`/`transportPlaying()`. A UI playhead computes its position from
+these plus the module's own settings, rather than from any per-node engine
+state: Rhythmize's step-grid halo polls at 20 Hz and derives
+`step = floor(qn / stepQn) mod 16` — the same song-position derivation the
+grids use, so the display can't drift from the audio, works while the module
+is unwired, and tracks live Rate edits. Any future playhead (a Progression
+step highlight, say) reads the same two values.
+
 ## The engine: graph execution
 
 `Engine::process` executes the published `GraphSnapshot` each block; the full
@@ -327,7 +351,7 @@ real settings dialog in `Canvas` (`openChannelDialog`, `openArpDialog`,
 `openHumanizeDialog`, `openChordDialog`, `openDroneDialog`),
 reflected in a node sublabel (channel, rate, Shift's signed amount, the
 Scale modulator's scale, the Progression's degrees, the Chord's degree +
-type, the Drone's voicing, the Strum's spread in ms, or the Harmonizer's chord
+type, the Drone's voicing, the Strum's spread gap, or the Harmonizer's chord
 type), and persisted with the
 canvas state. The dialogs
 build their controls through `Canvas`'s shared add/read helper pairs
@@ -338,21 +362,46 @@ choice parameters ("Global" prepended), so they can't drift from the menu
 bar; Shift's dialog inserts its extra "Off" entry into that same list.
 
 The settings UI is fully on the structured `ModuleWindow` (see the component
-map) for all seventeen modules. Each `open*Dialog` builds a `ModuleWindow` via
+map) for all eighteen modules. Each `open*Dialog` builds a `ModuleWindow` via
 `editor.showModuleWindow`, fills the menu bar (Root / Scale / Rate-or-Length)
 and grid cells through `Canvas`'s `ModuleWindow` helper pairs, and reads the
-controls back by name (`getComboSelectedIndex` / `getDialValue`) on OK. Modules
+controls back by name (`getComboSelectedIndex` / `getDialValue`). Modules
 with a value that reads well as a knob (octaves, gate, and Shift/Delay's amount)
 use grid **dials**, rendered through `CurrentLookAndFeel::drawRotarySlider`, with
 the value folded into the cell label; the amount dial's unit label is refreshed
-off the Scale combo via `setComboChangeCallback`/`refreshDial`.
+off the Scale combo via `setComboChangeCallback`/`refreshDial`. Percent-style
+dials (gate, swing, the Humanize amounts, Strum's spread/velocity/jitter,
+Delay's feedback) run at 1% resolution — the stored settings values
+are the percent numbers themselves, converted to fractions once in
+`paramsFor`. Strum's Spread percent is tempo-relative (a share of an 1/8-note
+per-note gap; `strumGapQn` converts it once), and its readout shows the gap in
+ms at the tempo the engine last ran at — published audio→UI through the
+processor's `lastKnownBpm` atomic (`getCurrentBpm`).
 
-`openProgressionDialog` is the one dynamic case: instead of grid cells it calls
-`ModuleWindow::setCustomBody` with a `ProgressionStepList` — an arranger-style
-step row (cells with add/remove append arrows, plus Degree/Octave combos for the
-selected step; see `design/module-window.md`). The list holds a working copy of
-the steps and hands them back with `getSteps()` on OK. The menu bar still carries
-Root / Scale / Length through the usual helpers.
+**Settings apply live.** Every window edit fires `ModuleWindow::onChanged`
+(dial turns, combo picks; `ProgressionStepList` forwards its own step edits
+into the same signal), which the shared `Canvas::wireDialog` plumbing routes
+through the dialog's read-back lambda into `setModuleSettings` immediately —
+a change is audible while the window is still open, safe because settings
+edits keep notes ringing (same topologyVersion, snapshot rebaked and swapped
+atomically). OK keeps the last push; Cancel / Esc / click-outside pushes back
+the snapshot taken when the window opened. `wireDialog` owns this contract for
+every module dialog (the channel dialog repeats it inline, since a channel is
+not a `ModuleSettings`), so a dialog only supplies its controls and its
+read-back lambda.
+
+Two dialogs use `ModuleWindow::setCustomBody`. `openProgressionDialog` installs
+a `ProgressionStepList` — an arranger-style step row (cells with add/remove
+append arrows, plus Degree/Octave combos for the selected step; see
+`design/module-window.md`); the list holds a working copy of the steps and hands
+them back with `getSteps()` on every live-apply read, with the menu bar still
+carrying Root / Scale / Length through the usual helpers. `openRhythmizeDialog`
+installs a `RhythmizeStepGrid` (the 16 on/off step boxes, working copy read back
+with `getPattern()`) and additionally fills a grid cell — the shared Gate dial —
+so its window is the body-plus-grid layout; both bodies forward their `onChanged`
+into the window's live-apply signal. The Rhythmize dialog also wires the grid's
+`playingStep` provider — the playhead lambda that turns the engine's published
+clock into a step index (see Transport and clocks).
 
 ## Theming
 
@@ -367,6 +416,48 @@ instead — see the canvas-model section); `applyTheme()` in the editor syncs
 the active scheme from the parameter before first paint (avoids a wrong-theme
 flash) and on every switch. Family colours for nodes (generator green,
 modulator purple, I/O blue) live in the scheme so both themes can tune them.
+
+## Messaging area (help bar)
+
+The one-line strip at the editor's bottom edge, per the standards repo's
+`design/messaging-area.md` and modelled on LAM's bottom bar: touching any
+control shows `"<Label>: <value> - <description>"`, so the bar doubles as a
+built-in manual. The moving parts:
+
+- **`MessageStrip`** — the strip component (panel chrome like the menu bar,
+  paint-time theme reads, own expiry timer). Messages are transient and clear
+  after 3 s — LAM's shipped value rather than the spec's 2 s default, because
+  the description lines need the reading time (deviation noted in the header).
+- **`resources/help.json` + `HelpText`** — the description table, compiled in
+  via `juce_add_binary_data` (CMake target `CurrentHelpData`) and lazy-parsed
+  once per process. Keys are the ModuleWindow control names ("rate", "gate",
+  "scale" …) so a shared control has one description everywhere; per-module
+  overrides ("rate.delay") exist where the same control means something
+  different, `module.*` keys carry the palette/canvas module descriptions, and
+  `action.*` keys back gestures. `HelpText::keyForOption` resolves a combo
+  pick to an option-specific entry ("scale.minor", "mode.up") when the table
+  has one, falling back to the control's generic line.
+- **The funnel** — `MainView::showFeedback(message, helpKey)` composes the
+  final string (ASCII hyphen, no em-dash) and is the single entry point; the
+  editor's `showFeedback` pair forwards to it for callers that hold an editor
+  reference (Canvas, the module windows). `MenuBar` / `PaletteBar` /
+  `SettingsView` / the ModuleWindow custom bodies report through `onFeedback`
+  std::functions wired at construction.
+- **Who fires** — `ModuleWindow` reports every combo pick and dial turn itself
+  (each control carries a `helpKey`, defaulting to its name; dialogs override
+  via `setHelpKey`). The canvas reports selection (node → its `module.*`
+  description, cable → the delete hint), the connect gesture (start
+  instruction, success, `canConnect` refusal), adds, and removals. The palette
+  reports chip presses (the module manual moment) and filter flips; the menu
+  bar its combos, transport, and Settings toggle; the settings view its theme
+  button, synth toggle, and dials.
+- **Suppression** — `CurrentAudioProcessor::isRestoringState()` (a 200 ms
+  window opened by `setStateInformation`, LAM's time-based approach — APVTS
+  attachments deliver asynchronously, so a flag would clear too early) is
+  honoured inside `MainView::showFeedback`; `MenuBar` additionally arms its
+  combo feedback only after construction, and the settings view's
+  attachment-driven controls gate on `isMouseOverOrDragging` so programmatic
+  writes stay silent (the spec's continuous-control filter).
 
 ## UI interaction details worth knowing
 

@@ -35,6 +35,10 @@ public:
     // reads "Back" while the settings space is showing.
     void setSettingsOpen (bool open);
 
+    // Help-bar reporting for the bar's controls (message, help key). Wired by
+    // MainView into its showFeedback funnel.
+    std::function<void (const juce::String&, const juce::String&)> onFeedback;
+
 private:
     using ComboAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
@@ -55,6 +59,11 @@ private:
     StepperControl   bpmStepper;
 
     std::unique_ptr<ComboAttachment> rootAtt, scaleAtt;
+
+    // Gates the combos' feedback until the ctor is done: the APVTS attachments
+    // fire each combo's onChange once while syncing the initial value, and
+    // that must not land in the help bar (messaging-area spec §1.5).
+    bool feedbackArmed = false;
 
     void populateFromChoiceParam (juce::ComboBox& combo, const juce::String& paramID);
 

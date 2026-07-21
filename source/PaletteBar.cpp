@@ -15,7 +15,17 @@ namespace
 
 // --- PaletteItem ------------------------------------------------------------
 
-PaletteBar::PaletteItem::PaletteItem (ModuleType t) : type (t) {}
+PaletteBar::PaletteItem::PaletteItem (PaletteBar& owner, ModuleType t)
+    : bar (owner), type (t) {}
+
+void PaletteBar::PaletteItem::mouseDown (const juce::MouseEvent&)
+{
+    // Pressing a chip shows the module's one-line description — the palette
+    // doubles as the module manual (the canvas node's selection message fires
+    // the same key).
+    if (bar.onFeedback)
+        bar.onFeedback (descriptorFor (type).name, moduleHelpKey (type));
+}
 
 void PaletteBar::PaletteItem::paint (juce::Graphics& g)
 {
@@ -93,13 +103,20 @@ PaletteBar::PaletteBar()
     for (auto* t : { &ioFilter, &genFilter, &modFilter })
     {
         t->setToggleState (true, juce::dontSendNotification);
-        t->onClick = [this] { rebuildStrip(); };
+        t->onClick = [this, t]
+        {
+            rebuildStrip();
+            if (onFeedback)
+                onFeedback (t->getButtonText()
+                                + (t->getToggleState() ? ": shown" : ": hidden"),
+                            "action.filter");
+        };
         addAndMakeVisible (*t);
     }
 
     for (const auto& d : moduleCatalogue())
     {
-        auto item = std::make_unique<PaletteItem> (d.type);
+        auto item = std::make_unique<PaletteItem> (*this, d.type);
         strip.addAndMakeVisible (item.get());
         items.push_back (std::move (item));
     }

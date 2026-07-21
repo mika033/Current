@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_core/juce_core.h>
+#include <array>
 #include <vector>
 
 // The shared per-module settings blob and the option tables behind it. Several
@@ -76,24 +77,33 @@ namespace ModuleOptions
     constexpr int kModeRandom = 3;
     constexpr int kScaleModeCount = 2;   // Scale generator's dialog: Up/Down only
 
-    // Gate: how long each emitted note sounds, as a fraction of its step.
+    // Gate: how long each emitted note sounds, as a percent of its step
+    // (1..100 — 0 would be a zero-length note, so the dial floors at 1).
     // Ships on every note-emitting Rate module — the generators (Random, Scale
     // gen, LFO) and the Arp — since only a module that originates note
     // durations has something for a gate to act on (Quantize/Delay re-time or
     // echo existing notes, so they carry a Rate but no Gate).
-    inline const juce::StringArray& gateNames()
+    constexpr int kGatePctMin  = 1;
+    constexpr int kGatePctMax  = 100;
+    constexpr int kGateDefault = 50;
+
+    inline double gateFraction (int pct)
     {
-        static const juce::StringArray names { "25%", "50%", "75%", "100%" };
-        return names;
+        return juce::jlimit (kGatePctMin, kGatePctMax, pct) / 100.0;
     }
 
-    inline double gateFraction (int index)
-    {
-        static const double frac[] = { 0.25, 0.5, 0.75, 1.0 };
-        return frac[(size_t) juce::jlimit (0, 3, index)];
-    }
+    // Rhythmize: the fixed length of its on/off step pattern. 16 steps at the
+    // default 1/16 rate = one bar. All-on is the drop-time default (everything
+    // retriggers on the grid; the user carves the groove by switching steps
+    // off), which is why the default can't be the array's all-false zero-init.
+    constexpr int kRhythmSteps = 16;
 
-    constexpr int kGateHalf = 1;
+    inline std::array<bool, kRhythmSteps> defaultRhythmSteps()
+    {
+        std::array<bool, kRhythmSteps> a;
+        a.fill (true);
+        return a;
+    }
 
     // Scale-override sentinels shared by scaleOverride across every pitch
     // module: -1 = "follow the global menu-bar scale", -2 = Off = "no scale at
@@ -112,26 +122,21 @@ namespace ModuleOptions
     // "Off = chromatic" behaviour is simply the chromatic scale.
     constexpr int kChromaticScale = 8;
 
-    // Swing (Quantize): how far every second step of the rate grid is pushed
-    // late, following the shared pair-based model from the standards repo's
-    // swing-timing.md (the same maths as Little Arp Monster): within each pair
-    // of steps the even step stretches by (1 + swing/2) and the odd step
-    // shrinks by (1 - swing/2), so pair starts always sit on the straight
-    // grid. 0% = straight time; ~67% is the classic triplet shuffle.
-    inline const juce::StringArray& swingNames()
-    {
-        static const juce::StringArray names { "0%", "10%", "20%", "30%", "40%",
-                                               "50%", "60%", "70%", "80%", "90%",
-                                               "100%" };
-        return names;
-    }
+    // Swing (Quantize / Humanize): how far every second step of the rate grid
+    // is pushed late, as a percent (0..100), following the shared pair-based
+    // model from the standards repo's swing-timing.md (the same maths as
+    // Little Arp Monster): within each pair of steps the even step stretches
+    // by (1 + swing/2) and the odd step shrinks by (1 - swing/2), so pair
+    // starts always sit on the straight grid. 0% = straight time; ~67% is the
+    // classic triplet shuffle. The Humanize amounts (layback / accent / the
+    // jitters) share this 0..100 percent range and conversion.
+    constexpr int kSwingPctMax = 100;
+    constexpr int kSwingOff    = 0;
 
-    inline double swingFraction (int index)
+    inline double swingFraction (int pct)
     {
-        return 0.1 * juce::jlimit (0, 10, index);
+        return juce::jlimit (0, kSwingPctMax, pct) / 100.0;
     }
-
-    constexpr int kSwingOff = 0;
 
     // Shift: transpose range, symmetric around 0. The same numeric range is
     // used whether the module shifts chromatic semitones (scale Off) or scale
@@ -209,22 +214,18 @@ namespace ModuleOptions
     constexpr int kProgOctaveRange = 2;
     constexpr int kMaxProgSteps    = 8;
 
-    // Delay feedback: each echo's velocity as a share of the note before it.
-    // The velocity decay is what ends the repeats — echoes below the audible
-    // floor aren't scheduled — so feedback doubles as the repeat count.
-    inline const juce::StringArray& feedbackNames()
-    {
-        static const juce::StringArray names { "10%", "20%", "30%", "40%", "50%",
-                                               "60%", "70%", "80%", "90%" };
-        return names;
-    }
+    // Delay feedback: each echo's velocity as a percent of the note before it
+    // (0..90). The velocity decay is what ends the repeats — echoes below the
+    // audible floor aren't scheduled — so feedback doubles as the repeat
+    // count, and the 90% ceiling keeps the tail finite (100% would never
+    // decay). 0% = no echoes at all.
+    constexpr int kFeedbackPctMax  = 90;
+    constexpr int kFeedbackDefault = 50;
 
-    inline double feedbackFraction (int index)
+    inline double feedbackFraction (int pct)
     {
-        return 0.1 * (juce::jlimit (0, 8, index) + 1);
+        return juce::jlimit (0, kFeedbackPctMax, pct) / 100.0;
     }
-
-    constexpr int kFeedbackHalf = 4;   // 50%
 
     // Delay per-echo pitch shift range, in semitones. Cumulative across the
     // feedback chain (echo k sits k * shift above the source), so a modest
@@ -357,30 +358,31 @@ namespace ModuleOptions
     constexpr int kStrumCurveAccelerate = 1;
     constexpr int kStrumCurveDecelerate = 2;
 
-    // Strum spread: the total fan-out time from the first strummed note to the
-    // last, as a 0..10 dial that maps to 0..100 ms (10 ms per step). 0 = the
-    // whole chord hits together (an effective bypass). Kept in real time (ms),
-    // not tempo, because a strum is a physical gesture whose length doesn't
-    // change with the song tempo.
-    constexpr int    kStrumSpreadSteps  = 10;
-    constexpr double kStrumSpreadMaxSec = 0.10;   // 100 ms at the full dial
+    // Strum spread: the gap between consecutive strummed notes, tempo-relative.
+    // Stored as a percent of an 1/8 note (0 = Off/bypass, 50 = a 1/16 gap,
+    // 100 = an 1/8 gap; in between the dial reads the gap in ms at the current
+    // tempo). Per note, not total: a 3-note chord at 1/16 lands at 0, +1/16,
+    // +2/16. Tempo-synced so a strummed comp keeps its feel when the song
+    // tempo moves.
+    constexpr int kStrumSpreadMax = 100;
 
-    inline double strumSpreadSeconds (int index)
+    inline double strumGapQn (int percent)
     {
-        return (double) juce::jlimit (0, kStrumSpreadSteps, index)
-                   / (double) kStrumSpreadSteps * kStrumSpreadMaxSec;
+        // 100% = an 1/8 note = half a quarter note.
+        return juce::jlimit (0, kStrumSpreadMax, percent) / 100.0 * 0.5;
     }
 
-    // Strum velocity tilt: a signed −10..+10 dial (÷10 = −1..+1). Negative
-    // starts the strum loud and fades it away (a bass-note accent), positive
-    // swells it up, 0 is flat. Applied as a linear ramp across the fan.
-    constexpr int kStrumVelTiltRange = 10;
+    // Strum velocity tilt: a signed percent (−100..+100, ÷100 = −1..+1).
+    // Negative starts the strum loud and fades it away (a bass-note accent),
+    // positive swells it up, 0 is flat. Applied as a linear ramp across the fan.
+    constexpr int kStrumVelTiltRange = 100;
 
-    // Strum jitter: a 0..10 dial (÷10 = 0..1) of per-note looseness — a small
-    // random late nudge in timing plus a touch of velocity, so repeated strums
-    // don't land identically. Drawn from the song position (deterministic), so
-    // a looped part strums the same way on every pass instead of shimmering.
-    constexpr int kStrumJitterSteps = 10;
+    // Strum jitter: a percent (0..100, ÷100 = 0..1) of per-note looseness — a
+    // small random late nudge in timing plus a touch of velocity, so repeated
+    // strums don't land identically. Drawn from the song position
+    // (deterministic), so a looped part strums the same way on every pass
+    // instead of shimmering.
+    constexpr int kStrumJitterMax = 100;
 
     // Note name for a MIDI pitch. Octave convention: C3 = MIDI 48 (the one
     // modules.md and the requirements use), so octave = note/12 - 1.
@@ -408,7 +410,8 @@ struct ProgressionStep
 
 // One module's settings. Random uses root/scale/rate/gate/range; Scale
 // (generator) uses root/scale/rate/gate/repeat plus mode/octaves/endOnRoot;
-// Arp uses mode/rate/octaves/gate/repeat; LFO uses root/scale/rate/gate plus
+// Arp uses mode/rate/octaves/gate/repeat; Rhythmize uses rate/gate plus its
+// rhythmSteps pattern (no pitch mapping); LFO uses root/scale/rate/gate plus
 // its lfo* fields; Quantize uses rate (its timing grid) and swing; the Scale
 // modulator uses root/scale only; Progression uses root/scale plus its prog*
 // fields; Shift uses root/scale (scaleOverride carries the extra Off sentinel)
@@ -448,8 +451,13 @@ struct ModuleSettings
                              // false = end on the scale's last degree (the 7th)
 
     // Every note-emitting Rate module (Random, Scale gen, LFO, Arp) — see
-    // ModuleOptions::gateNames.
-    int gate = ModuleOptions::kGateHalf;   // index into gateNames()
+    // ModuleOptions::gateFraction.
+    int gate = ModuleOptions::kGateDefault;   // percent, kGatePctMin..kGatePctMax
+
+    // Rhythmize only: which of its 16 steps fire. Its grid is the shared `rate`
+    // (Rate + Gate pair — it emits notes, so the gate has something to act on).
+    std::array<bool, ModuleOptions::kRhythmSteps> rhythmSteps
+        = ModuleOptions::defaultRhythmSteps();
 
     // Shift only: transpose amount. Scale degrees when scaleOverride is Global
     // or a named scale, chromatic semitones when it is kScaleOff. 0 (the
@@ -472,15 +480,15 @@ struct ModuleSettings
     int mirrorBounds = ModuleOptions::kMirrorFold;   // index into mirrorBoundsNames()
 
     // Quantize only: how far every second grid step is pushed late (the grid
-    // itself is the shared `rate` field). Index into swingNames(). Humanize
-    // reuses this same field for its own swing amount (identical semantics and
-    // range — see the Humanize fields below).
+    // itself is the shared `rate` field), 0..100 percent. Humanize reuses this
+    // same field for its own swing amount (identical semantics and range — see
+    // the Humanize fields below).
     int swing = ModuleOptions::kSwingOff;
 
     // Humanize only. A final-stage "performance feel" pass over the outgoing
     // stream. Its grid (what swing and accent lock to) is the shared `rate`
     // field; its swing amount is the shared `swing` field above. These five are
-    // the rest of its controls, all 0..10 (= 0..100% via swingFraction, like
+    // the rest of its controls, all 0..100 percent (via swingFraction, like
     // swing): a structured groove pair (layback = drag behind the beat, accent
     // = periodic velocity emphasis on strong beats) and a random-touch trio
     // (timing / velocity / length jitter). See modules.md's Humanize entry.
@@ -512,7 +520,7 @@ struct ModuleSettings
     // chromatic semitones when scaleOverride is Off, in scale degrees when a
     // scale is active (Global/named), mirroring Shift. Delay's root/scale come
     // from the shared rootOverride/scaleOverride.
-    int delayFeedback = ModuleOptions::kFeedbackHalf;   // index into feedbackNames()
+    int delayFeedback = ModuleOptions::kFeedbackDefault;   // percent, 0..kFeedbackPctMax
     int delayShift    = 0;   // -kDelayShiftRange..+kDelayShiftRange
 
     // Chord only: the chord to emit, as a scale degree of its (root, scale)
@@ -531,13 +539,13 @@ struct ModuleSettings
     // high downstroke, Down = high to low upstroke, Up-Down alternates strokes
     // on successive strums, Random shuffles); Repeat (re-strum the held chord
     // every so often) reuses the shared `repeat` field. These four are its own:
-    // spread as a 0..10 dial (0..100 ms, 0 = bypass), the spacing curve, a
-    // signed velocity tilt across the fan, and per-note jitter. Strum maps no
-    // pitch, so it carries no root/scale.
-    int strumSpread  = 4;   // 0..kStrumSpreadSteps (default ~40 ms)
+    // the per-note spread gap (percent of an 1/8 note, 0 = bypass — see
+    // strumGapQn), the spacing curve, a signed velocity tilt across the fan,
+    // and per-note jitter. Strum maps no pitch, so it carries no root/scale.
+    int strumSpread  = 40;  // percent of an 1/8-note gap, 0..kStrumSpreadMax
     int strumCurve   = ModuleOptions::kStrumCurveEven;
-    int strumVelTilt = 0;   // -kStrumVelTiltRange..+kStrumVelTiltRange
-    int strumJitter  = 0;   // 0..kStrumJitterSteps
+    int strumVelTilt = 0;   // signed percent, -kStrumVelTiltRange..+kStrumVelTiltRange
+    int strumJitter  = 0;   // percent, 0..kStrumJitterMax
 
     // Chord and Drone: Repeat is how often a new chord/note starts (counted
     // from the song's bar 0) and Length is how long it sounds inside that

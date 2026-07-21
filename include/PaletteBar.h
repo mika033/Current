@@ -36,17 +36,24 @@ public:
     // the tray right now (releasing deletes the node).
     void setRemoveDragState (bool armed, bool hot);
 
+    // Help-bar reporting (message, help key): pressing a chip shows the
+    // module's one-line description, the filter checkboxes announce their
+    // state. Wired by MainView into its showFeedback funnel.
+    std::function<void (const juce::String&, const juce::String&)> onFeedback;
+
 private:
     // A single draggable chip in the tray. Mirrors the canvas node's
     // shape/colour so the user sees what they're about to place.
     class PaletteItem : public juce::Component
     {
     public:
-        explicit PaletteItem (ModuleType type);
+        PaletteItem (PaletteBar& owner, ModuleType type);
         ModuleKind kind() const { return descriptorFor (type).kind; }
         void paint (juce::Graphics&) override;
+        void mouseDown (const juce::MouseEvent&) override;
         void mouseDrag (const juce::MouseEvent&) override;
     private:
+        PaletteBar& bar;
         ModuleType type;
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PaletteItem)
     };

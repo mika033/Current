@@ -21,8 +21,8 @@ class CurrentAudioProcessor;
 //    output for the synth to use.
 //
 // The dials are APVTS-attached, and each label doubles as the live value
-// readout ("Cutoff: 920 Hz") — the ModuleWindow dial idiom, standing in for
-// LAM's messaging area (which Current doesn't have).
+// readout ("Cutoff: 920 Hz") — the ModuleWindow dial idiom. Touching a control
+// additionally reports it to the bottom help bar via onFeedback.
 class SettingsView : public juce::Component,
                      private juce::AudioProcessorValueTreeState::Listener
 {
@@ -30,6 +30,10 @@ public:
     SettingsView (CurrentAudioProcessor& processor,
                   std::function<void()> onThemeChanged);
     ~SettingsView() override;
+
+    // Help-bar reporting (message, help key). Wired by MainView into its
+    // showFeedback funnel.
+    std::function<void (const juce::String&, const juce::String&)> onFeedback;
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -56,6 +60,7 @@ private:
         juce::Label  label;
         juce::Slider dial;
         juce::String baseName;
+        juce::String helpKey;
         std::function<juce::String (double)> format;
         std::unique_ptr<SliderAttachment> attachment;
     };
@@ -64,6 +69,7 @@ private:
 
     void setupDial (SynthDial& d, const juce::String& paramID,
                     const juce::String& baseName,
+                    const juce::String& helpKey,
                     std::function<juce::String (double)> format);
     void refreshDialLabel (SynthDial& d);
 

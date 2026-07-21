@@ -1,5 +1,6 @@
 #include "MenuBar.h"
 #include "PluginProcessor.h"
+#include "HelpText.h"
 #include "Theme.h"
 
 MenuBar::MenuBar (CurrentAudioProcessor& processor,
@@ -29,6 +30,8 @@ MenuBar::MenuBar (CurrentAudioProcessor& processor,
             const bool on = playButton.getToggleState();
             processor.setStandalonePlay (on);
             playButton.setButtonText (on ? "Stop" : "Play");
+            if (onFeedback)
+                onFeedback (on ? "Playing" : "Stopped", "transport.play");
         };
         addAndMakeVisible (playButton);
 
@@ -36,9 +39,11 @@ MenuBar::MenuBar (CurrentAudioProcessor& processor,
         // from a beat length); 300 is the musically useful ceiling.
         bpmStepper.setRange (20.0, 300.0, 1.0);
         bpmStepper.setValue (processor.getInternalBpm(), juce::dontSendNotification);
-        bpmStepper.onValueChange = [&processor] (double v)
+        bpmStepper.onValueChange = [this, &processor] (double v)
         {
             processor.setInternalBpm (v);
+            if (onFeedback)
+                onFeedback ("Tempo: " + juce::String ((int) v) + " BPM", "transport.tempo");
         };
         addAndMakeVisible (bpmStepper);
     }
@@ -47,11 +52,29 @@ MenuBar::MenuBar (CurrentAudioProcessor& processor,
     addAndMakeVisible (scaleCombo);
     populateFromChoiceParam (rootCombo,  ParamIDs::root);
     populateFromChoiceParam (scaleCombo, ParamIDs::scale);
+
+    // Feedback for the global pair. Assigned before the attachments so their
+    // initial sync runs through the feedbackArmed=false gate; the scale routes
+    // each named scale to its own help.json line ("scale.minor" …).
+    rootCombo.onChange = [this]()
+    {
+        if (feedbackArmed && onFeedback)
+            onFeedback ("Root: " + rootCombo.getText(), "root");
+    };
+    scaleCombo.onChange = [this]()
+    {
+        if (feedbackArmed && onFeedback)
+            onFeedback ("Scale: " + scaleCombo.getText(),
+                        HelpText::keyForOption ("scale", scaleCombo.getText()));
+    };
+
     rootAtt  = std::make_unique<ComboAttachment> (state, ParamIDs::root,  rootCombo);
     scaleAtt = std::make_unique<ComboAttachment> (state, ParamIDs::scale, scaleCombo);
 
     settingsButton.onClick = std::move (onSettingsClicked);
     addAndMakeVisible (settingsButton);
+
+    feedbackArmed = true;
 }
 
 MenuBar::~MenuBar() = default;

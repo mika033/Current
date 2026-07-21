@@ -41,6 +41,10 @@ ProgressionStepList::ProgressionStepList (const std::vector<ProgressionStep>& in
     {
         steps[(size_t) selected].degree = degreeCombo.getSelectedItemIndex();
         repaint();
+        if (onChanged)
+            onChanged();
+        if (onFeedback)
+            onFeedback ("Degree: " + degreeCombo.getText(), "prog.degree");
     };
     addAndMakeVisible (degreeCombo);
 
@@ -53,6 +57,10 @@ ProgressionStepList::ProgressionStepList (const std::vector<ProgressionStep>& in
         steps[(size_t) selected].octave =
             octaveCombo.getSelectedItemIndex() - ModuleOptions::kProgOctaveRange;
         repaint();
+        if (onChanged)
+            onChanged();
+        if (onFeedback)
+            onFeedback ("Octave: " + octaveCombo.getText(), "prog.octave");
     };
     addAndMakeVisible (octaveCombo);
 
@@ -83,21 +91,38 @@ void ProgressionStepList::refreshEditor()
 void ProgressionStepList::addStep()
 {
     if ((int) steps.size() >= ModuleOptions::kMaxProgSteps)
+    {
+        if (onFeedback)
+            onFeedback ("A progression holds at most "
+                            + juce::String (ModuleOptions::kMaxProgSteps) + " steps", "");
         return;
+    }
     // Duplicate the last step, so the append arrow reads as "more of the same";
     // the combos then retype it if a different degree is wanted.
     steps.push_back (steps.back());
     recomputeCellRects();
     selectStep ((int) steps.size() - 1);
+    if (onChanged)
+        onChanged();
+    if (onFeedback)
+        onFeedback ("Step " + juce::String ((int) steps.size()) + " added", "prog.add");
 }
 
 void ProgressionStepList::removeLast()
 {
     if ((int) steps.size() <= 1)   // keep the one-step invariant
+    {
+        if (onFeedback)
+            onFeedback ("A progression keeps at least one step", "");
         return;
+    }
     steps.pop_back();
     recomputeCellRects();
     selectStep (juce::jmin (selected, (int) steps.size() - 1));
+    if (onChanged)
+        onChanged();
+    if (onFeedback)
+        onFeedback ("Last step removed", "prog.remove");
 }
 
 void ProgressionStepList::resized()
@@ -223,6 +248,12 @@ void ProgressionStepList::mouseDown (const juce::MouseEvent& e)
         if (cellRects[(size_t) i].contains (p))
         {
             selectStep (i);
+            if (onFeedback)
+                onFeedback ("Step " + juce::String (i + 1) + ": "
+                                + ModuleOptions::degreeNames()[juce::jlimit (
+                                      0, ModuleOptions::degreeNames().size() - 1,
+                                      steps[(size_t) i].degree)],
+                            "prog.step");
             return;
         }
 

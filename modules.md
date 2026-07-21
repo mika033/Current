@@ -37,6 +37,11 @@ stop, everything stops and buffered material is discarded, with note-offs sent
 so nothing hangs; on loop wrap, the buffer spills into the next pass; after a
 playhead jump the buffer simply empties as normal.
 
+Settings changes apply **live**: while a module's settings window is open,
+every dial turn and combo pick takes effect (and is audible) immediately. OK
+keeps what you hear; Cancel (or Esc, or clicking outside the window) restores
+the settings as they were when the window opened.
+
 ## Shared settings
 
 Some settings recur across many modules. The governing rule is that a shared
@@ -59,21 +64,22 @@ decision log in `CLAUDE.md`.)
   Scale = Off means the move is in raw semitones, while Scale on (Global or
   named) means the move is in scale steps. Used by the Random, Scale, and LFO
   generators, the Chord and Drone generators, and the Scale, Progression,
-  Shift, and Delay modulators. Modules that don't touch pitch (Arp, Quantize,
-  MIDI In, Output) carry neither.
+  Shift, and Delay modulators. Modules that don't touch pitch (Arp, Rhythmize,
+  Quantize, MIDI In, Output) carry neither.
 - **Rate — with Gate on note-emitting modules.** Rate is the note-length grid
   a module works on, **1/32 to 1/1**, locked to host tempo (the same canonical
   list everywhere Rate appears): the grid a generator emits on, or the grid a
   modulator re-times passing MIDI to. A module has **either Rate or Length, or
   neither — never both.** On the note-emitting Rate modules — the Random,
-  Scale, and LFO generators and the Arp — Rate always ships **paired with
-  Gate** (below). Quantize uses a Rate as its timing grid and Delay uses one
+  Scale, and LFO generators and the Arp and Rhythmize — Rate always ships
+  **paired with Gate** (below). Quantize uses a Rate as its timing grid and Delay uses one
   as its echo spacing, but neither has a Gate: they re-time or echo existing
   notes rather than originating durations, so a gate would have nothing to act
   on.
-- **Gate** — how long each *emitted* note sounds, as a share of its step (25%
-  to 100%, default 50%). Ships on every note-emitting Rate module (the
-  generators and the Arp); it does not appear on Quantize or Delay.
+- **Gate** — how long each *emitted* note sounds, as a percent of its step
+  (1–100% in 1% steps, default 50%). Ships on every note-emitting Rate module
+  (the generators, the Arp, and Rhythmize); it does not appear on Quantize or
+  Delay.
 - **Length** — a single held note or chord, for the slow generators that
   naturally produce one long note (Chord, Drone). Drawn from the shared
   bar-length list (1/4 bar to 16 bars). A Length module has no Gate — the user
@@ -188,7 +194,7 @@ User settings:
 - Scale — Global (default), Off (draw from all twelve chromatic notes), or any
   scale from the global list.
 - Rate — 1/32 to 1/1 (default 1/8).
-- Gate — 25%, 50% (default), 75%, or 100% of the step.
+- Gate — 1% to 100% of the step in 1% steps (default 50%).
 - Range from / to — any MIDI note (default root octave 2 to root octave 4).
 
 ### Scale (generator)
@@ -220,7 +226,7 @@ User settings:
 - Octaves — 1 (default) to 4.
 - End on — Root (octave, default) or 7th.
 - Rate — 1/32 to 1/1 (default 1/8).
-- Gate — 25%, 50% (default), 75%, or 100% of the step.
+- Gate — 1% to 100% of the step in 1% steps (default 50%).
 - Repeat — Endless, 1/4 bar, 1/2 bar, 1 bar (default), 2, 4, 8, or 16 bars.
 
 ### LFO (generator)
@@ -340,8 +346,41 @@ User settings:
 - Mode — Up (default), Down, Up-Down, or Random.
 - Rate — 1/32 to 1/1 (default 1/16).
 - Octaves — 1 (default) to 4.
-- Gate — 25%, 50% (default), 75%, or 100% of the step.
+- Gate — 1% to 100% of the step in 1% steps (default 50%).
 - Repeat — Endless (default), 1/4 bar, 1/2 bar, 1 bar, 2, 4, 8, or 16 bars.
+
+### Rhythmize (modulator)
+
+Rhythmize imposes a rhythm on whatever flows into it: a 16-step on/off
+pattern, shown in its settings window as two rows of eight step boxes (styled
+after Little Arp Monster's pattern grid). Hold a chord — or feed it sustained
+material from a generator — and while the transport plays, every **active**
+step retriggers the whole currently-held set as fresh notes of the step's
+length; inactive steps stay silent. Pitches are never changed: the input
+supplies pitch, Rhythmize supplies timing (the rhythm-application model the
+planned Euclidean module describes, driven by a hand-set pattern instead of a
+formula). Velocities are kept too, so a softly played chord retriggers softly.
+
+The pattern follows the song position — step = grid index mod 16, counted from
+the song's start — so at the default 1/16 rate the 16 steps are exactly one
+bar and the pattern lands identically on every host loop pass. All 16 steps
+start active: drop the module in and everything retriggers in straight 16ths;
+carve the groove by switching steps off. Input notes are consumed while
+playing (they are the module's data); like the Arp, when the transport is
+stopped input passes through unchanged so live playing stays audible. An
+emitted note rings to its gate end even if the key lifts mid-step, Gate sets
+that length as a share of the step, and a transport stop releases everything
+cleanly. While the transport runs, a glowing halo in the settings window marks
+the step currently playing (it follows the song position, so it also shows
+where the pattern sits while you edit); it disappears when the transport
+stops. The node shows its rate as a sublabel.
+
+User settings:
+
+- Rate — 1/32 to 1/1 (default 1/16); the step grid.
+- Gate — 1% to 100% of the step in 1% steps (default 50%).
+- Steps — 16 on/off boxes (all on by default), two rows of eight in the
+  settings window.
 
 ### Quantize (modulator)
 
@@ -367,7 +406,7 @@ hangs. The node shows its rate as a sublabel.
 User settings:
 
 - Rate — 1/32 to 1/1 (default 1/16); the timing grid.
-- Swing — 0% to 100% in 10% steps (default 0%).
+- Swing — 0% to 100% in 1% steps (default 0%).
 
 ### Scale (modulator)
 
@@ -532,7 +571,7 @@ User settings:
 Delay repeats every note that passes it as a fading echo chain — the classic
 tape-echo feel, in MIDI. Each note (played or generated) spawns a repeat one
 delay time later; Rate sets that spacing as a note length (1/32 to 1/1,
-default 1/8), locked to host tempo. Feedback (10–90%, default 50%) sets each
+default 1/8), locked to host tempo. Feedback (0–90%, default 50%) sets each
 repeat's velocity as a share of the note before it; the chain ends when the
 repeats fade below audibility, so feedback doubles as the number of repeats —
 50% gives four, lower gives fewer, higher gives a long tail.
@@ -555,7 +594,8 @@ User settings:
 - Scale — Global (default), Off (chromatic semitones), or any scale from the
   global list.
 - Rate — 1/32 to 1/1 (default 1/8); the echo spacing.
-- Feedback — 10% to 90% (default 50%); repeat decay, and thereby repeat count.
+- Feedback — 0% to 90% in 1% steps (default 50%); repeat decay, and thereby
+  repeat count (0% = no echoes; capped at 90% so the tail always ends).
 - Shift — −12 to +12 (default 0); applied to each repeat, cumulatively across
   the chain (scale steps or semitones per the scale setting).
 
@@ -575,8 +615,13 @@ Its six controls fill the settings grid over a blank menu bar. Direction and
 Repeat are the shared controls, so they read identically to the rest of the
 plugin.
 
-- **Spread** sets the total fan-out time from the first strummed note to the
-  last, 0 to 100 ms. 0 makes the chord hit together — an effective bypass.
+- **Spread** sets the gap between consecutive fanned notes, tempo-synced: the
+  dial runs from Off (the chord hits together — an effective bypass) through a
+  1/16 gap at the middle to an 1/8 gap at the top, and in between the readout
+  shows the gap in milliseconds at the current tempo. The gap is per note, not
+  a total: a 3-note chord at 1/16 lands at 0, +1/16, +2/16, so bigger chords
+  fan longer. Tempo-synced so a strummed comp keeps its feel when the song
+  tempo moves.
 - **Direction** is the shared Mode control: Up (low to high, a downstroke),
   Down (high to low, an upstroke), Up-Down (alternating strokes on successive
   strums, the way a real player alternates), or Random (shuffled note order).
@@ -600,12 +645,14 @@ length, the fan stays in order, and nothing ever hangs. Strum works while the
 transport is stopped too (live chords strum as you play them); only Repeat needs
 the transport, since it re-strikes on the bar grid. As a buffered time module it
 follows the shared transport rules: on stop, material still in flight is
-discarded and anything sounding is released. The node shows its spread in
-milliseconds as a sublabel.
+discarded and anything sounding is released. The node shows its spread gap
+(Off / 1/16 / 1/8, or ms between the detents) as a sublabel.
 
 User settings:
 
-- Spread — 0 to 100 ms (default 40 ms); 0 = bypass.
+- Spread — Off to an 1/8-note gap per note, 1/16 at the dial's middle
+  (default 40% of an 1/8); Off = bypass, in-between values read in ms at the
+  current tempo.
 - Direction — Up (default), Down, Up-Down, or Random.
 - Curve — Even (default), Accelerate, or Decelerate.
 - Velocity — −100% to +100% (default 0%); loudness tilt across the fan.
@@ -699,7 +746,10 @@ swing setting covers it.)
   not a history buffer, not round-robin. If a chord is held, the whole held
   set retriggers together. This is the model for all rhythm-applying
   modulators: they override the input's own timing, unlike gating modules,
-  which mask notes but keep their timing.
+  which mask notes but keep their timing. (The implemented **Rhythmize** is
+  exactly this retrigger-the-held-set mechanic driven by a hand-set 16-step
+  pattern; a Euclidean module would generate the pattern from N-hits-in-M-steps
+  instead.)
 
 ### Modulators — dynamics
 
@@ -722,7 +772,10 @@ swing setting covers it.)
 
 - **Rhythm** — a 16-step, one-lane on/off sequencer that decides which
   incoming notes pass and which are filtered out. Unlike the rhythm-applying
-  modulators it keeps the surviving notes' own timing.
+  modulators it keeps the surviving notes' own timing — which is what keeps it
+  distinct from the implemented Rhythmize (same 16-step UI, but Rhythmize
+  re-emits held notes on its own grid; Rhythm would mask passing notes without
+  re-timing them). Its step-grid UI can reuse RhythmizeStepGrid as-is.
 - **Probability Gate** (later extension) — each note passes with a set
   probability.
 - **Range Filter** (later extension) — passes or rejects notes by note range.

@@ -5,10 +5,10 @@
 #include <functional>
 #include <memory>
 
-/** The redesigned per-module settings window. Every module edits its settings
- *  through this one component, so the whole plugin shares one look and feel
- *  (the InlineDialog stacked-combo dialogs are being migrated onto it, one
- *  module at a time).
+/** The per-module settings window. Every module edits its settings through
+ *  this one component, so the whole plugin shares one look and feel
+ *  (InlineDialog survives only as the message-box fallback for a module type
+ *  with no dialog yet).
  *
  *  Structure, top to bottom:
  *   - a title (the module name),
@@ -73,13 +73,16 @@ public:
                       const juce::String& label,
                       std::function<juce::String (double)> valueText = {});
 
-    /** Replace the 3x2 grid body with a caller-supplied component (the escape
-     *  hatch for a module whose controls don't fit the fixed six cells —
-     *  Progression's variable-length step list). The window takes ownership,
-     *  sizes it to the body section, and keeps the shared title / menu bar /
-     *  OK-Cancel chrome and the recessed section-box frame around it. `height`
-     *  is the body section's height in px. The 3x2 grid cells are unused while a
-     *  custom body is set; read the body back through getCustomBody(). */
+    /** Give the window a caller-supplied body component (the escape hatch for a
+     *  module whose controls don't fit the fixed six cells — Progression's
+     *  variable-length step list, Rhythmize's step pattern). The window takes
+     *  ownership, sizes it to its own recessed section box, and keeps the shared
+     *  title / menu bar / OK-Cancel chrome. `height` is the body section's
+     *  height in px. Grid cells may still be filled alongside a custom body —
+     *  the grid box then sits below the body, shrunk to the rows the filled
+     *  cells use (Rhythmize's shared Gate dial) — or left empty, which drops
+     *  the grid box entirely (Progression). Read the body back through
+     *  getCustomBody(). */
     void setCustomBody (std::unique_ptr<juce::Component> body, int height);
     juce::Component* getCustomBody() const { return customBody.get(); }
 
@@ -114,6 +117,26 @@ public:
      *  Esc / click-outside pass 0 (Cancel by convention). */
     std::function<void (int, ModuleWindow*)> onResult;
 
+    /** Fired after any user edit to any control in the window (combo pick, dial
+     *  turn — after that control's own label refresh and per-control callback).
+     *  The dialogs use it to push settings to the engine live, so a change is
+     *  audible while the window is still open. Programmatic updates
+     *  (setDialValue) don't fire it. */
+    std::function<void()> onChanged;
+
+    /** Fired after every user edit with a ready-made help-bar message
+     *  ("<Label>: <value>") and the control's help key (see setHelpKey), so
+     *  the editor can route it into the messaging area. Wired by
+     *  showModuleWindow; the per-dialog code never touches it. */
+    std::function<void (const juce::String& message, const juce::String& helpKey)> onFeedback;
+
+    /** Override the help key a control reports through onFeedback. The default
+     *  is the control's own name — shared controls (rate, gate, scale …) share
+     *  one help.json entry that way; a dialog overrides only where the same
+     *  control means something different in its module (e.g. Delay's Rate is
+     *  the echo spacing → "rate.delay"). */
+    void setHelpKey (const juce::String& controlName, const juce::String& helpKey);
+
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -126,8 +149,12 @@ private:
     struct ComboSlot
     {
         juce::String                    name;
+        juce::String                    helpKey;   // defaults to name; see setHelpKey
         std::unique_ptr<juce::Label>    label;
         std::unique_ptr<juce::ComboBox> combo;
+        // Optional per-control reaction (setComboChangeCallback) — kept apart
+        // from the combo's onChange, which the window owns to fire onChanged.
+        std::function<void()>           changeCb;
         bool filled() const { return combo != nullptr; }
     };
 
@@ -136,6 +163,7 @@ private:
     struct GridCell
     {
         juce::String                    name;
+        juce::String                    helpKey;   // defaults to name; see setHelpKey
         std::unique_ptr<juce::Label>    label;
         std::unique_ptr<juce::ComboBox> combo;
         std::unique_ptr<juce::Slider>   dial;
@@ -146,6 +174,10 @@ private:
         std::function<juce::String (double)>  dialFormat;
         // Optional reaction to a user-driven dial turn (Mirror's Low/High push).
         std::function<void()>                 dialChangeCb;
+        // Optional per-control combo reaction (setComboChangeCallback) — kept
+        // apart from the combo's onChange, which the window owns to fire
+        // onChanged.
+        std::function<void()>                 comboChangeCb;
         bool filled() const { return combo != nullptr || dial != nullptr; }
     };
 
@@ -159,8 +191,9 @@ private:
     std::array<GridCell,  kGridSlots> gridCells;
     juce::OwnedArray<ButtonEntry>     buttons;
 
-    // Escape hatch: when set, this replaces the 3x2 grid in the body slot (see
-    // setCustomBody). The grid cells stay empty in that case.
+    // Escape hatch: when set, this takes the body slot ahead of the 3x2 grid
+    // (see setCustomBody). Filled grid cells, if any, keep a (shrunk) grid box
+    // below the body.
     std::unique_ptr<juce::Component> customBody;
     int customBodyHeight = 0;
 
@@ -172,12 +205,20 @@ private:
     void refreshDialLabel (GridCell& cell);
 
     // Cached geometry, computed in resized(), consumed by paint() so the panel
-    // frame, the menu-bar strip, and the grid box draw without recomputing.
+    // frame, the menu-bar strip, and the body/grid boxes draw without
+    // recomputing. An absent section (no custom body / no grid box) leaves its
+    // rect empty, and paint skips it.
     juce::Rectangle<int> panelBounds;
     juce::Rectangle<int> menuStripBounds;
+    juce::Rectangle<int> bodyBoxBounds;
     juce::Rectangle<int> gridBoxBounds;
 
     int calculatePanelHeight() const;
+    // The grid box's height: the fixed two-row default body when no custom body
+    // is set (even with empty cells, so every plain window keeps the shared
+    // shape); alongside a custom body, only the rows the filled cells use
+    // (0 = no grid box at all).
+    int gridBoxHeight() const;
 
     // Layout constants. Root/Scale reuse the global menu bar's dimensions
     // (labelW / comboW / rowH), per the design brief.

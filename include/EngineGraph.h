@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <vector>
 #include "ModuleTypes.h"
 #include "ModuleSettings.h"   // ModuleOptions::kMaxProgSteps
@@ -73,6 +74,10 @@ struct ModuleParams
     std::array<int, ModuleOptions::kMaxProgSteps> progDegrees {};
     std::array<int, ModuleOptions::kMaxProgSteps> progOctaves {};
 
+    // Rhythmize: the 16-step pattern as a bitmask (bit i = step i fires), so
+    // the snapshot stays a plain trivially-copyable value.
+    std::uint32_t rhythmMask = 0xffff;
+
     // Shift.
     int shiftAmount = 0;
 
@@ -91,8 +96,10 @@ struct ModuleParams
     double delayFeedback = 0.5;
     int    delayShift    = 0;
 
-    // Strum.
-    double strumSpreadSec = 0.04;
+    // Strum. Gap between consecutive fanned notes, in quarter notes (0.25 = a
+    // 1/16 between each note) — converted to samples per block at the current
+    // tempo.
+    double strumGapQn = 0.2;
     int    strumCurve     = 0;
     double strumVelTilt   = 0.0;
     double strumJitter    = 0.0;
