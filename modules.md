@@ -118,17 +118,18 @@ the Delay — the first stateful time modulator — followed. The latest batch
 reworked Quantize into a timing quantizer (rate + swing; the old global
 Quantize checkbox is gone) and added the Scale and Progression modulators, so
 every module in the palette now has real settings. The slow generators —
-Chord and Drone — arrived next, complete with settings. Until port wiring lands
-everything runs as one fixed chain: host MIDI enters through MIDI In (or an
-implicit all-channels input if none is placed), feeds the Arp and the
-generators, results pass through the Scale modulator, then Progression, then
-Shift, Quantize re-times what leaves the chain onto its swung grid, the Delay
-adds its echoes, Strum fans simultaneous chord notes out over a short window,
-Humanize adds the final performance feel, and everything exits through Output
-(or an implicit channel-preserving output). A consequence of the fixed chain:
-placing several
-copies of the same module doesn't layer them — extra copies share the first
-one's settings until wiring lands.
+Chord and Drone — arrived next, complete with settings. **Port wiring is now
+real**: modules are connected by dragging a cable from one module's output
+port to another's input port, and the cables *are* the signal flow. Host MIDI
+enters the graph only through MIDI In modules, flows along the cables through
+whatever the user wired up, and leaves only through Output modules — there is
+no hidden routing, so an unwired module is silent and a patch with no Output
+makes no sound. One output can feed several modules (fan-out) and several
+outputs can merge into one input (fan-in). A fresh instance starts with a
+wired MIDI In → Output pass-through as a working example. Every placed module
+is fully independent — two Arps in different branches run with their own
+settings and their own state. Rewiring the patch (adding or removing modules
+or cables) cuts any sounding notes; editing a module's settings does not.
 
 Each implemented module's entry ends with a "User settings" bullet list of
 what the user can change today, so the gap between current and planned
@@ -137,12 +138,13 @@ settings is always explicit.
 ### MIDI In (I/O)
 
 MIDI In is where the outside world enters the graph: it brings in MIDI from
-the host or an external source. Its one setting is the input channel — "All"
-(the default) accepts everything, or pick a single channel 1–16 to listen to
-just that channel; events on other channels are ignored entirely. Placing
-several MIDI Ins listens to the union of their channels. With no MIDI In on
-the canvas, the plugin behaves as if an all-channels MIDI In were present, so
-nothing is required to get sound flowing.
+the host or an external source. It is the only door in — host MIDI reaches a
+module only by being wired (directly or through others) to a MIDI In. Its one
+setting is the input channel — "All" (the default) accepts everything, or pick
+a single channel 1–16 to listen to just that channel; events on other channels
+are ignored entirely. Wiring several MIDI Ins into the same module merges
+their channels. A note always releases cleanly even if the channel setting is
+changed while it sounds.
 
 User settings:
 
@@ -150,13 +152,15 @@ User settings:
 
 ### Output (I/O)
 
-Output is where the graph leaves for the host. Its one setting is the MIDI
+Output is where the graph leaves for the host — the only door out. Whatever
+is wired into an Output is what the plugin plays; a patch with no Output (or
+with material not routed to one) is silent. Its one setting is the MIDI
 channel (1–16, default 1): every note and controller passing out is stamped
 with that channel, which is how material gets routed to a specific synth on a
-multitimbral track. Placing several Outputs sends a copy of the stream to each
-channel. With no Output on the canvas, events keep whatever channel they
-already had. Notes always release on the channel they started on, even if the
-channel setting is changed while they sound — nothing hangs.
+multitimbral track. Wiring the same source into several Outputs sends a copy
+of the stream to each channel. Notes always release on the channel they
+started on, even if the channel setting is changed while they sound — nothing
+hangs.
 
 User settings:
 
@@ -291,14 +295,17 @@ two octaves either way from the root-at-octave-3 centre.
 
 Its defining behaviour is the immediate re-trigger: whenever the pitches it
 should be holding change mid-hold — the root or scale is edited, the voicing
-changes, or an upstream Progression steps to a new degree — the old notes
-are released and the new ones start at once, keeping the remainder of the
-hold time, instead of waiting for the next window. Pacing is the bar-based
-Length/Repeat pair, both defaulting to 4 bars (drones move slower than
-chords). The Drone's pitches pass through the pitch modulators (Scale,
-Progression, Shift) but deliberately bypass Quantize (its starts already sit
-on bar boundaries, and a re-trigger must not be deferred) and the Delay
-(echoing a held pad produces blips, not echoes).
+or octave changes — the old notes are released and the new ones start at
+once, keeping the remainder of the hold time, instead of waiting for the next
+window. Pacing is the bar-based Length/Repeat pair, both defaulting to 4 bars
+(drones move slower than chords). Routing is the user's choice like any
+module, but a drone is continuous material: wiring it through Quantize or a
+Delay rarely helps (its starts sit on bar boundaries already, and echoing a
+held pad produces blips, not echoes) — a Drone → Output branch of its own is
+the natural patch. (A Drone wired through a Progression holds its pitch
+across a step change and picks the new degree up at its next window; making
+held notes follow a step change mid-hold is a possible later Progression
+feature.)
 
 User settings:
 
@@ -505,12 +512,11 @@ like the played note, so downstream modules see the whole chord.
   grows the harmony. Releasing the top note re-harmonises whatever note is now
   highest.
 
-Because a Harmonizer acts on played input (like the Arp), it does nothing while
-an Arp on the canvas is consuming the host notes — until wiring lands, only one
-of the two owns the played input at a time. The added voices are ordinary
-pass-through notes, so removing the module or stopping the transport never leaves
-one hanging — each voice is released by its played note's own note-off. The node
-shows the chord Type.
+A Harmonizer stacks voices on whatever is wired into it — played input, a
+generator's stream, or an Arp's output all work (wire a Random generator in
+and every drawn note becomes a chord). The added voices ride their source
+note's own note-on and note-off, so removing the module or stopping the
+transport never leaves one hanging. The node shows the chord Type.
 
 User settings:
 
@@ -608,12 +614,12 @@ User settings:
 
 ### Humanize (modulator)
 
-Humanize is the final "performance feel" pass: it loosens the machine-tight
-output into something a player might have played. It sits at the very end of
-the chain and shapes everything flowing out — played notes, generated notes,
-quantized notes, and delay echoes alike — along two axes laid out to match the
-settings window: a top row of *structured groove* you dial in deliberately, and
-a bottom row of *random human touch*.
+Humanize is the "performance feel" pass: it loosens machine-tight material
+into something a player might have played. Its natural home is just before an
+Output, where it shapes everything flowing through — played notes, generated
+notes, quantized notes, and delay echoes alike — along two axes laid out to
+match the settings window: a top row of *structured groove* you dial in
+deliberately, and a bottom row of *random human touch*.
 
 Groove (top row, all locked to the Rate grid):
 

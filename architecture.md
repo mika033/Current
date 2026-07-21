@@ -1,6 +1,7 @@
-# Current — Architecture (as of Phase 2)
+# Current — Architecture
 
-This documents the code as it stands after Phase 2 (canvas skeleton) of
+This documents the code as it stands now that port wiring — the product's
+core premise — is implemented on top of the Phase 2 canvas skeleton of
 `generative-midi-plugin-requirements.md`. It is written for future sessions:
 what exists, why it is shaped this way, and where the seams are for the next
 phases. File references are relative to the repo root; headers live in
@@ -8,28 +9,38 @@ phases. File references are relative to the repo root; headers live in
 
 ## What the plugin is right now
 
-A JUCE MIDI-effect plugin (VST3 + Standalone, Linux build only so far). The
-editor shows a menu bar (global root / scale + theme switch), a canvas that
-modules can be dragged onto from a palette of seventeen (generators Random,
-Scale, LFO, Chord, and Drone, modulators Arp, Quantize, Scale, Progression,
-Shift, Mirror, Harmonizer, Delay, Strum, and Humanize, I/O modules MIDI In and Output), and an engine that actually runs
-those modules — but as a fixed implicit chain, because there is no port
-wiring yet. The I/O modules carry a per-module MIDI channel; every other
-module carries full settings (drawn from the shared settings pool —
-root/scale override, rate, repeat, mode, octaves, gate, plus their
-type-specific fields such as the LFO's shape/cycle/depth/phase, Quantize's
-swing, the Progression's step list, Shift's amount + chromatic-or-degrees
-scale, the Delay's feedback + per-echo shift, the Chord's
-degree/type/inversion, and the Drone's voicing/octave), all edited through
-real double-click dialogs.
+A JUCE MIDI-effect plugin (VST3 + Standalone + macOS AU). The editor shows a
+menu bar (global root / scale + theme switch), a canvas that modules can be
+dragged onto from a palette of seventeen (generators Random, Scale, LFO,
+Chord, and Drone, modulators Arp, Quantize, Scale, Progression, Shift,
+Mirror, Harmonizer, Delay, Strum, and Humanize, I/O modules MIDI In and
+Output), **port wiring** — cables dragged from output ports to input ports
+that define the signal flow — and an engine that executes exactly the wired
+graph: host MIDI enters only through MIDI In nodes, only what reaches an
+Output node leaves, an unwired module is silent, fan-out duplicates a stream
+and fan-in merges. A fresh instance starts with MIDI In → Output wired, so it
+passes MIDI through out of the box. The I/O modules carry a per-module MIDI
+channel; every other module carries full settings (drawn from the shared
+settings pool — root/scale override, rate, repeat, mode, octaves, gate, plus
+their type-specific fields such as the LFO's shape/cycle/depth/phase,
+Quantize's swing, the Progression's step list, Shift's amount +
+chromatic-or-degrees scale, the Delay's feedback + per-echo shift, the
+Chord's degree/type/inversion, and the Drone's voicing/octave), all edited
+through real double-click dialogs. Every placed module is independent — its
+own settings, its own runtime state.
 
 ## Component map
 
 - `CurrentAudioProcessor` (PluginProcessor.h/.cpp) — the plugin. Owns the
-  APVTS (global parameters), the canvas model, and the `Engine`.
+  APVTS (global parameters), the canvas model (modules + connections), and
+  the `Engine`.
+- `EngineGraph.h` — the graph snapshot handed to the audio thread: per-node
+  `ModuleParams` (settings resolved to engine units), `GraphNode` (id, type,
+  params, upstream indices), `GraphSnapshot` (topologically sorted nodes +
+  topologyVersion). GUI-free, shared by processor, engine, and the smoke test.
 - `Engine` + `ScaleTables` (Engine.h/.cpp, ScaleTables.h) — the audio-thread
-  MIDI processing. Knows nothing about JUCE components or the canvas model;
-  it receives a plain config snapshot each block.
+  MIDI processing: executes the GraphSnapshot node by node. Knows nothing
+  about JUCE components or the canvas model.
 - `CurrentAudioProcessorEditor` (PluginEditor.h/.cpp) — top-level editor.
   Derives from `juce::DragAndDropContainer` (it must be a common ancestor of
   the palette and the canvas for JUCE drag-and-drop to connect them). Owns the
@@ -43,11 +54,15 @@ real double-click dialogs.
   Transport and clocks below); plugin wrappers never show them. Edit and
   Load/Save menus are deferred phases.
 - `Canvas` (Canvas.h/.cpp) — the drop surface and the bridge between on-screen
-  nodes and the processor's module model.
+  nodes and the processor's model. Owns the connect gesture (live cable from
+  an output port to the drop target), paints the cables (bezier curves with a
+  flow arrow, straight from the model — no per-cable components), and handles
+  cable selection/deletion.
 - `ModuleComponent` (ModuleComponent.h/.cpp) — one draggable node. Square for
   generators, circle for modulators, triangle for I/O; colour encodes the
-  family; an optional sublabel shows the I/O channel; ports are painted but
-  purely decorative until wiring lands.
+  family; an optional sublabel shows the I/O channel. Ports are live: a press
+  on the output port (enlarged hit radius) starts the connect gesture, which
+  the canvas runs via the onPortDrag* callbacks.
 - `PaletteBar` + `ModuleTypes` (PaletteBar.h/.cpp, ModuleTypes.h) — the
   draggable chips and the module catalogue that drives them.
 - `Theme` + `CurrentLookAndFeel` (Theme.h, CurrentLookAndFeel.h) — the shared
@@ -82,21 +97,33 @@ real double-click dialogs.
 
 ## The canvas model and who owns it
 
-The single source of truth for "what is on the canvas" is
-`CurrentAudioProcessor::moduleList`, a `std::vector<ModuleInstance>` where an
-instance is an id, a `ModuleType`, an x/y position, and a channel (the I/O
-modules' one setting; other types ignore it). It lives in the
-processor, not the editor, so the layout survives the editor being closed and
-reopened, and so `get/setStateInformation` can persist it in the DAW project
-(a `<Canvas>` child appended to the APVTS tree). This is DAW-project
-persistence only — the user-facing Load/Save of the requirements is a later
-phase.
+The single source of truth for "what is on the canvas" is the pair
+`CurrentAudioProcessor::moduleList` + `connectionList`: a
+`std::vector<ModuleInstance>` (id, `ModuleType`, x/y position, channel,
+settings blob) and a `std::vector<ModuleConnection>` (fromId → toId; modules
+have at most one port per direction, so the two ids identify a cable
+completely). Both live in the processor, not the editor, so the patch
+survives the editor being closed and reopened, and so
+`get/setStateInformation` can persist it in the DAW project (a `<Canvas>`
+child appended to the APVTS tree, with `<Module>` and `<Connection>`
+children). This is DAW-project persistence only — the user-facing Load/Save
+of the requirements is a later phase.
+
+Connection validity lives in one place, `canConnect`: both modules exist, the
+ports exist (generators/MIDI In have no input, Output has no output — see
+`moduleHasInputPort`/`moduleHasOutputPort` in ModuleTypes.h), no self-loop,
+no duplicate, and no cycle (DFS at connect time), so the engine can always
+run the graph in topological order. `removeModule` drops the module's cables
+with it. A fresh processor constructs the default patch (MIDI In → Output,
+wired).
 
 The `Canvas` component mirrors that model as `ModuleComponent` children:
 
-- On construction it builds one node per model entry.
+- On construction it builds one node per model entry; cables are painted
+  directly from `connections()`, so they need no mirroring.
 - User actions write through to the model (`addModule`, `moveModule`,
-  `removeModule`) and update the mirrored components locally.
+  `removeModule`, `addConnection`, `removeConnection`) and update the
+  mirrored components locally.
 - If the model is replaced behind the editor's back — a host restoring project
   state while the editor is open — the processor fires
   `canvasModelReplaced` (a `ChangeBroadcaster`) and the canvas rebuilds. Its
@@ -106,34 +133,34 @@ Module ids are session-local (`nextModuleId` counter, reassigned on state
 load); nothing outside the model/canvas pair should hold onto them across a
 restore. Persistence stores the module type as a stable string
 (`moduleTypeToString`), not the enum value, so saved layouts survive enum
-reorders.
+reorders — and cables by the modules' *positions in the saved list*, not
+their ids, for the same reason.
 
 ## Threading model
 
-The rule in one line: the module list is message-thread only; the audio thread
-reads a lock-free snapshot.
+The rule in one line: the model is message-thread only; the audio thread
+reads an immutable graph snapshot.
 
 - All canvas edits and state load/save happen on the message thread.
-- After every model change, `refreshEngineConfig()` republishes which module
-  types are present as `std::atomic<bool>` flags, two atomic 16-bit channel
-  masks carrying the I/O modules' settings (input filter, output stamp —
-  semantics documented on `Engine::Config`), and a set of atomic ints/bools
-  carrying each settings-bearing module type's first instance (the implicit
-  chain runs one of each; extra copies share the first one's settings). The
-  Progression's step list rides in a fixed array of atomics, one packed int
-  per step (degree + biased octave) plus a count.
-- `processBlock` reads those atomics plus the raw parameter values (root,
-  scale — themselves atomics via APVTS) and hands the `Engine` a plain
-  `Engine::Config` by value. No locks anywhere. Each field is independently
-  atomic; a block seeing a half-updated combination is indistinguishable from
-  the edit landing one block later, so no seqlock is needed.
+- After every model change, `rebuildGraph()` bakes the model into a fresh
+  `GraphSnapshot` (per-node settings resolved from option-table indices to
+  engine units, nodes topologically sorted, upstream links as indices) and
+  publishes the `shared_ptr` under a `juce::SpinLock`.
+- `processBlock` *try*-locks to adopt the newest snapshot — on a lost race it
+  simply keeps last block's graph one block longer — and hands the engine the
+  raw pointer plus the global root/scale (APVTS atomics). The audio thread
+  never blocks; releasing a superseded snapshot may deallocate on the audio
+  thread, which this codebase already accepts (the engine's own containers
+  grow there too).
+- Sounding-note policy across edits rides on `topologyVersion`: modules or
+  cables added/removed bump it, and the engine responds by releasing
+  everything sounding at the host and clearing all per-node state (coarse but
+  safe — in-flight bookkeeping can't be trusted across an arbitrary rewire).
+  Settings-only edits republish under the same version; per-node state is
+  keyed by module id, so notes keep ringing through them.
 
-Presence flags and two masks are enough only because position never affects
-the sound and there is exactly one implicit chain. When wiring lands and the audio thread
-needs real graph topology, this handoff must grow into an immutable graph
-snapshot that is swapped in atomically (build on message thread, publish via
-atomic pointer / RCU-style), not per-field atomics. That is the single biggest
-known seam in the design.
+This is the immutable-snapshot handoff the fixed-chain era predicted; the
+per-module-type atomics it replaced are gone.
 
 ## Transport and clocks
 
@@ -164,133 +191,63 @@ single code path:
   `isPlaying`/BPM; the engine falls back to counting quarter notes from
   transport start for that host (`Engine::fallbackQn`).
 
-## The engine: fixed implicit chain
+## The engine: graph execution
 
-There is no user wiring yet, so `Engine::process` hard-codes the signal flow;
-the full commentary (including all fixed defaults and the I/O channel
-semantics) is at the top of `Engine.h`. Summary:
+`Engine::process` executes the published `GraphSnapshot` each block; the full
+commentary (per-node behaviours, the no-hanging-notes contract, transport
+rules) is at the top of `Engine.h`. The execution model:
 
-- MIDI In modules filter which host events enter the graph by channel (union
-  across modules; "All" = everything). With none placed, the implicit input
-  accepts all channels. Filtered events are dropped before they reach anything
-  — including the Arp's held-note tracking.
-- The stepped modules (Arp, Random, Scale, LFO, Chord, Drone) fire only while
-  the transport is playing, each on its own step grid anchored to the song's
-  bar 0 (see Transport and clocks). Arp walks the currently
-  held host notes per its mode (Up / Down / Up-Down / Random) across its
-  octave span at its rate and gate, swallowing those notes since they are its
-  input; Random draws uniformly from its scale within its note range at its
-  rate; Scale walks its scale from the root at octave 3 across its octave
-  span, up or down; the LFO evaluates its shape at the current position
-  inside its bar-length cycle (plus the start-phase offset) and maps the
-  bipolar value to scale degrees around the root at octave 3, swinging ± its
-  depth (octaves + scale steps); the Chord emits its diatonic stack (degree +
-  type + inversion on its root/scale) on a bar-based period/length grid; the
-  Drone holds its voicing on the same period/length model, re-triggering
-  immediately when the mapped pitch set changes mid-hold (drone-flagged
-  entries in `activeGen`) — it bypasses Quantize and the Delay by design (see
-  `Engine.h`). Arp and Scale reset their pattern every
-  repeat interval (windows counted on the grid from the song's bar 0 — longer
-  patterns truncate, shorter ones rest); a repeat of Endless publishes as 0 qn,
-  meaning no window (the Arp walk never resets, the Scale pattern loops
-  back-to-back). Root/scale overrides of -1 fall back to the globals. The
-  shared option tables and the per-module settings blob live in
-  `ModuleSettings.h` (GUI-free), used by the engine config, the processor,
-  and the canvas dialogs alike.
-- Pitch modulators apply as a mapping chain (`mapPitch`): the Scale modulator
-  snaps to its (root, scale); the Progression transposes to its current step
-  (degree via `ScaleTables::stepInScale`, octave chromatic — the step is
-  looked up per note-on from the quarter-note position the note will sound
-  at, and note-offs stay safe because they release from the activeGen /
-  activePass bookkeeping, not from re-mapping); then Shift transposes by its
-  amount — scale degrees via `stepInScale` when its scale is Global/named,
-  chromatic semitones when Off (`ModuleOptions::kScaleOff`, stored in the
-  shared `scaleOverride` field); finally Mirror inverts around its centre note
-  (`reflectAround`, diatonic in scale steps or chromatic in semitones per its
-  scale) and constrains the result to a `[low, high]` window — Limit mode has
-  `mapPitch` return -1 so the caller drops the note (booking no note-off), Fold
-  reflects it once back across the nearest edge then clamps. Mirror is the one
-  pitch stage that can drop a note, so all three `mapPitch` call sites (host
-  pass-through, generated notes, the Drone's held tones) skip a -1 result.
-- The Harmonizer is not part of `mapPitch` — it changes the note *count*, so it
-  sits at the front of the host-note path (`emitHostNote`/`emitHostTone` in
-  `Engine::process`): a played note-on emits its own pitch as the bass plus the
-  stacked voices (`harmVoicesRaw` — diatonic scale-degree stacking in its
-  Root/Scale, or fixed chromatic intervals with the scale Off; the octaver types
-  add an octave/fifth), and every tone then runs through the same `mapPitch`
-  chain and Quantize/Delay path as any host note. It acts on host input only
-  (like the Arp, and swallowed alongside it), so it touches neither generated
-  notes nor the Drone's held tones. The added voices are ordinary `activePass`
-  entries tagged `harmVoice`, so a played note's own note-off releases the whole
-  stack and no transport-stop or removal flush is needed. Mode (Add/Replace/Top)
-  is bookkeeping over the held-key set (`harmHeld`, which carries the velocity
-  `held`'s bool array lacks): Replace cuts the sounding channel before the new
-  note (`releaseHarmChannel`), Top harmonises only the highest held note,
-  moving the voices (`releaseHarmVoices` + a re-trigger on note-off) as the top
-  changes.
-- Quantize is the second stateful time modulator: while playing, every
-  note-on leaving the chain is deferred to the next point of its rate grid
-  (`pendingQuant`), with swing pushing odd grid points late by swing/2 of a
-  step (pair-based model, `swing-timing.md`). Generated notes keep their
-  gate; host-held notes register in `activePass` when they finally sound, and
-  a host note-off that beats its own deferred note-on converts the entry to a
-  fixed duration instead. The queue is discarded on transport stop; when
-  stopped, Quantize passes everything through (no grid). The grid (and the
-  swing parity) is derived from the song position, so a module dropped
-  mid-play joins the song's grid — and the shuffle sits on the song's bars,
-  not on wherever play was pressed.
-- The Delay is the exception to pure mapping — it is the first stateful time
-  modulator. Every emitted note-on (pass-through and generated) books an echo
-  in `pendingEchoes` (velocity × feedback, pitch + per-echo shift, one delay
-  time later); fired echoes book their successors until the velocity decays
-  below a floor or the pitch leaves the MIDI range. Echoes derive from the
-  final emitted stream (post Quantize/Shift/Output), live in `activeGen` for
-  their gate-timed release, run regardless of transport, and the pending
-  queue is discarded on transport stop (the requirements' shared transport
-  rule for stateful time modules).
-- Output modules stamp everything leaving the engine with their channel; with
-  several, the stream is duplicated once per channel (the implicit chain's
-  fan-out). With none placed, events keep their own channel.
-- Strum is a stateful time modulator that runs as a post-pass after the
-  generated-note releases and before Humanize. Note-ons arriving within a small
-  fixed detection window (`kStrumGroupWindowSec`) are collected into `strumGroup`
-  and withheld until the window closes — the fan order needs the whole chord, so
-  this window is the module's added latency. On finalize the chord is sorted by
-  pitch, ordered per Direction (`strumMode`; Up-Down alternates by the strum
-  counter, Random shuffles via `rng`), and each note is released delayed by its
-  curve position over the spread (`strumCurve` shapes the spacing) with a
-  velocity ramp (`strumVelTilt`) and a deterministic per-note jitter (hashed from
-  song position, so loops repeat). Every note-off is delayed by the same amount
-  as its note-on — recorded in `strumHeld` — so lengths and ordering are
-  preserved and nothing hangs; events landing past the block wait in
-  `pendingStrum` (block-relative, aged like the Delay/Quantize/Humanize buffers).
-  `strumRepeatQn > 0` re-strums the sounding chord on the bar grid (releasing the
-  old instance, re-striking with a fresh strum index). Spread 0 with no reshaping
-  is a zero-latency bypass (each note becomes its own one-note group). It maps no
-  pitch, so it has no root/scale; on a transport stop its buffers are discarded
-  and sounding notes released, mirroring the Humanize/Delay contract.
-- Humanize is the last stage: a post-pass over the whole finished `midi` buffer
-  (pass-through, generated, quantized, delayed, and strummed alike). It re-times every
-  note event through a continuous, delay-only warp — pair-based swing (the same
-  `swungBoundaryQn` the Quantize path uses, applied via `swingWarpQn` as a nudge
-  rather than a snap) plus a constant lay-back — and shapes note-ons' velocity
-  (metric accent + jitter) and note-offs' length (jitter). Events whose warped
-  time lands past the block wait in `pendingHuman`; each held note-on records
-  its random timing jitter so the matching note-off reuses it and the note's
-  length is preserved through the warp. The jitter is a deterministic hash of
-  song position, so the humanised feel repeats every loop. Like Quantize it only
-  warps while playing; on a transport stop it cancels the `activeGen` gate of any
-  note whose warped on never fired and emits any buffered offs, so the
-  no-hanging-notes invariant holds. It maps no pitch, so it has no root/scale.
-- The same `mapPitch` is applied to note-ons and note-offs so their pitches
-  always match — this is the core no-hanging-notes invariant. Passed-through
-  host notes are additionally remembered in `activePass` as
-  (incoming → emitted) pairs, so a note-off releases exactly what its note-on
-  emitted even if a setting (e.g. an Output channel) changed mid-note.
-- Generated notes are tracked in `activeGen` with a remaining-samples count;
-  on transport stop (or all modules removed) everything still sounding gets a
-  note-off, per the requirements' transport-boundary rule.
-- With no modules on the canvas, MIDI passes through untouched.
+- The host's incoming events are set aside; nodes run front to back (the
+  snapshot arrives topologically sorted). Each node merges its wired inputs'
+  output buffers (fan-in), transforms, and writes its own output buffer;
+  fan-out is just two consumers reading the same upstream buffer. MIDI In
+  nodes read the host events (channel-filtered); the Output nodes' buffers
+  are concatenated back into the host buffer. Strict semantics: no implicit
+  routing, no Output = silence.
+- Per-node state (held input notes, gate countdowns, pending time-shifted
+  buffers, in-flight note maps) lives in `Engine::states`, keyed by module
+  id, so it survives settings edits. A topologyVersion change (rewire) emits
+  note-offs for everything in `hostSounding` — the engine's record of what is
+  currently sounding *at the host* — and clears all node state.
+- The no-hanging-notes invariant is per node: whatever emits a note-on
+  remembers it and emits the matching note-off itself — from the matching
+  input note-off (mapped through the remembered pitch/channel, so mid-note
+  settings edits can't hang anything) or from its own gate. A note-off with
+  no remembered note-on is swallowed, so dropped/discarded notes can't leak
+  stray releases downstream.
+
+The per-module behaviours carried over from the fixed-chain engine unchanged
+(step grids anchored to the song's bar 0, pair-based swing, deterministic
+jitter, the shared stop rules), now scoped per node. The notable semantic
+shifts that came with wiring:
+
+- The Arp and Harmonizer act on *their wired input* — any stream, generated
+  included, not just played host notes as in the fixed chain. The Arp
+  consumes its input notes while playing (they are its data) and passes them
+  through while stopped; the Harmonizer stacks voices on every input note-on
+  per its Mode (Add/Replace/Top over its input held set).
+- The pitch mappers (Scale, Progression, Shift, Mirror) are separate nodes
+  sharing one skeleton (`mapNoteStream`): map the note-on's pitch, remember
+  (in → out), release the remembered pitch on the note-off. Mirror's Limit
+  mode returns -1 to drop a note (nothing emitted or booked). Wire them in
+  any order — the old fixed sequence is just one possible patch.
+- Quantize/Delay/Strum/Humanize keep their block-relative pending buffers per
+  node, so several instances can live on different branches. The Drone no
+  longer secretly bypasses Quantize/Delay — routing decides (and a Drone
+  through a Progression no longer re-triggers on a step change mid-hold; it
+  picks the new degree up at its next window).
+- Generators emit on channel 1; Output nodes stamp their channel (remembering
+  per note what they stamped, so a mid-note channel edit can't hang), and
+  MIDI In admits a note-off iff it admitted the note-on.
+- The stop contract moved into the nodes: generators/Arp flush their gate
+  lists, Quantize/Delay/Strum/Humanize discard buffered material, and the
+  Strum/Humanize stop paths track offs owed to dropped note-ons
+  (`swallowOffs`) so no stray release leaks downstream.
+
+The shared option tables and the per-module settings blob stay in
+`ModuleSettings.h` (GUI-free), used by the graph builder, the processor, and
+the canvas dialogs alike; root/scale overrides of -1 still fall back to the
+globals inside each node.
 
 The engine deliberately has no JUCE GUI dependencies and takes everything it
 needs as arguments, which is what makes the headless smoke test possible.
@@ -302,12 +259,18 @@ needs as arguments, which is what makes the headless smoke test possible.
 - Extend the `ModuleType` enum and `moduleCatalogue()` (name + kind).
 - Add the string mapping in `moduleTypeToString` / `moduleTypeFromString`
   (stable id for persistence).
-- Give it behaviour in the engine (today that means a flag in
-  `Engine::Config`, a branch in `refreshEngineConfig()`, and logic in
-  `Engine::process`; post-wiring it will mean a node implementation).
+- Decide its ports: `moduleHasInputPort` / `moduleHasOutputPort` in
+  ModuleTypes.h derive them from the type (generators and MIDI In are
+  sources, Output is the one sink, modulators have both).
+- Give it behaviour in the engine: any new settings go into `ModuleParams`
+  (EngineGraph.h), a branch in `CurrentAudioProcessor::paramsFor` resolves
+  them to engine units, and a `processYourModule` function in Engine.cpp
+  (dispatched from `Engine::processNode`) implements the node — input stream
+  in, output stream out, per-node state in `Engine::NodeState`.
 
-Palette, drag-and-drop, canvas nodes, selection, deletion, and persistence all
-pick the new module up from the catalogue without further changes. All three
+Palette, drag-and-drop, canvas nodes, wiring, selection, deletion, and
+persistence all pick the new module up from the catalogue without further
+changes. All three
 kinds are in the palette: generators square, modulators circle, I/O triangles
 (MIDI In points right, Output left, toward their single port). Per-module
 settings live on `ModuleInstance`: the I/O modules' MIDI channel and the
@@ -367,11 +330,18 @@ scheme so both themes can tune them.
   canvas can recognise palette drags cheaply.
 - Node dragging uses `ComponentDragger` with a bounds constrainer that keeps
   nodes fully inside the canvas.
-- Selection is single-select; Delete/Backspace removes the selected node (a
-  Phase 2 convenience — the full delete/duplicate context menu is a later
-  phase). Clicking empty canvas deselects and grabs keyboard focus so the
-  Delete key works.
-- Marquee select, pan, zoom, and connect gestures are all later phases.
+- The connect gesture: a press within `ModuleComponent::kPortHitRadius` of a
+  node's output port starts a cable drag (the node forwards the mouse events
+  to the canvas); releasing anywhere over a module with an input port — the
+  whole node is the target, one input port makes that unambiguous — asks the
+  processor to connect. `canConnect` refusals (duplicate, cycle, port
+  mismatch) just snap the cable back.
+- Selection is single-select across nodes *and* cables (mutually exclusive):
+  clicking within a few pixels of a cable selects it, Delete/Backspace
+  removes the selected cable or node (a node takes its cables with it).
+  Clicking empty canvas deselects and grabs keyboard focus so the Delete key
+  works.
+- Marquee select, pan, and zoom are later phases.
 
 ## Build and test
 
@@ -383,9 +353,12 @@ scheme so both themes can tune them.
   hosts (notably Live) reject an effect plugin with no audio bus; processBlock
   clears the buffer and only touches MIDI.
 - `-DCURRENT_BUILD_TESTS=ON` adds `current_engine_test`, a headless console
-  app (tools/engine_smoketest.cpp) asserting the engine's fixed-default
-  behaviours and, above all, note-on/note-off balance across pass-through,
-  modulators, generators, and transport stop. Run it after any engine change.
+  app (tools/engine_smoketest.cpp) asserting the module behaviours and, above
+  all, note-on/note-off balance across pass-through, modulators, generators,
+  and transport stop. Most tests describe their setup as a `TestConfig` that
+  a helper lays out as an explicit graph in the classic chain order; a
+  dedicated section exercises fan-out/fan-in, empty-graph silence, and the
+  topology-change flush directly. Run it after any engine change.
 - The VST3 passes pluginval at strictness 10 (including Steinberg's embedded
   vst3validator — which is what required the named default program in
   getProgramName, and the editor/state/automation stress tests). pluginval
@@ -393,13 +366,15 @@ scheme so both themes can tune them.
   `pluginval --strictness-level 10 --validate ~/.vst3/Current.vst3` (under
   Xvfb if headless). Worth re-running before releases and after processor /
   parameter / state changes.
-- macOS / Windows / iPad targets and their build scripts are not ported yet;
-  CMakeLists.txt already carries the universal-binary setup for macOS.
+- macOS builds via `./build_and_run_mac.sh` (Universal VST3 + Standalone +
+  AU); Windows has an unverified script; the iPad target is not ported.
 
 ## Deferred, by design
 
-Port wiring and the real graph (with the snapshot handoff described above),
-the full module set from the requirements, I/O modules on the canvas, marquee
-multi-select / copy / paste / duplicate, pan and zoom, undo/redo, user preset
-Load/Save (follow `preset-system-guideline.md` / LAM when it lands), touch
-gestures, and the non-Linux targets.
+The full module set from the requirements, marquee multi-select / copy /
+paste / duplicate, pan and zoom, undo/redo, user preset Load/Save (follow
+`preset-system-guideline.md` / LAM when it lands), touch gestures (including
+the tap-output-then-tap-input connect alternative), a mid-hold Progression
+follow for held notes (the old fixed chain re-triggered a Drone on a step
+change; with wiring the Drone picks the new degree up at its next window),
+and the Windows / iPad targets.

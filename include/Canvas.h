@@ -11,11 +11,15 @@ class CurrentAudioProcessorEditor;
 class InlineDialog;
 class ModuleWindow;
 
-// The central drop surface. Modules dragged from the palette land here and can
-// be moved around; double-clicking one opens its settings dialog.
+// The central drop surface. Modules dragged from the palette land here, can be
+// moved around, and are wired port-to-port: dragging from a node's output port
+// draws a live cable that connects on release over a module with an input
+// port. Cables paint as curves with a flow arrow, can be selected by clicking
+// near them, and Delete removes the selection (cable or node).
 // The canvas is the bridge between the on-screen nodes and the processor's
-// module model — it rebuilds its nodes from the model on construction and writes
-// adds/moves back to it.
+// model (modules + connections) — it rebuilds its nodes from the model on
+// construction and writes adds/moves/connects back to it; cables are painted
+// straight from the model, so they need no components of their own.
 class Canvas : public juce::Component,
                public juce::DragAndDropTarget,
                private juce::ChangeListener
@@ -47,6 +51,18 @@ private:
     void rebuildFromModel();
     void selectNode (ModuleComponent* node);
     void deleteSelected();
+
+    // --- Wiring: the connect gesture and cable rendering --------------------
+    // The gesture starts in ModuleComponent (output-port press) and is owned
+    // here: the live cable follows the mouse, and releasing over a module with
+    // an input port asks the processor for the connection (its canConnect is
+    // the single validity rule — an invalid drop simply snaps back).
+    void beginCableDrag (ModuleComponent& fromNode, const juce::MouseEvent&);
+    void updateCableDrag (const juce::MouseEvent&);
+    void endCableDrag (const juce::MouseEvent&);
+    void paintCables (juce::Graphics&);
+    juce::Path cablePath (juce::Point<float> from, juce::Point<float> to) const;
+    ModuleComponent* nodeForId (int id) const;
 
     // The per-module settings dialogs (I/O channel; Arp / Random / Scale
     // settings) and the node sublabels that mirror the choices.
@@ -134,6 +150,13 @@ private:
 
     std::vector<std::unique_ptr<ModuleComponent>> nodes;
     ModuleComponent* selectedNode = nullptr;
+
+    // The in-flight connect gesture (live cable from a node's output port to
+    // the mouse) and the currently selected cable (Delete removes it).
+    struct CableDrag { bool active = false; int fromId = 0; juce::Point<float> toPos; };
+    CableDrag cableDrag;
+    struct SelectedCable { bool valid = false; int fromId = 0; int toId = 0; };
+    SelectedCable selectedCable;
 
     bool dragHovering = false;   // paint a drop-hint border while a drag is over us
 

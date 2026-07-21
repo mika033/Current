@@ -111,8 +111,8 @@ void ModuleComponent::paint (juce::Graphics& g)
                           juce::Justification::centred, 1);
     }
 
-    // Ports (decorative until wiring lands). Inputs sit on the left edge,
-    // outputs on the right; on a triangle that lands exactly on its apex.
+    // Ports. Inputs sit on the left edge, outputs on the right; on a triangle
+    // that lands exactly on its apex.
     const float portR = 4.0f;
     g.setColour (s.port);
     auto drawPort = [&] (float cx, float cy)
@@ -130,8 +130,34 @@ void ModuleComponent::paint (juce::Graphics& g)
         drawPort (body.getRight(), midY);      // output, right
 }
 
+juce::Point<float> ModuleComponent::inputPortCentre() const
+{
+    const auto body = getLocalBounds().toFloat().reduced (8.0f);
+    return getPosition().toFloat() + juce::Point<float> (body.getX(), body.getCentreY());
+}
+
+juce::Point<float> ModuleComponent::outputPortCentre() const
+{
+    const auto body = getLocalBounds().toFloat().reduced (8.0f);
+    return getPosition().toFloat() + juce::Point<float> (body.getRight(), body.getCentreY());
+}
+
 void ModuleComponent::mouseDown (const juce::MouseEvent& e)
 {
+    // A press on the output port starts the connect gesture, not a node move —
+    // the canvas draws the live cable and resolves the drop.
+    if (moduleHasOutputPort (type) && onPortDragStart != nullptr)
+    {
+        const auto body = getLocalBounds().toFloat().reduced (8.0f);
+        const juce::Point<float> port (body.getRight(), body.getCentreY());
+        if (e.position.getDistanceFrom (port) <= (float) kPortHitRadius)
+        {
+            draggingCable = true;
+            onPortDragStart (*this, e);
+            return;
+        }
+    }
+
     if (onSelected)
         onSelected (*this);
     dragger.startDraggingComponent (this, e);
@@ -139,6 +165,13 @@ void ModuleComponent::mouseDown (const juce::MouseEvent& e)
 
 void ModuleComponent::mouseDrag (const juce::MouseEvent& e)
 {
+    if (draggingCable)
+    {
+        if (onPortDrag)
+            onPortDrag (e);
+        return;
+    }
+
     // Keep the node fully inside the canvas — the huge on-screen amounts force
     // the whole component to stay within its parent's bounds.
     juce::ComponentBoundsConstrainer constrainer;
@@ -147,6 +180,16 @@ void ModuleComponent::mouseDrag (const juce::MouseEvent& e)
 
     if (onMoved)
         onMoved (id, getPosition());
+}
+
+void ModuleComponent::mouseUp (const juce::MouseEvent& e)
+{
+    if (draggingCable)
+    {
+        draggingCable = false;
+        if (onPortDragEnd)
+            onPortDragEnd (e);
+    }
 }
 
 void ModuleComponent::mouseDoubleClick (const juce::MouseEvent&)

@@ -15,19 +15,6 @@ namespace
 
     const juce::StringArray kThemeNames { "Light", "Dark" };
 
-    // Progression steps in the lock-free snapshot: one int per step, degree in
-    // the high part, octave biased into the low bits. 16 leaves headroom over
-    // the 5 octave choices (-2..+2).
-    int packProgStep (const ProgressionStep& s)
-    {
-        return s.degree * 16 + (s.octave + ModuleOptions::kProgOctaveRange);
-    }
-
-    ProgressionStep unpackProgStep (int packed)
-    {
-        return { packed / 16, packed % 16 - ModuleOptions::kProgOctaveRange };
-    }
-
     // Persistence form of the step list: "degree:octave" pairs, e.g.
     // "0:0,3:0,4:-1". Compact, human-readable in the saved XML, and trivially
     // versionable — the plugin is pre-release, so no migration shims.
@@ -102,6 +89,14 @@ CurrentAudioProcessor::CurrentAudioProcessor()
 {
     rootParam  = parameters.getRawParameterValue (ParamIDs::root);
     scaleParam = parameters.getRawParameterValue (ParamIDs::scale);
+
+    // A fresh instance starts as a wired pass-through — MIDI In → Output — so
+    // the plugin makes sound out of the box and the user meets a working cable
+    // as an example of the connect gesture. A host restoring a saved project
+    // replaces this via setStateInformation.
+    const int inId  = addModule (ModuleType::MidiIn, 80.0f, 170.0f);
+    const int outId = addModule (ModuleType::Output, 660.0f, 170.0f);
+    addConnection (inId, outId);
 }
 
 CurrentAudioProcessor::~CurrentAudioProcessor() = default;
@@ -158,128 +153,13 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
         buffer.clear (ch, 0, buffer.getNumSamples());
 
-    Engine::Config cfg;
-    cfg.hasArp          = engHasArp.load();
-    cfg.hasRandom       = engHasRandom.load();
-    cfg.hasScaleGen     = engHasScaleGen.load();
-    cfg.hasLfo          = engHasLfo.load();
-    cfg.hasChord        = engHasChord.load();
-    cfg.hasDrone        = engHasDrone.load();
-    cfg.hasQuantize     = engHasQuantize.load();
-    cfg.hasScaleMod     = engHasScaleMod.load();
-    cfg.hasProgression  = engHasProgression.load();
-    cfg.hasShift        = engHasShift.load();
-    cfg.hasMirror       = engHasMirror.load();
-    cfg.hasHarmonizer   = engHasHarmonizer.load();
-    cfg.hasDelay        = engHasDelay.load();
-    cfg.hasStrum        = engHasStrum.load();
-    cfg.hasMidiIn       = engHasMidiIn.load();
-    cfg.hasOutput       = engHasOutput.load();
-    cfg.inChannelMask   = engInChannelMask.load();
-    cfg.outChannelMask  = engOutChannelMask.load();
-
-    cfg.arpMode     = engArpMode.load();
-    cfg.arpStepQn   = ModuleOptions::rateQuarterNotes (engArpRate.load());
-    cfg.arpOctaves  = engArpOctaves.load();
-    cfg.arpGateFrac = ModuleOptions::gateFraction (engArpGate.load());
-    cfg.arpRepeatQn = ModuleOptions::repeatQuarterNotes (engArpRepeat.load());
-
-    cfg.randomRoot     = engRandomRoot.load();
-    cfg.randomScale    = engRandomScale.load();
-    cfg.randomStepQn   = ModuleOptions::rateQuarterNotes (engRandomRate.load());
-    cfg.randomGateFrac = ModuleOptions::gateFraction (engRandomGate.load());
-    cfg.randomFrom     = engRandomFrom.load();
-    cfg.randomTo       = engRandomTo.load();
-
-    cfg.scaleRoot      = engScaleRoot.load();
-    cfg.scaleScale     = engScaleScale.load();
-    cfg.scaleStepQn    = ModuleOptions::rateQuarterNotes (engScaleRate.load());
-    cfg.scaleGateFrac  = ModuleOptions::gateFraction (engScaleGate.load());
-    cfg.scaleRepeatQn  = ModuleOptions::repeatQuarterNotes (engScaleRepeat.load());
-    cfg.scaleOctaves   = engScaleOctaves.load();
-    cfg.scaleMode      = engScaleMode.load();
-    cfg.scaleEndOnRoot = engScaleEndOnRoot.load();
-
-    cfg.lfoRoot       = engLfoRoot.load();
-    cfg.lfoScale      = engLfoScale.load();
-    cfg.lfoStepQn     = ModuleOptions::rateQuarterNotes (engLfoRate.load());
-    cfg.lfoGateFrac   = ModuleOptions::gateFraction (engLfoGate.load());
-    cfg.lfoCycleQn    = ModuleOptions::barLengthQuarterNotes (engLfoCycle.load());
-    cfg.lfoShape      = engLfoShape.load();
-    cfg.lfoDepthOct   = engLfoDepthOct.load();
-    cfg.lfoDepthSteps = engLfoDepthSteps.load();
-    cfg.lfoPhase      = ModuleOptions::lfoPhaseFraction (engLfoPhase.load());
-
-    cfg.chordRoot      = engChordRoot.load();
-    cfg.chordScale     = engChordScale.load();
-    cfg.chordDegree    = engChordDegree.load();
-    cfg.chordType      = engChordType.load();
-    cfg.chordInversion = engChordInversion.load();
-    cfg.chordLengthQn  = ModuleOptions::barLengthQuarterNotes (engChordLength.load());
-    cfg.chordPeriodQn  = ModuleOptions::repeatQuarterNotes (engChordRepeat.load());
-
-    cfg.droneRoot     = engDroneRoot.load();
-    cfg.droneScale    = engDroneScale.load();
-    cfg.droneVoicing  = engDroneVoicing.load();
-    cfg.droneOctave   = engDroneOctave.load();
-    cfg.droneLengthQn = ModuleOptions::barLengthQuarterNotes (engDroneLength.load());
-    cfg.dronePeriodQn = ModuleOptions::repeatQuarterNotes (engDroneRepeat.load());
-
-    cfg.quantStepQn = ModuleOptions::rateQuarterNotes (engQuantRate.load());
-    cfg.quantSwing  = ModuleOptions::swingFraction (engQuantSwing.load());
-
-    cfg.scaleModRoot  = engScaleModRoot.load();
-    cfg.scaleModScale = engScaleModScale.load();
-
-    cfg.progRoot      = engProgRoot.load();
-    cfg.progScale     = engProgScale.load();
-    cfg.progRateQn    = ModuleOptions::barLengthQuarterNotes (engProgRate.load());
-    cfg.progStepCount = juce::jlimit (0, ModuleOptions::kMaxProgSteps, engProgCount.load());
-    for (int i = 0; i < cfg.progStepCount; ++i)
+    // Adopt the newest graph snapshot if the message thread isn't mid-publish;
+    // otherwise keep last block's (the swap lands next block).
     {
-        const auto step = unpackProgStep (engProgSteps[(size_t) i].load());
-        cfg.progDegrees[(size_t) i] = step.degree;
-        cfg.progOctaves[(size_t) i] = step.octave;
+        juce::SpinLock::ScopedTryLockType tl (graphLock);
+        if (tl.isLocked())
+            audioGraph = publishedGraph;
     }
-
-    cfg.shiftAmount = engShiftAmount.load();
-    cfg.shiftScale  = engShiftScale.load();
-    cfg.shiftRoot   = engShiftRoot.load();
-
-    cfg.mirrorCenter = engMirrorCenter.load();
-    cfg.mirrorLow    = engMirrorLow.load();
-    cfg.mirrorHigh   = engMirrorHigh.load();
-    cfg.mirrorBounds = engMirrorBounds.load();
-    cfg.mirrorScale  = engMirrorScale.load();
-    cfg.mirrorRoot   = engMirrorRoot.load();
-
-    cfg.delayTimeQn   = ModuleOptions::rateQuarterNotes (engDelayRate.load());
-    cfg.delayFeedback = ModuleOptions::feedbackFraction (engDelayFeedback.load());
-    cfg.delayShift    = engDelayShift.load();
-    cfg.delayScale    = engDelayScale.load();
-    cfg.delayRoot     = engDelayRoot.load();
-
-    cfg.harmType      = engHarmType.load();
-    cfg.harmInversion = engHarmInversion.load();
-    cfg.harmMode      = engHarmMode.load();
-    cfg.harmScale     = engHarmScale.load();
-    cfg.harmRoot      = engHarmRoot.load();
-
-    cfg.strumSpreadSec = ModuleOptions::strumSpreadSeconds (engStrumSpread.load());
-    cfg.strumMode      = engStrumMode.load();
-    cfg.strumCurve     = engStrumCurve.load();
-    cfg.strumVelTilt   = (double) engStrumVelTilt.load() / (double) ModuleOptions::kStrumVelTiltRange;
-    cfg.strumJitter    = (double) engStrumJitter.load()  / (double) ModuleOptions::kStrumJitterSteps;
-    cfg.strumRepeatQn  = ModuleOptions::repeatQuarterNotes (engStrumRepeat.load());
-
-    cfg.hasHumanize     = engHasHumanize.load();
-    cfg.humanizeStepQn  = ModuleOptions::rateQuarterNotes (engHumanizeRate.load());
-    cfg.humanizeSwing   = ModuleOptions::swingFraction (engHumanizeSwing.load());
-    cfg.humanizeLayback = ModuleOptions::swingFraction (engHumanizeLayback.load());
-    cfg.humanizeAccent  = ModuleOptions::swingFraction (engHumanizeAccent.load());
-    cfg.humanizeTimeJit = ModuleOptions::swingFraction (engHumanizeTimeJit.load());
-    cfg.humanizeVelJit  = ModuleOptions::swingFraction (engHumanizeVelJit.load());
-    cfg.humanizeLenJit  = ModuleOptions::swingFraction (engHumanizeLenJit.load());
 
     const int root       = (int) (rootParam  != nullptr ? rootParam->load()  : 0.0f);
     const int scaleIndex = (int) (scaleParam != nullptr ? scaleParam->load() : 0.0f);
@@ -319,7 +199,7 @@ void CurrentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 
     engine.process (midi, buffer.getNumSamples(), pos,
-                    root, scaleIndex, cfg);
+                    root, scaleIndex, audioGraph.get());
 }
 
 juce::AudioProcessorEditor* CurrentAudioProcessor::createEditor()
@@ -327,237 +207,220 @@ juce::AudioProcessorEditor* CurrentAudioProcessor::createEditor()
     return new CurrentAudioProcessorEditor (*this);
 }
 
-// --- Canvas model -----------------------------------------------------------
+// --- Graph snapshot ----------------------------------------------------------
 
-void CurrentAudioProcessor::refreshEngineConfig()
+const ModuleInstance* CurrentAudioProcessor::findModule (int id) const
 {
-    bool arp = false, rnd = false, scaleGen = false, lfo = false;
-    bool chord = false, drone = false;
-    bool quant = false, scaleMod = false, progression = false;
-    bool shift = false, mirror = false, harmonizer = false;
-    bool delay = false, strum = false, humanize = false;
-    bool midiIn = false, output = false;
-    std::uint16_t inMask = 0, outMask = 0;
-
     for (const auto& m : moduleList)
+        if (m.id == id)
+            return &m;
+    return nullptr;
+}
+
+// One module's settings resolved to engine units. The option-table conversions
+// (rate index -> quarter notes, gate index -> fraction, ...) happen here on the
+// message thread, once per model change, so the audio thread only reads plain
+// numbers.
+ModuleParams CurrentAudioProcessor::paramsFor (const ModuleInstance& m) const
+{
+    ModuleParams p;
+    const auto& s = m.settings;
+    p.root  = s.rootOverride;
+    p.scale = s.scaleOverride;
+
+    switch (m.type)
     {
-        switch (m.type)
+        case ModuleType::MidiIn:
+        case ModuleType::Output:
+            p.channel = m.channel;
+            break;
+        case ModuleType::Random:
+            p.stepQn    = ModuleOptions::rateQuarterNotes (s.rate);
+            p.gateFrac  = ModuleOptions::gateFraction (s.gate);
+            p.rangeFrom = s.rangeFrom;
+            p.rangeTo   = s.rangeTo;
+            break;
+        case ModuleType::ScaleGen:
+            p.stepQn    = ModuleOptions::rateQuarterNotes (s.rate);
+            p.gateFrac  = ModuleOptions::gateFraction (s.gate);
+            p.repeatQn  = ModuleOptions::repeatQuarterNotes (s.repeat);
+            p.octaves   = s.octaves;
+            p.mode      = s.mode;
+            p.endOnRoot = s.endOnRoot;
+            break;
+        case ModuleType::Lfo:
+            p.stepQn        = ModuleOptions::rateQuarterNotes (s.rate);
+            p.gateFrac      = ModuleOptions::gateFraction (s.gate);
+            p.lfoCycleQn    = ModuleOptions::barLengthQuarterNotes (s.lfoCycle);
+            p.lfoShape      = s.lfoShape;
+            p.lfoDepthOct   = s.lfoDepthOct;
+            p.lfoDepthSteps = s.lfoDepthSteps;
+            p.lfoPhase      = ModuleOptions::lfoPhaseFraction (s.lfoPhase);
+            break;
+        case ModuleType::Chord:
+            p.chordDegree    = s.chordDegree;
+            p.chordType      = s.chordType;
+            p.chordInversion = s.chordInversion;
+            p.holdLengthQn   = ModuleOptions::barLengthQuarterNotes (s.holdLength);
+            p.holdPeriodQn   = ModuleOptions::repeatQuarterNotes (s.holdRepeat);
+            break;
+        case ModuleType::Drone:
+            p.droneVoicing = s.droneVoicing;
+            p.droneOctave  = s.droneOctave;
+            p.holdLengthQn = ModuleOptions::barLengthQuarterNotes (s.holdLength);
+            p.holdPeriodQn = ModuleOptions::repeatQuarterNotes (s.holdRepeat);
+            break;
+        case ModuleType::Arp:
+            p.stepQn   = ModuleOptions::rateQuarterNotes (s.rate);
+            p.gateFrac = ModuleOptions::gateFraction (s.gate);
+            p.repeatQn = ModuleOptions::repeatQuarterNotes (s.repeat);
+            p.octaves  = s.octaves;
+            p.mode     = s.mode;
+            break;
+        case ModuleType::Quantize:
+            p.stepQn = ModuleOptions::rateQuarterNotes (s.rate);
+            p.swing  = ModuleOptions::swingFraction (s.swing);
+            break;
+        case ModuleType::ScaleMod:
+            break;   // root/scale only
+        case ModuleType::Progression:
         {
-            case ModuleType::Arp:
-                // First instance's settings win — the implicit chain runs one
-                // Arp at most until wiring lands. Same below for Random/Scale.
-                if (! arp)
-                {
-                    engArpMode.store (m.settings.mode);
-                    engArpRate.store (m.settings.rate);
-                    engArpOctaves.store (m.settings.octaves);
-                    engArpGate.store (m.settings.gate);
-                    engArpRepeat.store (m.settings.repeat);
-                }
-                arp = true;
-                break;
-            case ModuleType::Random:
-                if (! rnd)
-                {
-                    engRandomRoot.store (m.settings.rootOverride);
-                    engRandomScale.store (m.settings.scaleOverride);
-                    engRandomRate.store (m.settings.rate);
-                    engRandomGate.store (m.settings.gate);
-                    engRandomFrom.store (m.settings.rangeFrom);
-                    engRandomTo.store (m.settings.rangeTo);
-                }
-                rnd = true;
-                break;
-            case ModuleType::ScaleGen:
-                if (! scaleGen)
-                {
-                    engScaleRoot.store (m.settings.rootOverride);
-                    engScaleScale.store (m.settings.scaleOverride);
-                    engScaleRate.store (m.settings.rate);
-                    engScaleGate.store (m.settings.gate);
-                    engScaleRepeat.store (m.settings.repeat);
-                    engScaleOctaves.store (m.settings.octaves);
-                    engScaleMode.store (m.settings.mode);
-                    engScaleEndOnRoot.store (m.settings.endOnRoot);
-                }
-                scaleGen = true;
-                break;
-            case ModuleType::Lfo:
-                if (! lfo)
-                {
-                    engLfoRoot.store (m.settings.rootOverride);
-                    engLfoScale.store (m.settings.scaleOverride);
-                    engLfoRate.store (m.settings.rate);
-                    engLfoGate.store (m.settings.gate);
-                    engLfoCycle.store (m.settings.lfoCycle);
-                    engLfoShape.store (m.settings.lfoShape);
-                    engLfoDepthOct.store (m.settings.lfoDepthOct);
-                    engLfoDepthSteps.store (m.settings.lfoDepthSteps);
-                    engLfoPhase.store (m.settings.lfoPhase);
-                }
-                lfo = true;
-                break;
-            case ModuleType::Chord:
-                if (! chord)
-                {
-                    engChordRoot.store (m.settings.rootOverride);
-                    engChordScale.store (m.settings.scaleOverride);
-                    engChordDegree.store (m.settings.chordDegree);
-                    engChordType.store (m.settings.chordType);
-                    engChordInversion.store (m.settings.chordInversion);
-                    engChordLength.store (m.settings.holdLength);
-                    engChordRepeat.store (m.settings.holdRepeat);
-                }
-                chord = true;
-                break;
-            case ModuleType::Drone:
-                if (! drone)
-                {
-                    engDroneRoot.store (m.settings.rootOverride);
-                    engDroneScale.store (m.settings.scaleOverride);
-                    engDroneVoicing.store (m.settings.droneVoicing);
-                    engDroneOctave.store (m.settings.droneOctave);
-                    engDroneLength.store (m.settings.holdLength);
-                    engDroneRepeat.store (m.settings.holdRepeat);
-                }
-                drone = true;
-                break;
-            case ModuleType::Quantize:
-                if (! quant)
-                {
-                    engQuantRate.store (m.settings.rate);
-                    engQuantSwing.store (m.settings.swing);
-                }
-                quant = true;
-                break;
-            case ModuleType::ScaleMod:
-                if (! scaleMod)
-                {
-                    engScaleModRoot.store (m.settings.rootOverride);
-                    engScaleModScale.store (m.settings.scaleOverride);
-                }
-                scaleMod = true;
-                break;
-            case ModuleType::Progression:
-                if (! progression)
-                {
-                    engProgRoot.store (m.settings.rootOverride);
-                    engProgScale.store (m.settings.scaleOverride);
-                    engProgRate.store (m.settings.progRate);
-                    const int count = juce::jlimit (0, ModuleOptions::kMaxProgSteps,
-                                                    (int) m.settings.progSteps.size());
-                    for (int i = 0; i < count; ++i)
-                        engProgSteps[(size_t) i].store (packProgStep (m.settings.progSteps[(size_t) i]));
-                    // Count last: a block that sees the new count sees the new
-                    // steps too (each field is independently atomic).
-                    engProgCount.store (count);
-                }
-                progression = true;
-                break;
-            case ModuleType::Shift:
-                if (! shift)
-                {
-                    engShiftAmount.store (m.settings.shiftAmount);
-                    engShiftScale.store (m.settings.scaleOverride);
-                    engShiftRoot.store (m.settings.rootOverride);
-                }
-                shift = true;
-                break;
-            case ModuleType::Mirror:
-                if (! mirror)
-                {
-                    engMirrorCenter.store (m.settings.mirrorCenter);
-                    engMirrorLow.store (m.settings.mirrorLow);
-                    engMirrorHigh.store (m.settings.mirrorHigh);
-                    engMirrorBounds.store (m.settings.mirrorBounds);
-                    engMirrorScale.store (m.settings.scaleOverride);
-                    engMirrorRoot.store (m.settings.rootOverride);
-                }
-                mirror = true;
-                break;
-            case ModuleType::Harmonizer:
-                if (! harmonizer)
-                {
-                    engHarmType.store (m.settings.harmType);
-                    engHarmInversion.store (m.settings.harmInversion);
-                    engHarmMode.store (m.settings.harmMode);
-                    engHarmScale.store (m.settings.scaleOverride);
-                    engHarmRoot.store (m.settings.rootOverride);
-                }
-                harmonizer = true;
-                break;
-            case ModuleType::Delay:
-                if (! delay)
-                {
-                    engDelayRate.store (m.settings.rate);
-                    engDelayFeedback.store (m.settings.delayFeedback);
-                    engDelayShift.store (m.settings.delayShift);
-                    engDelayScale.store (m.settings.scaleOverride);
-                    engDelayRoot.store (m.settings.rootOverride);
-                }
-                delay = true;
-                break;
-            case ModuleType::Strum:
-                if (! strum)
-                {
-                    engStrumSpread.store (m.settings.strumSpread);
-                    engStrumMode.store (m.settings.mode);
-                    engStrumCurve.store (m.settings.strumCurve);
-                    engStrumVelTilt.store (m.settings.strumVelTilt);
-                    engStrumJitter.store (m.settings.strumJitter);
-                    engStrumRepeat.store (m.settings.repeat);
-                }
-                strum = true;
-                break;
-            case ModuleType::Humanize:
-                if (! humanize)
-                {
-                    engHumanizeRate.store (m.settings.rate);
-                    engHumanizeSwing.store (m.settings.swing);
-                    engHumanizeLayback.store (m.settings.humanizeLayback);
-                    engHumanizeAccent.store (m.settings.humanizeAccent);
-                    engHumanizeTimeJit.store (m.settings.humanizeTimeJit);
-                    engHumanizeVelJit.store (m.settings.humanizeVelJit);
-                    engHumanizeLenJit.store (m.settings.humanizeLenJit);
-                }
-                humanize = true;
-                break;
-            case ModuleType::MidiIn:
-                midiIn = true;
-                // Channel 0 = All; several MIDI Ins merge (union).
-                inMask |= (m.channel == 0)
-                              ? (std::uint16_t) 0xffff
-                              : (std::uint16_t) (1u << (juce::jlimit (1, 16, m.channel) - 1));
-                break;
-            case ModuleType::Output:
-                output = true;
-                outMask |= (std::uint16_t) (1u << (juce::jlimit (1, 16, m.channel) - 1));
-                break;
+            p.progRateQn    = ModuleOptions::barLengthQuarterNotes (s.progRate);
+            p.progStepCount = juce::jlimit (0, ModuleOptions::kMaxProgSteps,
+                                            (int) s.progSteps.size());
+            for (int i = 0; i < p.progStepCount; ++i)
+            {
+                p.progDegrees[(size_t) i] = s.progSteps[(size_t) i].degree;
+                p.progOctaves[(size_t) i] = s.progSteps[(size_t) i].octave;
+            }
+            break;
         }
+        case ModuleType::Shift:
+            p.shiftAmount = s.shiftAmount;
+            break;
+        case ModuleType::Mirror:
+            p.mirrorCenter = s.mirrorCenter;
+            p.mirrorLow    = s.mirrorLow;
+            p.mirrorHigh   = s.mirrorHigh;
+            p.mirrorBounds = s.mirrorBounds;
+            break;
+        case ModuleType::Harmonizer:
+            p.harmType      = s.harmType;
+            p.harmInversion = s.harmInversion;
+            p.harmMode      = s.harmMode;
+            break;
+        case ModuleType::Delay:
+            p.stepQn        = ModuleOptions::rateQuarterNotes (s.rate);
+            p.delayFeedback = ModuleOptions::feedbackFraction (s.delayFeedback);
+            p.delayShift    = s.delayShift;
+            break;
+        case ModuleType::Strum:
+            p.mode           = s.mode;
+            p.repeatQn       = ModuleOptions::repeatQuarterNotes (s.repeat);
+            p.strumSpreadSec = ModuleOptions::strumSpreadSeconds (s.strumSpread);
+            p.strumCurve     = s.strumCurve;
+            p.strumVelTilt   = (double) s.strumVelTilt / (double) ModuleOptions::kStrumVelTiltRange;
+            p.strumJitter    = (double) s.strumJitter  / (double) ModuleOptions::kStrumJitterSteps;
+            break;
+        case ModuleType::Humanize:
+            p.stepQn          = ModuleOptions::rateQuarterNotes (s.rate);
+            p.swing           = ModuleOptions::swingFraction (s.swing);
+            p.humanizeLayback = ModuleOptions::swingFraction (s.humanizeLayback);
+            p.humanizeAccent  = ModuleOptions::swingFraction (s.humanizeAccent);
+            p.humanizeTimeJit = ModuleOptions::swingFraction (s.humanizeTimeJit);
+            p.humanizeVelJit  = ModuleOptions::swingFraction (s.humanizeVelJit);
+            p.humanizeLenJit  = ModuleOptions::swingFraction (s.humanizeLenJit);
+            break;
+    }
+    return p;
+}
+
+void CurrentAudioProcessor::rebuildGraph()
+{
+    auto snap = std::make_shared<GraphSnapshot>();
+    snap->topologyVersion = topologyVersion;
+
+    const int n = (int) moduleList.size();
+
+    // id -> moduleList index.
+    auto indexOfId = [this] (int id) -> int
+    {
+        for (int i = 0; i < (int) moduleList.size(); ++i)
+            if (moduleList[(size_t) i].id == id)
+                return i;
+        return -1;
+    };
+
+    // Kahn topological sort over the connections, stable in list order so an
+    // unwired canvas keeps its placement order. Cycles can't exist (canConnect
+    // refuses them); a defensive leftover-append keeps a corrupted state from
+    // dropping modules.
+    std::vector<int> indegree ((size_t) n, 0);
+    for (const auto& c : connectionList)
+    {
+        const int ti = indexOfId (c.toId);
+        if (indexOfId (c.fromId) >= 0 && ti >= 0)
+            ++indegree[(size_t) ti];
     }
 
-    engHasArp.store (arp);
-    engHasRandom.store (rnd);
-    engHasScaleGen.store (scaleGen);
-    engHasLfo.store (lfo);
-    engHasChord.store (chord);
-    engHasDrone.store (drone);
-    engHasQuantize.store (quant);
-    engHasScaleMod.store (scaleMod);
-    engHasProgression.store (progression);
-    engHasShift.store (shift);
-    engHasMirror.store (mirror);
-    engHasHarmonizer.store (harmonizer);
-    engHasDelay.store (delay);
-    engHasStrum.store (strum);
-    engHasHumanize.store (humanize);
-    engHasMidiIn.store (midiIn);
-    engHasOutput.store (output);
-    // No MIDI In module = implicit all-channels input; no Output = keep each
-    // event's own channel (mask 0 means exactly that in the engine).
-    engInChannelMask.store (midiIn ? inMask : (std::uint16_t) 0xffff);
-    engOutChannelMask.store (output ? outMask : (std::uint16_t) 0);
+    std::vector<int>  order;
+    std::vector<bool> placed ((size_t) n, false);
+    order.reserve ((size_t) n);
+    for (int placedCount = 0; placedCount < n;)
+    {
+        int pick = -1;
+        for (int i = 0; i < n; ++i)
+            if (! placed[(size_t) i] && indegree[(size_t) i] == 0)
+            {
+                pick = i;
+                break;
+            }
+        if (pick < 0)   // cycle in a corrupted state: append the rest as-is
+        {
+            for (int i = 0; i < n; ++i)
+                if (! placed[(size_t) i])
+                    order.push_back (i);
+            break;
+        }
+        placed[(size_t) pick] = true;
+        order.push_back (pick);
+        ++placedCount;
+        for (const auto& c : connectionList)
+            if (indexOfId (c.fromId) == pick)
+            {
+                const int ti = indexOfId (c.toId);
+                if (ti >= 0)
+                    --indegree[(size_t) ti];
+            }
+    }
+
+    // moduleList index -> position in the snapshot's node vector.
+    std::vector<int> nodeIndexOf ((size_t) n, -1);
+    for (int i = 0; i < (int) order.size(); ++i)
+        nodeIndexOf[(size_t) order[(size_t) i]] = i;
+
+    for (int mi : order)
+    {
+        const auto& m = moduleList[(size_t) mi];
+        GraphNode g;
+        g.id     = m.id;
+        g.type   = m.type;
+        g.params = paramsFor (m);
+        for (const auto& c : connectionList)
+            if (c.toId == m.id)
+            {
+                const int fi = indexOfId (c.fromId);
+                if (fi >= 0 && nodeIndexOf[(size_t) fi] >= 0)
+                    g.inputs.push_back (nodeIndexOf[(size_t) fi]);
+            }
+        snap->nodes.push_back (std::move (g));
+    }
+
+    juce::SpinLock::ScopedLockType l (graphLock);
+    publishedGraph = std::move (snap);
 }
+
+// --- Canvas model ------------------------------------------------------------
 
 int CurrentAudioProcessor::addModule (ModuleType type, float x, float y)
 {
@@ -601,12 +464,14 @@ int CurrentAudioProcessor::addModule (ModuleType type, float x, float y)
     }
 
     moduleList.push_back (m);
-    refreshEngineConfig();
+    ++topologyVersion;
+    rebuildGraph();
     return m.id;
 }
 
 void CurrentAudioProcessor::moveModule (int id, float x, float y)
 {
+    // Position never reaches the engine, so no graph rebuild.
     for (auto& m : moduleList)
     {
         if (m.id == id)
@@ -625,7 +490,7 @@ void CurrentAudioProcessor::setModuleChannel (int id, int channel)
         if (m.id == id)
         {
             m.channel = channel;
-            refreshEngineConfig();
+            rebuildGraph();   // settings edit: same topologyVersion, notes ring on
             return;
         }
     }
@@ -646,7 +511,7 @@ void CurrentAudioProcessor::setModuleSettings (int id, const ModuleSettings& set
         if (m.id == id)
         {
             m.settings = settings;
-            refreshEngineConfig();
+            rebuildGraph();   // settings edit: same topologyVersion, notes ring on
             return;
         }
     }
@@ -665,7 +530,72 @@ void CurrentAudioProcessor::removeModule (int id)
     moduleList.erase (std::remove_if (moduleList.begin(), moduleList.end(),
                                       [id] (const ModuleInstance& m) { return m.id == id; }),
                       moduleList.end());
-    refreshEngineConfig();
+    // A module takes its cables with it.
+    connectionList.erase (std::remove_if (connectionList.begin(), connectionList.end(),
+                                          [id] (const ModuleConnection& c)
+                                          { return c.fromId == id || c.toId == id; }),
+                          connectionList.end());
+    ++topologyVersion;
+    rebuildGraph();
+}
+
+// --- Connections -------------------------------------------------------------
+
+bool CurrentAudioProcessor::canConnect (int fromId, int toId) const
+{
+    if (fromId == toId)
+        return false;
+    const auto* from = findModule (fromId);
+    const auto* to   = findModule (toId);
+    if (from == nullptr || to == nullptr)
+        return false;
+    if (! moduleHasOutputPort (from->type) || ! moduleHasInputPort (to->type))
+        return false;
+    for (const auto& c : connectionList)
+        if (c.fromId == fromId && c.toId == toId)
+            return false;   // duplicate
+
+    // No cycles: refuse if `fromId` is already reachable downstream of `toId`
+    // (adding the cable would close the loop). Iterative DFS over the ids.
+    std::vector<int> stack { toId }, visited;
+    while (! stack.empty())
+    {
+        const int at = stack.back();
+        stack.pop_back();
+        if (at == fromId)
+            return false;
+        if (std::find (visited.begin(), visited.end(), at) != visited.end())
+            continue;
+        visited.push_back (at);
+        for (const auto& c : connectionList)
+            if (c.fromId == at)
+                stack.push_back (c.toId);
+    }
+    return true;
+}
+
+bool CurrentAudioProcessor::addConnection (int fromId, int toId)
+{
+    if (! canConnect (fromId, toId))
+        return false;
+    connectionList.push_back ({ fromId, toId });
+    ++topologyVersion;
+    rebuildGraph();
+    return true;
+}
+
+void CurrentAudioProcessor::removeConnection (int fromId, int toId)
+{
+    const auto before = connectionList.size();
+    connectionList.erase (std::remove_if (connectionList.begin(), connectionList.end(),
+                                          [&] (const ModuleConnection& c)
+                                          { return c.fromId == fromId && c.toId == toId; }),
+                          connectionList.end());
+    if (connectionList.size() != before)
+    {
+        ++topologyVersion;
+        rebuildGraph();
+    }
 }
 
 // --- State ------------------------------------------------------------------
@@ -674,7 +604,7 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     // Root of the saved state is the APVTS tree; the canvas layout rides along
     // as a child node. This is DAW-project persistence, not the user-facing
-    // Load/Save of patches (which Phase 2 deliberately omits).
+    // Load/Save of patches (which is a later phase).
     auto state = parameters.copyState();
 
     juce::ValueTree canvas ("Canvas");
@@ -798,6 +728,27 @@ void CurrentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         }
         canvas.appendChild (node, nullptr);
     }
+
+    // Cables are stored by the modules' positions in the saved list (not their
+    // ids — ids are session-local and reassigned on load).
+    auto savedIndexOf = [this] (int id) -> int
+    {
+        for (int i = 0; i < (int) moduleList.size(); ++i)
+            if (moduleList[(size_t) i].id == id)
+                return i;
+        return -1;
+    };
+    for (const auto& c : connectionList)
+    {
+        const int fi = savedIndexOf (c.fromId);
+        const int ti = savedIndexOf (c.toId);
+        if (fi < 0 || ti < 0)
+            continue;
+        juce::ValueTree conn ("Connection");
+        conn.setProperty ("from", fi, nullptr);
+        conn.setProperty ("to",   ti, nullptr);
+        canvas.appendChild (conn, nullptr);
+    }
     state.appendChild (canvas, nullptr);
 
     if (auto xml = state.createXml())
@@ -815,12 +766,18 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
         return;
 
     moduleList.clear();
+    connectionList.clear();
     nextModuleId = 1;
 
     if (auto canvas = state.getChildWithName ("Canvas"); canvas.isValid())
     {
+        std::vector<int> loadedIds;   // saved index -> new session-local id
+
         for (const auto& node : canvas)
         {
+            if (! node.hasType ("Module"))
+                continue;
+
             ModuleInstance m;
             m.id      = nextModuleId++;
             m.type    = moduleTypeFromString (node.getProperty ("type").toString());
@@ -886,16 +843,32 @@ void CurrentAudioProcessor::setStateInformation (const void* data, int sizeInByt
             m.settings.strumCurve     = (int) node.getProperty ("strumCurve", def.strumCurve);
             m.settings.strumVelTilt   = (int) node.getProperty ("strumVelTilt", def.strumVelTilt);
             m.settings.strumJitter    = (int) node.getProperty ("strumJitter", def.strumJitter);
-            m.settings.harmType       = (int) node.getProperty ("harmType", def.harmType);
-            m.settings.harmInversion  = (int) node.getProperty ("harmInversion", def.harmInversion);
-            m.settings.harmMode       = (int) node.getProperty ("harmMode", def.harmMode);
 
             moduleList.push_back (m);
+            loadedIds.push_back (m.id);
         }
+
+        // Cables, by saved module index. canConnect re-validates each (ports,
+        // duplicates, cycles), so a hand-edited or corrupted save can't
+        // publish an invalid graph.
+        for (const auto& node : canvas)
+        {
+            if (! node.hasType ("Connection"))
+                continue;
+            const int fi = (int) node.getProperty ("from", -1);
+            const int ti = (int) node.getProperty ("to",   -1);
+            if (fi < 0 || ti < 0
+                || fi >= (int) loadedIds.size() || ti >= (int) loadedIds.size())
+                continue;
+            if (canConnect (loadedIds[(size_t) fi], loadedIds[(size_t) ti]))
+                connectionList.push_back ({ loadedIds[(size_t) fi], loadedIds[(size_t) ti] });
+        }
+
         state.removeChild (canvas, nullptr);
     }
 
-    refreshEngineConfig();
+    ++topologyVersion;   // a wholesale replace is a topology change
+    rebuildGraph();
     parameters.replaceState (state);
 
     // Async + thread-safe, so it's fine even if a host calls

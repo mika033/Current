@@ -5,6 +5,14 @@
 // across pass-through, modulators, stepped modules, and a transport stop.
 // Built only when CURRENT_BUILD_TESTS=ON.
 //
+// The engine runs a wired GraphSnapshot; most tests here describe their setup
+// as a TestConfig (which module types are present + their settings) that
+// graphFromConfig() lays out as an explicit graph in the classic order
+// (MIDI In -> Arp -> Harmonizer, generators merging in -> pitch mods ->
+// Quantize -> Delay -> Strum -> Humanize -> Output). That keeps each test
+// about one module's behaviour; the dedicated graph-routing section at the end
+// exercises fan-out/fan-in and the strict sink semantics directly.
+//
 // Not a unit-test framework — just asserts + a pass/fail summary, so it can run
 // in CI without extra deps.
 
@@ -13,12 +21,328 @@
 #include "ModuleSettings.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <vector>
 
 namespace
 {
     int failures = 0;
+
+    // The per-module settings of the old fixed-chain config, kept as the
+    // tests' compact way of describing a setup. graphFromConfig() turns it
+    // into an explicit wired graph.
+    struct TestConfig
+    {
+        bool hasArp         = false;
+        bool hasRandom      = false;
+        bool hasScaleGen    = false;
+        bool hasLfo         = false;
+        bool hasChord       = false;
+        bool hasDrone       = false;
+        bool hasQuantize    = false;
+        bool hasScaleMod    = false;
+        bool hasProgression = false;
+        bool hasShift       = false;
+        bool hasMirror      = false;
+        bool hasHarmonizer  = false;
+        bool hasDelay       = false;
+        bool hasStrum       = false;
+        bool hasHumanize    = false;
+        bool hasMidiIn      = false;
+        bool hasOutput      = false;
+
+        int    arpMode     = 0;
+        double arpStepQn   = 0.25;
+        int    arpOctaves  = 1;
+        double arpGateFrac = 0.5;
+        double arpRepeatQn = 0.0;
+
+        int    randomRoot     = -1;
+        int    randomScale    = -1;
+        double randomStepQn   = 0.25;
+        double randomGateFrac = 0.5;
+        int    randomFrom     = 24;
+        int    randomTo       = 48;
+
+        int    scaleRoot      = -1;
+        int    scaleScale     = -1;
+        double scaleStepQn    = 0.5;
+        double scaleGateFrac  = 0.5;
+        double scaleRepeatQn  = 4.0;
+        int    scaleOctaves   = 1;
+        int    scaleMode      = 0;
+        bool   scaleEndOnRoot = true;
+
+        int    lfoRoot       = -1;
+        int    lfoScale      = -1;
+        double lfoStepQn     = 0.25;
+        double lfoGateFrac   = 0.5;
+        double lfoCycleQn    = 4.0;
+        int    lfoShape      = 0;
+        int    lfoDepthOct   = 1;
+        int    lfoDepthSteps = 0;
+        double lfoPhase      = 0.0;
+
+        int    chordRoot      = -1;
+        int    chordScale     = -1;
+        int    chordDegree    = 0;
+        int    chordType      = 0;
+        int    chordInversion = 0;
+        double chordLengthQn  = 4.0;
+        double chordPeriodQn  = 4.0;
+
+        int    droneVoicing  = 0;
+        int    droneRoot     = -1;
+        int    droneScale    = -1;
+        int    droneOctave   = 0;
+        double droneLengthQn = 16.0;
+        double dronePeriodQn = 16.0;
+
+        double quantStepQn = 0.25;
+        double quantSwing  = 0.0;
+
+        int scaleModRoot  = -1;
+        int scaleModScale = -1;
+
+        int    progRoot      = -1;
+        int    progScale     = -1;
+        double progRateQn    = 4.0;
+        int    progStepCount = 0;
+        std::array<int, 8> progDegrees {};
+        std::array<int, 8> progOctaves {};
+
+        int shiftAmount = 0;
+        int shiftScale  = -1;
+        int shiftRoot   = -1;
+
+        int mirrorCenter = 60;
+        int mirrorLow    = 36;
+        int mirrorHigh   = 84;
+        int mirrorBounds = 0;
+        int mirrorScale  = -1;
+        int mirrorRoot   = -1;
+
+        int harmType      = 0;
+        int harmInversion = 0;
+        int harmMode      = 0;
+        int harmScale     = -1;
+        int harmRoot      = -1;
+
+        double delayTimeQn   = 0.5;
+        double delayFeedback = 0.5;
+        int    delayShift    = 0;
+        int    delayScale    = -1;
+        int    delayRoot     = -1;
+
+        double strumSpreadSec = 0.04;
+        int    strumMode      = 0;
+        int    strumCurve     = 0;
+        double strumVelTilt   = 0.0;
+        double strumJitter    = 0.0;
+        double strumRepeatQn  = 0.0;
+
+        double humanizeStepQn  = 0.25;
+        double humanizeSwing   = 0.0;
+        double humanizeLayback = 0.0;
+        double humanizeAccent  = 0.0;
+        double humanizeTimeJit = 0.0;
+        double humanizeVelJit  = 0.0;
+        double humanizeLenJit  = 0.0;
+
+        std::uint16_t inChannelMask  = 0xffff;
+        std::uint16_t outChannelMask = 0;
+    };
+
+    // Lay the config out as an explicit graph in the classic chain order.
+    // Node ids are assigned by creation order, so the same config shape always
+    // yields the same ids (and topologyVersion stays 1) — per-node engine
+    // state then survives settings edits between process calls, exactly like
+    // the plugin's own settings edits.
+    GraphSnapshot graphFromConfig (const TestConfig& cfg)
+    {
+        GraphSnapshot g;
+        g.topologyVersion = 1;
+
+        auto add = [&g] (ModuleType t, std::function<void (ModuleParams&)> fill = {})
+        {
+            GraphNode n;
+            n.id   = (int) g.nodes.size() + 1;
+            n.type = t;
+            if (fill)
+                fill (n.params);
+            g.nodes.push_back (std::move (n));
+            return (int) g.nodes.size() - 1;
+        };
+
+        // The current chain tails; a chained module consumes all of them
+        // (fan-in) and becomes the single new tail.
+        std::vector<int> heads;
+        auto chainInto = [&] (int idx)
+        {
+            for (int h : heads)
+                g.nodes[(size_t) idx].inputs.push_back (h);
+            heads.assign (1, idx);
+        };
+
+        // MIDI In: one node per admitted channel (the old mask semantics);
+        // no flag = an accept-everything input.
+        if (cfg.hasMidiIn && cfg.inChannelMask != 0xffff)
+        {
+            for (int ch = 1; ch <= 16; ++ch)
+                if ((cfg.inChannelMask & (1u << (ch - 1))) != 0)
+                    heads.push_back (add (ModuleType::MidiIn,
+                                          [ch] (ModuleParams& p) { p.channel = ch; }));
+        }
+        else
+        {
+            heads.push_back (add (ModuleType::MidiIn,
+                                  [] (ModuleParams& p) { p.channel = 0; }));
+        }
+
+        if (cfg.hasArp)
+            chainInto (add (ModuleType::Arp, [&] (ModuleParams& p)
+            {
+                p.mode = cfg.arpMode; p.stepQn = cfg.arpStepQn; p.octaves = cfg.arpOctaves;
+                p.gateFrac = cfg.arpGateFrac; p.repeatQn = cfg.arpRepeatQn;
+            }));
+        if (cfg.hasHarmonizer)
+            chainInto (add (ModuleType::Harmonizer, [&] (ModuleParams& p)
+            {
+                p.harmType = cfg.harmType; p.harmInversion = cfg.harmInversion;
+                p.harmMode = cfg.harmMode; p.root = cfg.harmRoot; p.scale = cfg.harmScale;
+            }));
+
+        if (cfg.hasRandom)
+            heads.push_back (add (ModuleType::Random, [&] (ModuleParams& p)
+            {
+                p.root = cfg.randomRoot; p.scale = cfg.randomScale;
+                p.stepQn = cfg.randomStepQn; p.gateFrac = cfg.randomGateFrac;
+                p.rangeFrom = cfg.randomFrom; p.rangeTo = cfg.randomTo;
+            }));
+        if (cfg.hasScaleGen)
+            heads.push_back (add (ModuleType::ScaleGen, [&] (ModuleParams& p)
+            {
+                p.root = cfg.scaleRoot; p.scale = cfg.scaleScale;
+                p.stepQn = cfg.scaleStepQn; p.gateFrac = cfg.scaleGateFrac;
+                p.repeatQn = cfg.scaleRepeatQn; p.octaves = cfg.scaleOctaves;
+                p.mode = cfg.scaleMode; p.endOnRoot = cfg.scaleEndOnRoot;
+            }));
+        if (cfg.hasLfo)
+            heads.push_back (add (ModuleType::Lfo, [&] (ModuleParams& p)
+            {
+                p.root = cfg.lfoRoot; p.scale = cfg.lfoScale;
+                p.stepQn = cfg.lfoStepQn; p.gateFrac = cfg.lfoGateFrac;
+                p.lfoCycleQn = cfg.lfoCycleQn; p.lfoShape = cfg.lfoShape;
+                p.lfoDepthOct = cfg.lfoDepthOct; p.lfoDepthSteps = cfg.lfoDepthSteps;
+                p.lfoPhase = cfg.lfoPhase;
+            }));
+        if (cfg.hasChord)
+            heads.push_back (add (ModuleType::Chord, [&] (ModuleParams& p)
+            {
+                p.root = cfg.chordRoot; p.scale = cfg.chordScale;
+                p.chordDegree = cfg.chordDegree; p.chordType = cfg.chordType;
+                p.chordInversion = cfg.chordInversion;
+                p.holdLengthQn = cfg.chordLengthQn; p.holdPeriodQn = cfg.chordPeriodQn;
+            }));
+
+        if (cfg.hasScaleMod)
+            chainInto (add (ModuleType::ScaleMod, [&] (ModuleParams& p)
+            {
+                p.root = cfg.scaleModRoot; p.scale = cfg.scaleModScale;
+            }));
+        if (cfg.hasProgression)
+            chainInto (add (ModuleType::Progression, [&] (ModuleParams& p)
+            {
+                p.root = cfg.progRoot; p.scale = cfg.progScale;
+                p.progRateQn = cfg.progRateQn; p.progStepCount = cfg.progStepCount;
+                for (int i = 0; i < 8; ++i)
+                {
+                    p.progDegrees[(size_t) i] = cfg.progDegrees[(size_t) i];
+                    p.progOctaves[(size_t) i] = cfg.progOctaves[(size_t) i];
+                }
+            }));
+        if (cfg.hasShift)
+            chainInto (add (ModuleType::Shift, [&] (ModuleParams& p)
+            {
+                p.shiftAmount = cfg.shiftAmount; p.root = cfg.shiftRoot; p.scale = cfg.shiftScale;
+            }));
+        if (cfg.hasMirror)
+            chainInto (add (ModuleType::Mirror, [&] (ModuleParams& p)
+            {
+                p.mirrorCenter = cfg.mirrorCenter; p.mirrorLow = cfg.mirrorLow;
+                p.mirrorHigh = cfg.mirrorHigh; p.mirrorBounds = cfg.mirrorBounds;
+                p.root = cfg.mirrorRoot; p.scale = cfg.mirrorScale;
+            }));
+        if (cfg.hasQuantize)
+            chainInto (add (ModuleType::Quantize, [&] (ModuleParams& p)
+            {
+                p.stepQn = cfg.quantStepQn; p.swing = cfg.quantSwing;
+            }));
+        if (cfg.hasDelay)
+            chainInto (add (ModuleType::Delay, [&] (ModuleParams& p)
+            {
+                p.stepQn = cfg.delayTimeQn; p.delayFeedback = cfg.delayFeedback;
+                p.delayShift = cfg.delayShift; p.root = cfg.delayRoot; p.scale = cfg.delayScale;
+            }));
+        // The Drone joins downstream of Quantize/Delay, mirroring the old
+        // chain's deliberate bypass (a held pad is not material to re-time or
+        // echo); a user is free to wire it differently in the plugin.
+        if (cfg.hasDrone)
+            heads.push_back (add (ModuleType::Drone, [&] (ModuleParams& p)
+            {
+                p.droneVoicing = cfg.droneVoicing; p.root = cfg.droneRoot;
+                p.scale = cfg.droneScale; p.droneOctave = cfg.droneOctave;
+                p.holdLengthQn = cfg.droneLengthQn; p.holdPeriodQn = cfg.dronePeriodQn;
+            }));
+        if (cfg.hasStrum)
+            chainInto (add (ModuleType::Strum, [&] (ModuleParams& p)
+            {
+                p.strumSpreadSec = cfg.strumSpreadSec; p.mode = cfg.strumMode;
+                p.strumCurve = cfg.strumCurve; p.strumVelTilt = cfg.strumVelTilt;
+                p.strumJitter = cfg.strumJitter; p.repeatQn = cfg.strumRepeatQn;
+            }));
+        if (cfg.hasHumanize)
+            chainInto (add (ModuleType::Humanize, [&] (ModuleParams& p)
+            {
+                p.stepQn = cfg.humanizeStepQn; p.swing = cfg.humanizeSwing;
+                p.humanizeLayback = cfg.humanizeLayback; p.humanizeAccent = cfg.humanizeAccent;
+                p.humanizeTimeJit = cfg.humanizeTimeJit; p.humanizeVelJit = cfg.humanizeVelJit;
+                p.humanizeLenJit = cfg.humanizeLenJit;
+            }));
+
+        // Outputs: one sink per stamped channel, each fed by every chain tail
+        // (fan-out). No flag = a channel-1 sink, since without any Output
+        // nothing leaves the graph at all.
+        auto addOutput = [&] (int ch)
+        {
+            const int idx = add (ModuleType::Output,
+                                 [ch] (ModuleParams& p) { p.channel = ch; });
+            for (int h : heads)
+                g.nodes[(size_t) idx].inputs.push_back (h);
+        };
+        if (cfg.hasOutput && cfg.outChannelMask != 0)
+        {
+            for (int ch = 1; ch <= 16; ++ch)
+                if ((cfg.outChannelMask & (1u << (ch - 1))) != 0)
+                    addOutput (ch);
+        }
+        else
+        {
+            addOutput (1);
+        }
+        return g;
+    }
+
+    // Run one block through a graph laid out from the config. Rebuilt every
+    // call (cheap), matching how the plugin republishes on settings edits.
+    void processCfg (Engine& e, juce::MidiBuffer& midi, int numSamples,
+                     const juce::Optional<juce::AudioPlayHead::PositionInfo>& pos,
+                     int root, int scaleIndex, const TestConfig& cfg)
+    {
+        const auto g = graphFromConfig (cfg);
+        e.process (midi, numSamples, pos, root, scaleIndex, &g);
+    }
 
     void check (bool cond, const juce::String& what)
     {
@@ -74,18 +398,118 @@ int main()
     const int    block = 512;
     const double sr    = 44100.0;
 
-    // --- 1. No modules: pass-through, note untouched ------------------------
+    // --- 1. Default patch (MIDI In -> Output): pass-through -----------------
     {
         Engine e; e.prepare (sr);
-        Engine::Config cfg;   // all false
+        TestConfig cfg;   // all false = the wired MIDI In -> Output pass-through
         auto midi = noteOnBuf (60);
-        e.process (midi, block, playing (false), 0, 0, cfg);
+        processCfg (e, midi, block, playing (false), 0, 0, cfg);
         int ons = 0, offs = 0; tally (midi, ons, offs);
         bool found60 = false;
         for (const auto meta : midi)
             if (meta.getMessage().isNoteOn() && meta.getMessage().getNoteNumber() == 60)
                 found60 = true;
-        check (ons == 1 && found60, "pass-through keeps the note-on at pitch 60");
+        check (ons == 1 && found60, "MIDI In -> Output passes the note-on at pitch 60");
+    }
+
+    // --- 1b. Strict graph semantics: an empty graph is silent ---------------
+    {
+        Engine e; e.prepare (sr);
+        GraphSnapshot empty;
+        empty.topologyVersion = 1;
+        auto midi = noteOnBuf (60);
+        e.process (midi, block, playing (false), 0, 0, &empty);
+        int ons = 0, offs = 0; tally (midi, ons, offs);
+        check (ons == 0 && offs == 0, "an empty graph drops the input (no implicit routing)");
+    }
+
+    // --- 1c. A source with no Output wired reaches nothing ------------------
+    {
+        Engine e; e.prepare (sr);
+        GraphSnapshot g;
+        g.topologyVersion = 1;
+        GraphNode in;
+        in.id = 1; in.type = ModuleType::MidiIn;   // admitted, but wired nowhere
+        g.nodes.push_back (in);
+        auto midi = noteOnBuf (60);
+        e.process (midi, block, playing (false), 0, 0, &g);
+        int ons = 0, offs = 0; tally (midi, ons, offs);
+        check (ons == 0, "a MIDI In wired to nothing emits nothing");
+    }
+
+    // --- 1d. Fan-out and fan-in: one source, two Shift branches, one sink ---
+    {
+        // MIDI In fans out into Shift +12 and Shift +7 (chromatic); both merge
+        // into one Output. One played C4 must come out as both C5 and G4, and
+        // the note-off must release both.
+        Engine e; e.prepare (sr);
+        GraphSnapshot g;
+        g.topologyVersion = 1;
+        auto addNode = [&g] (int id, ModuleType t)
+        {
+            GraphNode n; n.id = id; n.type = t;
+            g.nodes.push_back (n);
+            return (int) g.nodes.size() - 1;
+        };
+        const int inIdx  = addNode (1, ModuleType::MidiIn);
+        const int upIdx  = addNode (2, ModuleType::Shift);
+        const int dnIdx  = addNode (3, ModuleType::Shift);
+        const int outIdx = addNode (4, ModuleType::Output);
+        g.nodes[(size_t) upIdx].params.shiftAmount = 12;
+        g.nodes[(size_t) upIdx].params.scale       = ModuleOptions::kScaleOff;
+        g.nodes[(size_t) upIdx].inputs = { inIdx };
+        g.nodes[(size_t) dnIdx].params.shiftAmount = 7;
+        g.nodes[(size_t) dnIdx].params.scale       = ModuleOptions::kScaleOff;
+        g.nodes[(size_t) dnIdx].inputs = { inIdx };
+        g.nodes[(size_t) outIdx].params.channel = 1;
+        g.nodes[(size_t) outIdx].inputs = { upIdx, dnIdx };
+
+        juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::noteOn  (1, 60, (juce::uint8) 100), 0);
+        midi.addEvent (juce::MidiMessage::noteOff (1, 60), 256);
+        e.process (midi, block, playing (false), 0, 0, &g);
+        std::vector<int> ons, offs;
+        for (const auto meta : midi)
+        {
+            const auto m = meta.getMessage();
+            if (m.isNoteOn())  ons.push_back (m.getNoteNumber());
+            if (m.isNoteOff()) offs.push_back (m.getNoteNumber());
+        }
+        std::sort (ons.begin(), ons.end());
+        std::sort (offs.begin(), offs.end());
+        check (ons == std::vector<int> { 67, 72 },
+               "fan-out through two Shift branches yields both shifted notes");
+        check (offs == std::vector<int> { 67, 72 },
+               "fan-in releases both branch notes on the one note-off");
+    }
+
+    // --- 1e. Topology change: sounding notes are cut, none hang -------------
+    {
+        // A note sounds through the default patch; the patch is then rewired
+        // (new topologyVersion). The engine must release the sounding note at
+        // once — and swallow the host's later note-off (its bookkeeping died
+        // with the old topology).
+        Engine e; e.prepare (sr);
+        TestConfig cfg;
+        int ons = 0, offs = 0;
+        {
+            auto midi = noteOnBuf (60);
+            processCfg (e, midi, block, playing (false), 0, 0, cfg);
+            tally (midi, ons, offs);
+        }
+        {
+            auto g = graphFromConfig (cfg);
+            g.topologyVersion = 2;   // the rewire
+            juce::MidiBuffer midi;
+            e.process (midi, block, playing (false), 0, 0, &g);
+            tally (midi, ons, offs);
+            juce::MidiBuffer offBuf;
+            offBuf.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
+            e.process (offBuf, block, playing (false), 0, 0, &g);
+            tally (offBuf, ons, offs);
+        }
+        check (ons == 1 && offs == 1,
+               "a topology change releases the sounding note exactly once");
     }
 
     // --- 2. Shift: settings-driven transpose, off follows the on ------------
@@ -95,14 +519,14 @@ int main()
                                    int globalRoot, int globalScale)
         {
             Engine e; e.prepare (sr);
-            Engine::Config cfg;
+            TestConfig cfg;
             cfg.hasShift    = true;
             cfg.shiftAmount = amount;
             cfg.shiftScale  = shiftScale;
             juce::MidiBuffer midi;
             midi.addEvent (juce::MidiMessage::noteOn  (1, inNote, (juce::uint8) 100), 0);
             midi.addEvent (juce::MidiMessage::noteOff (1, inNote), 256);
-            e.process (midi, block, playing (false), globalRoot, globalScale, cfg);
+            processCfg (e, midi, block, playing (false), globalRoot, globalScale, cfg);
             int onPitch = -1, offPitch = -1;
             for (const auto meta : midi)
             {
@@ -143,9 +567,9 @@ int main()
     // --- 3. Scale modulator: snaps an out-of-scale note onto its scale -------
     {
         Engine e; e.prepare (sr);
-        Engine::Config cfg; cfg.hasScaleMod = true;
+        TestConfig cfg; cfg.hasScaleMod = true;
         auto midi = noteOnBuf (61);   // C# — not in C major
-        e.process (midi, block, playing (false), /*root*/0, /*scale*/0, cfg);
+        processCfg (e, midi, block, playing (false), /*root*/0, /*scale*/0, cfg);
         int p = -1;
         for (const auto meta : midi)
             if (meta.getMessage().isNoteOn()) p = meta.getMessage().getNoteNumber();
@@ -155,12 +579,12 @@ int main()
     {
         // Root/scale override wins over the globals: D major keeps F#4.
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasScaleMod   = true;
         cfg.scaleModRoot  = 2;   // D
         cfg.scaleModScale = 0;   // Major
         auto midi = noteOnBuf (66);   // F# — in D major, not in C major
-        e.process (midi, block, playing (false), 0, 0, cfg);
+        processCfg (e, midi, block, playing (false), 0, 0, cfg);
         int p = -1;
         for (const auto meta : midi)
             if (meta.getMessage().isNoteOn()) p = meta.getMessage().getNoteNumber();
@@ -174,7 +598,7 @@ int main()
         // arrives 500 samples after the on, so the emitted note keeps that
         // duration (off at 22550).
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasQuantize = true;
         cfg.quantStepQn = 1.0;   // 1/4 grid = 22050 samples at 120bpm/44.1k
 
@@ -183,7 +607,7 @@ int main()
         auto run = [&] (juce::MidiBuffer&& in)
         {
             juce::MidiBuffer midi (in);
-            e.process (midi, block, playing (true), 0, 0, cfg);
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
             for (const auto meta : midi)
                 if (meta.getMessage().isNoteOn() || meta.getMessage().isNoteOff())
                     events.push_back ({ blockStart + meta.samplePosition,
@@ -212,11 +636,11 @@ int main()
     {
         // A note exactly on an even grid point passes with no delay.
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasQuantize = true;
         cfg.quantStepQn = 1.0;
         auto midi = noteOnBuf (60, 0);
-        e.process (midi, block, playing (true), 0, 0, cfg);
+        processCfg (e, midi, block, playing (true), 0, 0, cfg);
         bool onAtZero = false;
         for (const auto meta : midi)
             if (meta.getMessage().isNoteOn() && meta.samplePosition == 0)
@@ -229,7 +653,7 @@ int main()
         // model). Scale gen at 1/4 + quantize 1/4 with 60% swing: step k sits
         // at k*22050, odd steps shifted +0.3*22050 = 6615.
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasScaleGen    = true;
         cfg.scaleStepQn    = 1.0;
         cfg.scaleRepeatQn  = 0.0;
@@ -242,13 +666,13 @@ int main()
         for (int i = 0; i < 200 && onSamples.size() < 4; ++i)
         {
             juce::MidiBuffer midi;
-            e.process (midi, block, playing (true), 0, 0, cfg);
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
             for (const auto meta : midi)
                 if (meta.getMessage().isNoteOn())
                     onSamples.push_back (blockStart + meta.samplePosition);
             blockStart += block;
         }
-        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); }
+        { juce::MidiBuffer midi; processCfg (e, midi, block, playing (false), 0, 0, cfg); }
 
         check (onSamples.size() == 4
                    && onSamples[0] == 0     && onSamples[1] == 22050 + 6615
@@ -259,19 +683,19 @@ int main()
         // Transport stop discards a deferred note: nothing ever sounds and
         // nothing hangs.
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasQuantize = true;
         cfg.quantStepQn = 1.0;
         int ons = 0, offs = 0;
         {
             auto midi = noteOnBuf (60, 100);   // waits for sample 22050
-            e.process (midi, block, playing (true), 0, 0, cfg);
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
             tally (midi, ons, offs);
         }
         for (int i = 0; i < 100; ++i)
         {
             juce::MidiBuffer midi;
-            e.process (midi, block, playing (false), 0, 0, cfg);
+            processCfg (e, midi, block, playing (false), 0, 0, cfg);
             tally (midi, ons, offs);
         }
         check (ons == 0 && offs == 0,
@@ -284,7 +708,7 @@ int main()
         // untouched (degree I is a strict no-op); a note one step later is
         // moved 4 scale degrees up (C4 -> G4 in C major).
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasProgression = true;
         cfg.progRateQn     = 1.0;
         cfg.progStepCount  = 2;
@@ -295,14 +719,14 @@ int main()
         for (int i = 0; i < 200 && onPitches.size() < 2; ++i)
         {
             auto midi = noteOnBuf (60, 0);
-            e.process (midi, block, playing (true), 0, 0, cfg);
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
             for (const auto meta : midi)
                 if (meta.getMessage().isNoteOn())
                     onPitches.push_back (meta.getMessage().getNoteNumber());
             // Release before the next block so each on is a fresh note.
             juce::MidiBuffer off;
             off.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
-            e.process (off, 22050 - block, playing (true), 0, 0, cfg);
+            processCfg (e, off, 22050 - block, playing (true), 0, 0, cfg);
         }
         check (onPitches.size() == 2 && onPitches[0] == 60 && onPitches[1] == 67,
                "Progression I -> V: C4 passes, then lands on G4");
@@ -312,36 +736,36 @@ int main()
         // scale) only runs for degree != 0, so step I at +1 octave lifts an
         // out-of-scale C#4 straight to C#5.
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasProgression = true;
         cfg.progRateQn     = 4.0;
         cfg.progStepCount  = 1;
         cfg.progDegrees[0] = 0;
         cfg.progOctaves[0] = 1;
         auto midi = noteOnBuf (61);
-        e.process (midi, block, playing (true), 0, 0, cfg);
+        processCfg (e, midi, block, playing (true), 0, 0, cfg);
         int p = -1;
         for (const auto meta : midi)
             if (meta.getMessage().isNoteOn()) p = meta.getMessage().getNoteNumber();
-        { juce::MidiBuffer m2; e.process (m2, block, playing (false), 0, 0, cfg); }
+        { juce::MidiBuffer m2; processCfg (e, m2, block, playing (false), 0, 0, cfg); }
         check (p == 73, "Progression octave +1 lifts C#4 to C#5 chromatically");
     }
 
     // --- 4. Random generator: produces notes while playing, none hang -------
     {
         Engine e; e.prepare (sr);
-        Engine::Config cfg; cfg.hasRandom = true;
+        TestConfig cfg; cfg.hasRandom = true;
         int ons = 0, offs = 0;
         for (int i = 0; i < 200; ++i)   // ~2.3 s at 120bpm / 512 blocks
         {
             juce::MidiBuffer midi;
-            e.process (midi, block, playing (true), 0, 0, cfg);
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
             tally (midi, ons, offs);
         }
         // Stop: the engine must release everything still sounding.
         {
             juce::MidiBuffer midi;
-            e.process (midi, block, playing (false), 0, 0, cfg);
+            processCfg (e, midi, block, playing (false), 0, 0, cfg);
             tally (midi, ons, offs);
         }
         check (ons > 0, "Random generated some notes while playing");
@@ -351,7 +775,7 @@ int main()
     // --- 5. Arp: swallows held host notes, emits arp notes, all balanced ----
     {
         Engine e; e.prepare (sr);
-        Engine::Config cfg; cfg.hasArp = true;
+        TestConfig cfg; cfg.hasArp = true;
 
         int ons = 0, offs = 0;
         // Hold a triad on the first block.
@@ -360,7 +784,7 @@ int main()
             midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
             midi.addEvent (juce::MidiMessage::noteOn (1, 64, (juce::uint8) 100), 0);
             midi.addEvent (juce::MidiMessage::noteOn (1, 67, (juce::uint8) 100), 0);
-            e.process (midi, block, playing (true), 0, 0, cfg);
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
             // Host notes are swallowed (arp input), so no pitch-60/64/67 passthrough
             // note-ons besides the arp's own — just tally overall balance below.
             tally (midi, ons, offs);
@@ -368,10 +792,10 @@ int main()
         for (int i = 0; i < 100; ++i)
         {
             juce::MidiBuffer midi;
-            e.process (midi, block, playing (true), 0, 0, cfg);
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
             tally (midi, ons, offs);
         }
-        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
+        { juce::MidiBuffer midi; processCfg (e, midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
 
         check (ons > 0,     "Arp emitted notes from the held chord");
         check (ons == offs, "Arp: every note-on balanced by a note-off after stop");
@@ -385,7 +809,7 @@ int main()
                                size_t count, int& onsOut, int& offsOut)
         {
             Engine e; e.prepare (sr);
-            Engine::Config cfg;
+            TestConfig cfg;
             cfg.hasArp      = true;
             cfg.arpMode     = mode;
             cfg.arpOctaves  = octaves;
@@ -400,7 +824,7 @@ int main()
                 midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
                 midi.addEvent (juce::MidiMessage::noteOn (1, 64, (juce::uint8) 100), 0);
                 midi.addEvent (juce::MidiMessage::noteOn (1, 67, (juce::uint8) 100), 0);
-                e.process (midi, block, playing (true), 0, 0, cfg);
+                processCfg (e, midi, block, playing (true), 0, 0, cfg);
                 tally (midi, ons, offs);
                 for (const auto meta : midi)
                     if (meta.getMessage().isNoteOn())
@@ -409,13 +833,13 @@ int main()
             for (int i = 0; i < 2000 && pitches.size() < count; ++i)
             {
                 juce::MidiBuffer midi;
-                e.process (midi, block, playing (true), 0, 0, cfg);
+                processCfg (e, midi, block, playing (true), 0, 0, cfg);
                 tally (midi, ons, offs);
                 for (const auto meta : midi)
                     if (meta.getMessage().isNoteOn())
                         pitches.push_back (meta.getMessage().getNoteNumber());
             }
-            { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
+            { juce::MidiBuffer midi; processCfg (e, midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
             onsOut = ons; offsOut = offs;
             return pitches;
         };
@@ -448,17 +872,17 @@ int main()
     // --- 6. MIDI In: channel filter drops non-matching input ----------------
     {
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasMidiIn = true;
         cfg.inChannelMask = (std::uint16_t) (1u << (2 - 1));   // channel 2 only
 
         auto midi = noteOnBuf (60, 0, /*chan*/1);
-        e.process (midi, block, playing (false), 0, 0, cfg);
+        processCfg (e, midi, block, playing (false), 0, 0, cfg);
         int ons = 0, offs = 0; tally (midi, ons, offs);
         check (ons == 0, "MIDI In on ch 2 drops a ch-1 note");
 
         auto midi2 = noteOnBuf (60, 0, /*chan*/2);
-        e.process (midi2, block, playing (false), 0, 0, cfg);
+        processCfg (e, midi2, block, playing (false), 0, 0, cfg);
         ons = 0; offs = 0; tally (midi2, ons, offs);
         check (ons == 1, "MIDI In on ch 2 passes a ch-2 note");
     }
@@ -466,14 +890,14 @@ int main()
     // --- 7. Output: restamps channel, note-off follows ----------------------
     {
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasOutput = true;
         cfg.outChannelMask = (std::uint16_t) (1u << (5 - 1));   // channel 5
 
         juce::MidiBuffer midi;
         midi.addEvent (juce::MidiMessage::noteOn  (1, 60, (juce::uint8) 100), 0);
         midi.addEvent (juce::MidiMessage::noteOff (1, 60), 256);
-        e.process (midi, block, playing (false), 0, 0, cfg);
+        processCfg (e, midi, block, playing (false), 0, 0, cfg);
         int onCh = -1, offCh = -1;
         for (const auto meta : midi)
         {
@@ -488,14 +912,14 @@ int main()
     // --- 8. Two Outputs: stream duplicated onto both channels ---------------
     {
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasOutput = true;
         cfg.outChannelMask = (std::uint16_t) ((1u << (2 - 1)) | (1u << (3 - 1)));
 
         juce::MidiBuffer midi;
         midi.addEvent (juce::MidiMessage::noteOn  (1, 60, (juce::uint8) 100), 0);
         midi.addEvent (juce::MidiMessage::noteOff (1, 60), 256);
-        e.process (midi, block, playing (false), 0, 0, cfg);
+        processCfg (e, midi, block, playing (false), 0, 0, cfg);
         int ons = 0, offs = 0; tally (midi, ons, offs);
         check (ons == 2 && offs == 2, "two Outputs duplicate the note onto both channels");
     }
@@ -503,17 +927,17 @@ int main()
     // --- 9. Output channel changed mid-note: off still matches the on -------
     {
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasOutput = true;
         cfg.outChannelMask = (std::uint16_t) (1u << (2 - 1));   // on goes out on ch 2
 
         auto midi = noteOnBuf (60, 0, 1);
-        e.process (midi, block, playing (false), 0, 0, cfg);
+        processCfg (e, midi, block, playing (false), 0, 0, cfg);
 
         cfg.outChannelMask = (std::uint16_t) (1u << (7 - 1));   // user edits to ch 7
         juce::MidiBuffer offBuf;
         offBuf.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
-        e.process (offBuf, block, playing (false), 0, 0, cfg);
+        processCfg (e, offBuf, block, playing (false), 0, 0, cfg);
 
         int offCh = -1;
         for (const auto meta : offBuf)
@@ -525,7 +949,7 @@ int main()
     // --- 10. Random through an Output: generated notes balanced on its ch ---
     {
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasRandom = true;
         cfg.hasOutput = true;
         cfg.outChannelMask = (std::uint16_t) (1u << (4 - 1));
@@ -534,13 +958,13 @@ int main()
         for (int i = 0; i < 100; ++i)
         {
             juce::MidiBuffer midi;
-            e.process (midi, block, playing (true), 0, 0, cfg);
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
             tally (midi, ons, offs);
             for (const auto meta : midi)
                 if (meta.getMessage().getChannel() != 4)
                     allCh4 = false;
         }
-        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
+        { juce::MidiBuffer midi; processCfg (e, midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
         check (ons > 0 && allCh4, "generated notes leave on the Output's channel");
         check (ons == offs, "generated notes balanced through the Output after stop");
     }
@@ -550,7 +974,7 @@ int main()
         // Pin the range to a single pitch with a chromatic scale: every note
         // the generator emits must be exactly that pitch.
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasRandom   = true;
         cfg.randomScale = 8;    // Chromatic
         cfg.randomFrom  = 60;
@@ -560,13 +984,13 @@ int main()
         for (int i = 0; i < 100; ++i)
         {
             juce::MidiBuffer midi;
-            e.process (midi, block, playing (true), 0, 0, cfg);
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
             tally (midi, ons, offs);
             for (const auto meta : midi)
                 if (meta.getMessage().isNoteOn() && meta.getMessage().getNoteNumber() != 60)
                     all60 = false;
         }
-        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
+        { juce::MidiBuffer midi; processCfg (e, midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
         check (ons > 0 && all60, "Random with range 60..60 emits only pitch 60");
         check (ons == offs, "Random settings: balanced after stop");
     }
@@ -574,7 +998,7 @@ int main()
         // Root override D + major, wide range: everything lands in D major even
         // though the global root says C.
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasRandom   = true;
         cfg.randomRoot  = 2;    // D
         cfg.randomScale = 0;    // Major
@@ -585,7 +1009,7 @@ int main()
         for (int i = 0; i < 100; ++i)
         {
             juce::MidiBuffer midi;
-            e.process (midi, block, playing (true), /*global root*/0, /*global scale*/0, cfg);
+            processCfg (e, midi, block, playing (true), /*global root*/0, /*global scale*/0, cfg);
             tally (midi, ons, offs);
             for (const auto meta : midi)
                 if (meta.getMessage().isNoteOn())
@@ -595,7 +1019,7 @@ int main()
                     if (n < 48 || n > 72) inRange = false;
                 }
         }
-        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); }
+        { juce::MidiBuffer midi; processCfg (e, midi, block, playing (false), 0, 0, cfg); }
         check (ons > 0 && allInDMajor, "Random root/scale override draws from D major");
         check (inRange, "Random stays inside its note range");
     }
@@ -605,14 +1029,14 @@ int main()
         auto countOns = [&] (double stepQn)
         {
             Engine e; e.prepare (sr);
-            Engine::Config cfg;
+            TestConfig cfg;
             cfg.hasRandom = true;
             cfg.randomStepQn = stepQn;
             int ons = 0, offs = 0;
             for (int i = 0; i < 200; ++i)
             {
                 juce::MidiBuffer midi;
-                e.process (midi, block, playing (true), 0, 0, cfg);
+                processCfg (e, midi, block, playing (true), 0, 0, cfg);
                 tally (midi, ons, offs);
             }
             return ons;
@@ -629,7 +1053,7 @@ int main()
         // every bar (4 steps): the pattern (8 notes) is cut to C D E F, then
         // repeats. Collect the first 8 note-ons and check the wrap.
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasScaleGen   = true;
         cfg.scaleStepQn   = 1.0;   // 1/4 notes
         cfg.scaleRepeatQn = 4.0;   // 1 bar
@@ -641,13 +1065,13 @@ int main()
         for (int i = 0; i < 800 && pitches.size() < 8; ++i)
         {
             juce::MidiBuffer midi;
-            e.process (midi, block, playing (true), 0, 0, cfg);
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
             tally (midi, ons, offs);
             for (const auto meta : midi)
                 if (meta.getMessage().isNoteOn())
                     pitches.push_back (meta.getMessage().getNoteNumber());
         }
-        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
+        { juce::MidiBuffer midi; processCfg (e, midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
 
         const std::vector<int> expected { 48, 50, 52, 53, 48, 50, 52, 53 };
         check (pitches == expected,
@@ -660,7 +1084,7 @@ int main()
         auto firstPitches = [&] (bool down, bool endOnRoot, size_t count)
         {
             Engine e; e.prepare (sr);
-            Engine::Config cfg;
+            TestConfig cfg;
             cfg.hasScaleGen    = true;
             cfg.scaleStepQn    = 1.0;
             cfg.scaleRepeatQn  = 16.0;   // 4 bars = 16 steps
@@ -672,12 +1096,12 @@ int main()
             for (int i = 0; i < 2000 && pitches.size() < count; ++i)
             {
                 juce::MidiBuffer midi;
-                e.process (midi, block, playing (true), 0, 0, cfg);
+                processCfg (e, midi, block, playing (true), 0, 0, cfg);
                 for (const auto meta : midi)
                     if (meta.getMessage().isNoteOn())
                         pitches.push_back (meta.getMessage().getNoteNumber());
             }
-            { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); }
+            { juce::MidiBuffer midi; processCfg (e, midi, block, playing (false), 0, 0, cfg); }
             return pitches;
         };
 
@@ -695,7 +1119,7 @@ int main()
         // Endless repeat: the 8-note pattern loops back-to-back, no rests and
         // no truncation.
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasScaleGen    = true;
         cfg.scaleStepQn    = 1.0;
         cfg.scaleRepeatQn  = 0.0;   // Endless
@@ -706,12 +1130,12 @@ int main()
         for (int i = 0; i < 2000 && pitches.size() < 10; ++i)
         {
             juce::MidiBuffer midi;
-            e.process (midi, block, playing (true), 0, 0, cfg);
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
             for (const auto meta : midi)
                 if (meta.getMessage().isNoteOn())
                     pitches.push_back (meta.getMessage().getNoteNumber());
         }
-        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); }
+        { juce::MidiBuffer midi; processCfg (e, midi, block, playing (false), 0, 0, cfg); }
         check (pitches == std::vector<int> { 48, 50, 52, 53, 55, 57, 59, 60, 48, 50 },
                "Scale gen Endless loops the pattern back-to-back");
     }
@@ -727,7 +1151,7 @@ int main()
                                int& onsOut, int& offsOut)
         {
             Engine e; e.prepare (sr);
-            Engine::Config cfg;
+            TestConfig cfg;
             cfg.hasLfo        = true;
             cfg.lfoShape      = shape;
             cfg.lfoDepthOct   = depthOct;
@@ -741,13 +1165,13 @@ int main()
             for (int i = 0; i < 2000 && pitches.size() < count; ++i)
             {
                 juce::MidiBuffer midi;
-                e.process (midi, block, playing (true), 0, 0, cfg);
+                processCfg (e, midi, block, playing (true), 0, 0, cfg);
                 tally (midi, ons, offs);
                 for (const auto meta : midi)
                     if (meta.getMessage().isNoteOn())
                         pitches.push_back (meta.getMessage().getNoteNumber());
             }
-            { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
+            { juce::MidiBuffer midi; processCfg (e, midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
             onsOut = ons; offsOut = offs;
             return pitches;
         };
@@ -791,7 +1215,7 @@ int main()
         // Random shape: still in scale, still balanced.
         {
             Engine e; e.prepare (sr);
-            Engine::Config cfg;
+            TestConfig cfg;
             cfg.hasLfo   = true;
             cfg.lfoShape = ModuleOptions::kLfoRandom;
             bool allInScale = true;
@@ -799,14 +1223,14 @@ int main()
             for (int i = 0; i < 200; ++i)
             {
                 juce::MidiBuffer midi;
-                e.process (midi, block, playing (true), 0, 0, cfg);
+                processCfg (e, midi, block, playing (true), 0, 0, cfg);
                 tally (midi, rons, roffs);
                 for (const auto meta : midi)
                     if (meta.getMessage().isNoteOn()
                         && ! ScaleTables::isInScale (meta.getMessage().getNoteNumber(), 0, 0))
                         allInScale = false;
             }
-            { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); tally (midi, rons, roffs); }
+            { juce::MidiBuffer midi; processCfg (e, midi, block, playing (false), 0, 0, cfg); tally (midi, rons, roffs); }
             check (rons > 0 && allInScale, "LFO random shape stays in scale");
             check (rons == roffs, "LFO random shape: balanced after stop");
         }
@@ -819,7 +1243,7 @@ int main()
         auto chordOns = [&] (int degree, int type, int inversion, size_t count)
         {
             Engine e; e.prepare (sr);
-            Engine::Config cfg;
+            TestConfig cfg;
             cfg.hasChord       = true;
             cfg.chordDegree    = degree;
             cfg.chordType      = type;
@@ -832,13 +1256,13 @@ int main()
             for (int i = 0; i < 400 && pitches.size() < count; ++i)
             {
                 juce::MidiBuffer midi;
-                e.process (midi, block, playing (true), 0, 0, cfg);
+                processCfg (e, midi, block, playing (true), 0, 0, cfg);
                 tally (midi, ons, offs);
                 for (const auto meta : midi)
                     if (meta.getMessage().isNoteOn())
                         pitches.push_back (meta.getMessage().getNoteNumber());
             }
-            { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
+            { juce::MidiBuffer midi; processCfg (e, midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
             check (ons == offs, "Chord: balanced after stop");
             return pitches;
         };
@@ -862,7 +1286,7 @@ int main()
         // Root voicing holds one note; a mid-hold root change must release it
         // and start the new pitch immediately (not wait for the next period).
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasDrone      = true;
         cfg.droneVoicing  = ModuleOptions::kVoicingRoot;
         cfg.droneLengthQn = 16.0;   // 4 bars
@@ -872,7 +1296,7 @@ int main()
         auto run = [&] (bool isPlaying)
         {
             juce::MidiBuffer midi;
-            e.process (midi, block, playing (isPlaying), 0, 0, cfg);
+            processCfg (e, midi, block, playing (isPlaying), 0, 0, cfg);
             for (const auto meta : midi)
                 if (meta.getMessage().isNoteOn() || meta.getMessage().isNoteOff())
                     events.push_back ({ meta.getMessage().getNoteNumber(),
@@ -902,16 +1326,16 @@ int main()
         auto droneOns = [&] (int voicing)
         {
             Engine e; e.prepare (sr);
-            Engine::Config cfg;
+            TestConfig cfg;
             cfg.hasDrone     = true;
             cfg.droneVoicing = voicing;
             std::vector<int> pitches;
             juce::MidiBuffer midi;
-            e.process (midi, block, playing (true), 0, 0, cfg);
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
             for (const auto meta : midi)
                 if (meta.getMessage().isNoteOn())
                     pitches.push_back (meta.getMessage().getNoteNumber());
-            { juce::MidiBuffer m2; e.process (m2, block, playing (false), 0, 0, cfg); }
+            { juce::MidiBuffer m2; processCfg (e, m2, block, playing (false), 0, 0, cfg); }
             return pitches;
         };
         check (droneOns (ModuleOptions::kVoicingTriad) == std::vector<int> { 48, 52, 55 },
@@ -930,7 +1354,7 @@ int main()
                                 int& onsOut, int& offsOut)
         {
             Engine e; e.prepare (sr);
-            Engine::Config cfg;
+            TestConfig cfg;
             cfg.hasDelay      = true;
             cfg.delayTimeQn   = 0.5;   // 1/8 at 120bpm = 11025 samples
             cfg.delayFeedback = fb;
@@ -954,14 +1378,14 @@ int main()
                 juce::MidiBuffer midi;
                 midi.addEvent (juce::MidiMessage::noteOn  (1, srcNote, (juce::uint8) 100), 0);
                 midi.addEvent (juce::MidiMessage::noteOff (1, srcNote), 256);
-                e.process (midi, block, playing (false), 0, 0, cfg);
+                processCfg (e, midi, block, playing (false), 0, 0, cfg);
                 tally (midi, ons, offs);
                 collect (midi, true);
             }
             for (int i = 0; i < 600; ++i)
             {
                 juce::MidiBuffer midi;
-                e.process (midi, block, playing (false), 0, 0, cfg);
+                processCfg (e, midi, block, playing (false), 0, 0, cfg);
                 tally (midi, ons, offs);
                 collect (midi, false);
             }
@@ -1001,7 +1425,7 @@ int main()
         // C Major from C3 climbs C3 -> D3 -> E3 -> F3 (the diatonic steps).
         {
             Engine e; e.prepare (sr);
-            Engine::Config cfg;
+            TestConfig cfg;
             cfg.hasDelay      = true;
             cfg.delayTimeQn   = 0.5;
             cfg.delayFeedback = 0.5;
@@ -1011,11 +1435,11 @@ int main()
             juce::MidiBuffer midi;
             midi.addEvent (juce::MidiMessage::noteOn  (1, 48, (juce::uint8) 100), 0);
             midi.addEvent (juce::MidiMessage::noteOff (1, 48), 256);
-            e.process (midi, block, playing (false), 0, 0, cfg);
+            processCfg (e, midi, block, playing (false), 0, 0, cfg);
             for (int i = 0; i < 600; ++i)
             {
                 juce::MidiBuffer m;
-                e.process (m, block, playing (false), 0, 0, cfg);
+                processCfg (e, m, block, playing (false), 0, 0, cfg);
                 for (const auto meta : m)
                     if (meta.getMessage().isNoteOn())
                         pitches.push_back (meta.getMessage().getNoteNumber());
@@ -1028,7 +1452,7 @@ int main()
     // --- 15b. Delay: transport stop discards buffered echoes -----------------
     {
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasDelay    = true;
         cfg.delayTimeQn = 0.5;
 
@@ -1037,7 +1461,7 @@ int main()
             juce::MidiBuffer midi;
             midi.addEvent (juce::MidiMessage::noteOn  (1, 60, (juce::uint8) 100), 0);
             midi.addEvent (juce::MidiMessage::noteOff (1, 60), 256);
-            e.process (midi, block, playing (true), 0, 0, cfg);
+            processCfg (e, midi, block, playing (true), 0, 0, cfg);
             tally (midi, ons, offs);
         }
         // Stop before the first echo (11025 samples away) fires: the pending
@@ -1045,7 +1469,7 @@ int main()
         for (int i = 0; i < 200; ++i)
         {
             juce::MidiBuffer midi;
-            e.process (midi, block, playing (false), 0, 0, cfg);
+            processCfg (e, midi, block, playing (false), 0, 0, cfg);
             tally (midi, ons, offs);
         }
         check (ons == 1 && offs == 1,
@@ -1057,12 +1481,12 @@ int main()
         // All amounts zero: the note passes through untouched in time, pitch,
         // and velocity (and balanced).
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasHumanize = true;   // every humanize* amount defaults to 0
         juce::MidiBuffer midi;
         midi.addEvent (juce::MidiMessage::noteOn  (1, 60, (juce::uint8) 100), 0);
         midi.addEvent (juce::MidiMessage::noteOff (1, 60), 256);
-        e.process (midi, block, playingAt (0.0), 0, 0, cfg);
+        processCfg (e, midi, block, playingAt (0.0), 0, 0, cfg);
         int onS = -1, onV = -1, offS = -1, onP = -1;
         for (const auto meta : midi)
         {
@@ -1079,12 +1503,12 @@ int main()
         auto accentVel = [&] (double ppq)
         {
             Engine e; e.prepare (sr);
-            Engine::Config cfg;
+            TestConfig cfg;
             cfg.hasHumanize    = true;
             cfg.humanizeStepQn = 0.25;   // the beat grid
             cfg.humanizeAccent = 1.0;    // full depth
             auto midi = noteOnBuf (60, 0);
-            e.process (midi, block, playingAt (ppq), 0, 0, cfg);
+            processCfg (e, midi, block, playingAt (ppq), 0, 0, cfg);
             int v = -1;
             for (const auto meta : midi)
                 if (meta.getMessage().isNoteOn()) v = meta.getMessage().getVelocity();
@@ -1103,7 +1527,7 @@ int main()
         auto swungOnset = [&] (double ppq)
         {
             Engine e; e.prepare (sr);
-            Engine::Config cfg;
+            TestConfig cfg;
             cfg.hasHumanize    = true;
             cfg.humanizeStepQn = 1.0;
             cfg.humanizeSwing  = 0.6;
@@ -1113,13 +1537,13 @@ int main()
                 juce::MidiBuffer midi;
                 if (i == 0)
                     midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
-                e.process (midi, block, playingAt (ppq + (double) blockStart / 22050.0), 0, 0, cfg);
+                processCfg (e, midi, block, playingAt (ppq + (double) blockStart / 22050.0), 0, 0, cfg);
                 for (const auto meta : midi)
                     if (meta.getMessage().isNoteOn())
                         abs = blockStart + meta.samplePosition;
                 blockStart += block;
             }
-            { juce::MidiBuffer m; e.process (m, block, playing (false), 0, 0, cfg); }
+            { juce::MidiBuffer m; processCfg (e, m, block, playing (false), 0, 0, cfg); }
             return abs;
         };
         check (swungOnset (0.0) == 0,
@@ -1132,7 +1556,7 @@ int main()
         // a Random generator through a fully-cranked Humanize for a while, then
         // stop. Every note-on must still be matched by a note-off.
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasRandom       = true;
         cfg.hasHumanize     = true;
         cfg.humanizeStepQn  = 0.25;
@@ -1148,7 +1572,7 @@ int main()
         for (int i = 0; i < 300; ++i)
         {
             juce::MidiBuffer midi;
-            e.process (midi, block, playingAt (qn), 0, 0, cfg);
+            processCfg (e, midi, block, playingAt (qn), 0, 0, cfg);
             tally (midi, ons, offs);
             qn += (double) block / 22050.0;
         }
@@ -1156,7 +1580,7 @@ int main()
         for (int i = 0; i < 20; ++i)
         {
             juce::MidiBuffer midi;
-            e.process (midi, block, playing (false), 0, 0, cfg);
+            processCfg (e, midi, block, playing (false), 0, 0, cfg);
             tally (midi, ons, offs);
         }
         check (ons > 0, "Humanize: notes flowed through while playing");
@@ -1171,7 +1595,7 @@ int main()
         auto run = [&] ()
         {
             Engine e; e.prepare (sr);
-            Engine::Config cfg;
+            TestConfig cfg;
             cfg.hasHumanize     = true;
             cfg.humanizeStepQn  = 0.25;
             cfg.humanizeTimeJit = 0.7;
@@ -1186,7 +1610,7 @@ int main()
                 // One fixed note per block: on at the block start, off mid-block.
                 midi.addEvent (juce::MidiMessage::noteOn  (1, 60 + (i % 5), (juce::uint8) 100), 0);
                 midi.addEvent (juce::MidiMessage::noteOff (1, 60 + (i % 5)), 200);
-                e.process (midi, block, playingAt (qn), 0, 0, cfg);
+                processCfg (e, midi, block, playingAt (qn), 0, 0, cfg);
                 for (const auto meta : midi)
                     if (meta.getMessage().isNoteOn())
                         evs.push_back ({ blockStart + meta.samplePosition,
@@ -1211,7 +1635,7 @@ int main()
                              int& onsN, int& offsN)
         {
             Engine e; e.prepare (sr);
-            Engine::Config cfg;
+            TestConfig cfg;
             cfg.hasStrum       = true;
             cfg.strumMode      = mode;
             cfg.strumSpreadSec = spreadSec;
@@ -1220,7 +1644,7 @@ int main()
             auto pump = [&] (juce::MidiBuffer&& in)
             {
                 juce::MidiBuffer midi (in);
-                e.process (midi, block, playing (false), 0, 0, cfg);
+                processCfg (e, midi, block, playing (false), 0, 0, cfg);
                 for (const auto meta : midi)
                 {
                     const auto m = meta.getMessage();
@@ -1282,11 +1706,11 @@ int main()
     {
         // Spread 0 = bypass: the chord passes through together at sample 0.
         Engine e; e.prepare (sr);
-        Engine::Config cfg; cfg.hasStrum = true; cfg.strumSpreadSec = 0.0;
+        TestConfig cfg; cfg.hasStrum = true; cfg.strumSpreadSec = 0.0;
         juce::MidiBuffer midi;
         midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
         midi.addEvent (juce::MidiMessage::noteOn (1, 64, (juce::uint8) 100), 0);
-        e.process (midi, block, playing (false), 0, 0, cfg);
+        processCfg (e, midi, block, playing (false), 0, 0, cfg);
         int ons = 0, at0 = 0;
         for (const auto meta : midi)
             if (meta.getMessage().isNoteOn()) { ++ons; if (meta.samplePosition == 0) ++at0; }
@@ -1296,7 +1720,7 @@ int main()
         // Repeat: a held chord is re-strummed on the 1/2-bar grid — more strikes
         // than the chord has notes — and it all balances once released + stopped.
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasStrum       = true;
         cfg.strumSpreadSec = 0.02;
         cfg.strumRepeatQn  = 2.0;   // 1/2 bar
@@ -1305,7 +1729,7 @@ int main()
         auto pump = [&] (juce::MidiBuffer&& in, bool isPlaying)
         {
             juce::MidiBuffer midi (in);
-            e.process (midi, block, isPlaying ? playingAt (qn) : playing (false), 0, 0, cfg);
+            processCfg (e, midi, block, isPlaying ? playingAt (qn) : playing (false), 0, 0, cfg);
             for (const auto meta : midi)
             {
                 if (meta.getMessage().isNoteOn())  ++on;
@@ -1342,7 +1766,7 @@ int main()
         // mid-window: with a Scale gen at 1/4 steps and a 1-bar repeat
         // (window C D E F), beat 3 is the window's 4th step, F (53).
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasScaleGen    = true;
         cfg.scaleStepQn    = 1.0;
         cfg.scaleRepeatQn  = 4.0;
@@ -1355,7 +1779,7 @@ int main()
         for (int i = 0; i < 200 && firstOnAbs < 0; ++i)
         {
             juce::MidiBuffer midi;
-            e.process (midi, block, playingAt (qn), 0, 0, cfg);
+            processCfg (e, midi, block, playingAt (qn), 0, 0, cfg);
             for (const auto meta : midi)
                 if (meta.getMessage().isNoteOn())
                 {
@@ -1366,7 +1790,7 @@ int main()
             blockStart += block;
             qn += qnPerBlock;
         }
-        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); }
+        { juce::MidiBuffer midi; processCfg (e, midi, block, playing (false), 0, 0, cfg); }
         check (firstOnAbs == 11025,
                "mid-bar start: first step lands on the song's next grid point");
         check (firstPitch == 53,
@@ -1378,7 +1802,7 @@ int main()
         // Scale gen with a 1-bar window (C D E F): only C and D may ever
         // sound, alternating — freewheeling counters would drift onto E/F.
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasScaleGen    = true;
         cfg.scaleStepQn    = 1.0;
         cfg.scaleRepeatQn  = 4.0;
@@ -1393,13 +1817,13 @@ int main()
             if (qn + qnPerBlock > 2.0)
                 qn = 0.0;   // the wrap
             juce::MidiBuffer midi;
-            e.process (midi, block, playingAt (qn), 0, 0, cfg);
+            processCfg (e, midi, block, playingAt (qn), 0, 0, cfg);
             for (const auto meta : midi)
                 if (meta.getMessage().isNoteOn())
                     pitches.push_back (meta.getMessage().getNoteNumber());
             qn += qnPerBlock;
         }
-        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); }
+        { juce::MidiBuffer midi; processCfg (e, midi, block, playing (false), 0, 0, cfg); }
         check (pitches == std::vector<int> { 48, 50, 48, 50, 48, 50 },
                "loop wrap: pattern position follows the host ppq back");
     }
@@ -1409,23 +1833,23 @@ int main()
         // generators exactly like a host transport. (A null position still
         // produces nothing — that is the processor's cue to synthesize.)
         Engine e; e.prepare (sr);
-        Engine::Config cfg; cfg.hasRandom = true;
+        TestConfig cfg; cfg.hasRandom = true;
         int ons = 0, offs = 0;
         double qn = 0.0;
         for (int i = 0; i < 100; ++i)
         {
             juce::MidiBuffer midi;
-            e.process (midi, block, playingAt (qn), 0, 0, cfg);
+            processCfg (e, midi, block, playingAt (qn), 0, 0, cfg);
             tally (midi, ons, offs);
             qn += (double) block / 22050.0;
         }
-        { juce::MidiBuffer midi; e.process (midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
+        { juce::MidiBuffer midi; processCfg (e, midi, block, playing (false), 0, 0, cfg); tally (midi, ons, offs); }
         check (ons > 0 && ons == offs,
                "synthesized internal-transport position drives the generators");
 
         juce::MidiBuffer midi;
         juce::Optional<juce::AudioPlayHead::PositionInfo> nullPos;
-        e.process (midi, block, nullPos, 0, 0, cfg);
+        processCfg (e, midi, block, nullPos, 0, 0, cfg);
         int nOns = 0, nOffs = 0; tally (midi, nOns, nOffs);
         check (nOns == 0, "a null position (no playhead) generates nothing");
     }
@@ -1438,7 +1862,7 @@ int main()
                              int globalRoot, int globalScale)
         {
             Engine e; e.prepare (sr);
-            Engine::Config cfg;
+            TestConfig cfg;
             cfg.hasMirror    = true;
             cfg.mirrorCenter = center;
             cfg.mirrorLow    = low;
@@ -1449,7 +1873,7 @@ int main()
             juce::MidiBuffer midi;
             midi.addEvent (juce::MidiMessage::noteOn  (1, inNote, (juce::uint8) 100), 0);
             midi.addEvent (juce::MidiMessage::noteOff (1, inNote), 256);
-            e.process (midi, block, playing (false), globalRoot, globalScale, cfg);
+            processCfg (e, midi, block, playing (false), globalRoot, globalScale, cfg);
             int on = -1, off = -1, ons = 0;
             for (const auto meta : midi)
             {
@@ -1511,14 +1935,14 @@ int main()
         // Add mode, Triad in C major: playing C4 (60) yields C4 + E4 + G4, and
         // releasing the key releases all three (no hang).
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasHarmonizer = true;
         cfg.harmType      = 0;   // Triad
         cfg.harmMode      = ModuleOptions::kHarmAdd;
         juce::MidiBuffer midi;
         midi.addEvent (juce::MidiMessage::noteOn  (1, 60, (juce::uint8) 100), 0);
         midi.addEvent (juce::MidiMessage::noteOff (1, 60), 256);
-        e.process (midi, block, playing (false), 0, 0, cfg);
+        processCfg (e, midi, block, playing (false), 0, 0, cfg);
         std::vector<int> ons, offs;
         for (const auto meta : midi)
         {
@@ -1537,12 +1961,12 @@ int main()
         // Scale Off = fixed chromatic intervals: a Triad on C# (61) is a major
         // triad in semitones, C#-F-G# (61, 65, 68), regardless of key.
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasHarmonizer = true;
         cfg.harmType      = 0;   // Triad
         cfg.harmScale     = ModuleOptions::kScaleOff;
         auto midi = noteOnBuf (61);
-        e.process (midi, block, playing (false), 0, 0, cfg);
+        processCfg (e, midi, block, playing (false), 0, 0, cfg);
         std::vector<int> ons;
         for (const auto meta : midi)
             if (meta.getMessage().isNoteOn()) ons.push_back (meta.getMessage().getNoteNumber());
@@ -1554,7 +1978,7 @@ int main()
         // Replace mode (Octave type): a new note cuts the previous note and its
         // stack. Play C4 (-> C4 C5), then C3 (-> cut C4/C5, sound C3 C4).
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasHarmonizer = true;
         cfg.harmType      = ModuleOptions::kHarmOctave;
         cfg.harmMode      = ModuleOptions::kHarmReplace;
@@ -1562,7 +1986,7 @@ int main()
         auto pump = [&] (juce::MidiBuffer&& in, std::vector<int>* onsOut, std::vector<int>* offsOut)
         {
             juce::MidiBuffer midi (in);
-            e.process (midi, block, playing (false), 0, 0, cfg);
+            processCfg (e, midi, block, playing (false), 0, 0, cfg);
             for (const auto meta : midi)
             {
                 const auto m = meta.getMessage();
@@ -1594,7 +2018,7 @@ int main()
     {
         // Top mode (Octave type): only the highest held note is harmonised.
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasHarmonizer = true;
         cfg.harmType      = ModuleOptions::kHarmOctave;
         cfg.harmMode      = ModuleOptions::kHarmTop;
@@ -1602,7 +2026,7 @@ int main()
         auto pump = [&] (juce::MidiBuffer&& in, std::vector<int>* onsOut, std::vector<int>* offsOut)
         {
             juce::MidiBuffer midi (in);
-            e.process (midi, block, playing (false), 0, 0, cfg);
+            processCfg (e, midi, block, playing (false), 0, 0, cfg);
             for (const auto meta : midi)
             {
                 const auto m = meta.getMessage();
@@ -1645,14 +2069,14 @@ int main()
         // transposes the whole stack. Add-mode Octave on C4 (60, 72) + Shift +2
         // semitones (Scale Off) -> 62, 74.
         Engine e; e.prepare (sr);
-        Engine::Config cfg;
+        TestConfig cfg;
         cfg.hasHarmonizer = true;
         cfg.harmType      = ModuleOptions::kHarmOctave;
         cfg.hasShift      = true;
         cfg.shiftAmount   = 2;
         cfg.shiftScale    = ModuleOptions::kScaleOff;
         auto midi = noteOnBuf (60);
-        e.process (midi, block, playing (false), 0, 0, cfg);
+        processCfg (e, midi, block, playing (false), 0, 0, cfg);
         std::vector<int> ons;
         for (const auto meta : midi)
             if (meta.getMessage().isNoteOn()) ons.push_back (meta.getMessage().getNoteNumber());

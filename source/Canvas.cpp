@@ -3,6 +3,7 @@
 #include "PluginEditor.h"
 #include "ProgressionStepList.h"
 #include "Theme.h"
+#include <cmath>
 
 Canvas::Canvas (CurrentAudioProcessor& processor, CurrentAudioProcessorEditor& editor)
     : proc (processor), owner (editor)
@@ -34,6 +35,8 @@ void Canvas::rebuildFromModel()
 {
     nodes.clear();
     selectedNode = nullptr;
+    selectedCable = {};
+    cableDrag = {};
     for (const auto& m : proc.modules())
         addNodeComponent (m);
 }
@@ -328,7 +331,12 @@ void Canvas::addNodeComponent (const ModuleInstance& instance)
     node->onMoved = [this] (int id, juce::Point<int> pos)
     {
         proc.moveModule (id, (float) pos.getX(), (float) pos.getY());
+        repaint();   // the cables track their nodes
     };
+
+    node->onPortDragStart = [this] (ModuleComponent& n, const juce::MouseEvent& e) { beginCableDrag (n, e); };
+    node->onPortDrag      = [this] (const juce::MouseEvent& e) { updateCableDrag (e); };
+    node->onPortDragEnd   = [this] (const juce::MouseEvent& e) { endCableDrag (e); };
 
     node->onOpenSettings = [this] (ModuleComponent& n)
     {
@@ -1134,6 +1142,13 @@ void Canvas::openDroneDialog (ModuleComponent& node)
 
 void Canvas::selectNode (ModuleComponent* node)
 {
+    // Node and cable selection are mutually exclusive.
+    if (node != nullptr && selectedCable.valid)
+    {
+        selectedCable = {};
+        repaint();
+    }
+
     if (selectedNode == node)
         return;
 
@@ -1148,8 +1163,8 @@ void Canvas::selectNode (ModuleComponent* node)
 
 void Canvas::deleteSelected()
 {
-    // Phase 2 convenience so placed nodes aren't permanent while testing the
-    // canvas. Removes from both the view and the model.
+    // Removes from both the view and the model; the model drops the module's
+    // cables with it.
     if (selectedNode == nullptr)
         return;
 
@@ -1166,6 +1181,116 @@ void Canvas::deleteSelected()
     selectedNode = nullptr;
 
     proc.removeModule (id);
+    repaint();   // the module's cables disappear with it
+}
+
+// --- Wiring -------------------------------------------------------------------
+
+ModuleComponent* Canvas::nodeForId (int id) const
+{
+    for (const auto& n : nodes)
+        if (n->moduleId() == id)
+            return n.get();
+    return nullptr;
+}
+
+juce::Path Canvas::cablePath (juce::Point<float> from, juce::Point<float> to) const
+{
+    // A horizontal-tangent bezier: cables leave an output port rightward and
+    // enter an input port leftward, whatever the nodes' relative positions.
+    const float dx = juce::jmax (40.0f, std::abs (to.x - from.x) * 0.5f);
+    juce::Path p;
+    p.startNewSubPath (from);
+    p.cubicTo (from.translated (dx, 0.0f), to.translated (-dx, 0.0f), to);
+    return p;
+}
+
+void Canvas::paintCables (juce::Graphics& g)
+{
+    const auto& s = CurrentTheme::active();
+
+    for (const auto& c : proc.connections())
+    {
+        auto* fromNode = nodeForId (c.fromId);
+        auto* toNode   = nodeForId (c.toId);
+        if (fromNode == nullptr || toNode == nullptr)
+            continue;
+
+        const auto path = cablePath (fromNode->outputPortCentre(), toNode->inputPortCentre());
+        const bool sel  = selectedCable.valid && selectedCable.fromId == c.fromId
+                                              && selectedCable.toId == c.toId;
+        g.setColour (sel ? s.accent : s.port);
+        g.strokePath (path, juce::PathStrokeType (sel ? 3.0f : 2.0f,
+                                                  juce::PathStrokeType::curved,
+                                                  juce::PathStrokeType::rounded));
+
+        // Flow arrow at the cable's midpoint (the requirements' signal-
+        // direction cue), oriented along the curve.
+        const float len   = path.getLength();
+        const auto  mid   = path.getPointAlongPath (len * 0.5f);
+        const auto  ahead = path.getPointAlongPath (juce::jmin (len, len * 0.5f + 6.0f));
+        const float angle = std::atan2 (ahead.y - mid.y, ahead.x - mid.x);
+        juce::Path arrow;
+        arrow.addTriangle (6.0f, 0.0f, -4.0f, 4.5f, -4.0f, -4.5f);
+        g.fillPath (arrow, juce::AffineTransform::rotation (angle)
+                               .translated (mid.x, mid.y));
+    }
+
+    // The in-flight connect gesture: a live cable from the source's output
+    // port to the mouse.
+    if (cableDrag.active)
+        if (auto* fromNode = nodeForId (cableDrag.fromId))
+        {
+            g.setColour (s.accent);
+            g.strokePath (cablePath (fromNode->outputPortCentre(), cableDrag.toPos),
+                          juce::PathStrokeType (2.0f, juce::PathStrokeType::curved,
+                                                juce::PathStrokeType::rounded));
+        }
+}
+
+void Canvas::beginCableDrag (ModuleComponent& fromNode, const juce::MouseEvent& e)
+{
+    cableDrag.active = true;
+    cableDrag.fromId = fromNode.moduleId();
+    cableDrag.toPos  = e.getEventRelativeTo (this).position;
+    repaint();
+}
+
+void Canvas::updateCableDrag (const juce::MouseEvent& e)
+{
+    if (! cableDrag.active)
+        return;
+    cableDrag.toPos = e.getEventRelativeTo (this).position;
+    repaint();
+}
+
+void Canvas::endCableDrag (const juce::MouseEvent& e)
+{
+    if (! cableDrag.active)
+        return;
+    cableDrag.active = false;
+
+    const auto pos = e.getEventRelativeTo (this).position;
+
+    // Dropping anywhere on a module that has an input port connects to it —
+    // one input per node makes the whole node an unambiguous, touch-friendly
+    // target (with the port's enlarged radius as a fallback just outside the
+    // bounds). The processor validates (ports, duplicates, cycles); a refused
+    // drop simply snaps back.
+    for (const auto& n : nodes)
+    {
+        if (n->moduleId() == cableDrag.fromId || ! moduleHasInputPort (n->moduleType()))
+            continue;
+        const bool onNode = n->getBounds().toFloat().contains (pos);
+        const bool onPort = n->inputPortCentre().getDistanceFrom (pos)
+                                <= (float) ModuleComponent::kPortHitRadius;
+        if (onNode || onPort)
+        {
+            proc.addConnection (cableDrag.fromId, n->moduleId());
+            break;
+        }
+    }
+    repaint();
 }
 
 void Canvas::paint (juce::Graphics& g)
@@ -1184,6 +1309,9 @@ void Canvas::paint (juce::Graphics& g)
     for (int y = step; y < getHeight(); y += step)
         g.drawHorizontalLine (y, 0.0f, (float) getWidth());
 
+    // Cables, under the nodes (children paint after this method).
+    paintCables (g);
+
     // Drop hint while a palette item hovers.
     g.setColour (dragHovering ? s.accent : s.panelBorder);
     g.drawRoundedRectangle (b.reduced (0.75f), 6.0f, dragHovering ? 2.5f : 1.0f);
@@ -1200,17 +1328,47 @@ void Canvas::paint (juce::Graphics& g)
 
 void Canvas::resized() {}
 
-void Canvas::mouseDown (const juce::MouseEvent&)
+void Canvas::mouseDown (const juce::MouseEvent& e)
 {
+    // A click near a cable selects it (checked before the empty-canvas
+    // deselect, since cables live on the canvas background).
+    for (const auto& c : proc.connections())
+    {
+        auto* fromNode = nodeForId (c.fromId);
+        auto* toNode   = nodeForId (c.toId);
+        if (fromNode == nullptr || toNode == nullptr)
+            continue;
+        const auto path = cablePath (fromNode->outputPortCentre(), toNode->inputPortCentre());
+        juce::Point<float> nearest;
+        path.getNearestPoint (e.position, nearest);
+        if (nearest.getDistanceFrom (e.position) <= 6.0f)
+        {
+            selectNode (nullptr);
+            selectedCable = { true, c.fromId, c.toId };
+            grabKeyboardFocus();
+            repaint();
+            return;
+        }
+    }
+
     // Click on empty canvas clears selection and takes focus (so Delete works).
+    selectedCable = {};
     selectNode (nullptr);
     grabKeyboardFocus();
+    repaint();
 }
 
 bool Canvas::keyPressed (const juce::KeyPress& key)
 {
     if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
     {
+        if (selectedCable.valid)
+        {
+            proc.removeConnection (selectedCable.fromId, selectedCable.toId);
+            selectedCable = {};
+            repaint();
+            return true;
+        }
         deleteSelected();
         return true;
     }

@@ -1,36 +1,22 @@
 #include "Engine.h"
 #include "ScaleTables.h"
-#include "ModuleSettings.h"   // ModuleOptions::kMode* — the shared mode indices
+#include "ModuleSettings.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
 
 namespace
 {
-    // Run `emit(channel)` once per Output-module channel, or once with the
-    // event's own channel when no Output module is narrowing things (mask 0).
-    template <typename Fn>
-    void forEachOutChannel (std::uint16_t outMask, int ownChannel, Fn&& emit)
-    {
-        if (outMask == 0)
-        {
-            emit (ownChannel);
-            return;
-        }
-        for (int ch = 1; ch <= 16; ++ch)
-            if ((outMask & (1u << (ch - 1))) != 0)
-                emit (ch);
-    }
-
-    bool inputAccepts (std::uint16_t inMask, int channel)
-    {
-        return channel >= 1 && channel <= 16
-            && (inMask & (1u << (channel - 1))) != 0;
-    }
-
     // Echoes quieter than this aren't scheduled — the velocity decay is what
     // terminates the Delay's feedback chain.
     constexpr int kMinEchoVelocity = 5;
+
+    // Generated notes' fixed velocity (an Output or downstream module may
+    // reshape it; the generators themselves have no velocity control yet).
+    constexpr int kGenVelocity = 100;
+
+    // Generators emit on this channel; an Output node restamps on the way out.
+    constexpr int kGenChannel = 1;
 
     // Mathematical mod for grid indices: a negative position (host pre-roll /
     // count-in) must wrap into the pattern, not mirror around zero as C's %
@@ -108,10 +94,10 @@ namespace
     }
 
     // A stable pseudo-random value in [0, 1) from integer inputs, so Humanize's
-    // "random" jitter is a deterministic function of song position (grid index)
-    // and note — the humanized feel then repeats identically on every host loop
-    // pass instead of shimmering. `salt` separates the independent draws (timing
-    // vs. velocity vs. length). A finalizer-style integer hash (splitmix64-ish).
+    // and Strum's "random" jitter is a deterministic function of song position
+    // (grid index) and note — the humanized feel then repeats identically on
+    // every host loop pass instead of shimmering. `salt` separates the
+    // independent draws. A finalizer-style integer hash (splitmix64-ish).
     double hash01 (juce::int64 gridIndex, int noteKey, int salt)
     {
         std::uint64_t h = (std::uint64_t) gridIndex * 0x9E3779B97F4A7C15ULL;
@@ -145,6 +131,121 @@ namespace
     constexpr double kStrumJitterVelRange = 20.0;   // +/-20 velocity
     constexpr double kStrumVelTiltDepth   = 0.6;    // full tilt = +/-60% across the fan
     constexpr int    kStrumSaltTime = 11, kStrumSaltVel = 12;
+
+    // Emit note-offs for everything in a gate list (transport-stop flush /
+    // module cleanup) and clear it.
+    void flushActive (std::vector<Engine::ActiveNote>& act, juce::MidiBuffer& out, int sample)
+    {
+        for (const auto& a : act)
+            out.addEvent (juce::MidiMessage::noteOff (a.channel, a.note), sample);
+        act.clear();
+    }
+
+    // Release the gate-list notes whose countdown ends inside this block; age
+    // the rest into the next block.
+    void releaseDueGates (std::vector<Engine::ActiveNote>& act, juce::MidiBuffer& out, int numSamples)
+    {
+        for (auto it = act.begin(); it != act.end();)
+        {
+            if (it->samplesLeft < numSamples)
+            {
+                out.addEvent (juce::MidiMessage::noteOff (it->channel, it->note),
+                              juce::jmax (0, it->samplesLeft));
+                it = act.erase (it);
+            }
+            else
+            {
+                it->samplesLeft -= numSamples;
+                ++it;
+            }
+        }
+    }
+
+    // Remove the first (channel, note) match from a key list; true if found.
+    bool eraseKey (std::vector<Engine::KeyRef>& keys, int channel, int note)
+    {
+        for (auto it = keys.begin(); it != keys.end(); ++it)
+            if (it->channel == channel && it->note == note)
+            {
+                keys.erase (it);
+                return true;
+            }
+        return false;
+    }
+
+    // Walk one module's grid across this block: a step fires at every boundary
+    // k * stepQn inside [blockStartQn, blockEndQn), and `step` receives the
+    // boundary's index counted from the song's bar 0 (which is what locates
+    // repeat windows and cycles) plus its block sample. The gate is capped one
+    // sample short of the step so even a 100% gate's note-off can't collide
+    // with the next same-pitch note-on.
+    template <typename Fn>
+    void runSteps (const Engine::BlockContext& ctx, double stepQn, double gateFrac, Fn&& step)
+    {
+        const double q           = juce::jmax (0.001, stepQn);
+        const double stepSamples = juce::jmax (1.0, ctx.samplesPerQn * q);
+        const int    gateSamples = juce::jlimit (1, juce::jmax (1, (int) stepSamples - 1),
+                                                 (int) (stepSamples * gateFrac));
+        // std::ceil, not integer truncation: a negative block start (host
+        // pre-roll) must still round up to the boundary at or after it.
+        for (auto k = (juce::int64) std::ceil (ctx.blockStartQn / q); ; ++k)
+        {
+            const double qn = (double) k * q;
+            if (qn >= ctx.blockEndQn)
+                break;
+            const int s = juce::jlimit (0, ctx.numSamples - 1,
+                                        (int) std::llround ((qn - ctx.blockStartQn) * ctx.samplesPerQn));
+            step (k, s, gateSamples);
+        }
+    }
+
+    // How many steps fit in a repeat window; 0 = Endless (no window).
+    int stepsPerWindow (double repeatQn, double stepQn)
+    {
+        return repeatQn > 0.0
+            ? juce::jmax (1, (int) std::llround (repeatQn / juce::jmax (0.001, stepQn)))
+            : 0;
+    }
+
+    // The shared pitch-mapper skeleton: map each note-on's pitch, remember
+    // (in -> out) in `sounding`, release the remembered pitch on the note-off.
+    // mapAt(note, sample) returns the mapped pitch or -1 to drop the note
+    // (nothing emitted, nothing booked — Mirror's Limit mode). A note-off with
+    // no remembered entry is swallowed (its on was dropped or predates this
+    // node), so no stray release travels downstream.
+    template <typename MapFn>
+    void mapNoteStream (const juce::MidiBuffer& in, juce::MidiBuffer& out,
+                        std::vector<Engine::SoundingNote>& sounding, MapFn&& mapAt)
+    {
+        for (const auto meta : in)
+        {
+            const auto m = meta.getMessage();
+            const int  s = meta.samplePosition;
+            if (m.isNoteOn())
+            {
+                const int p = mapAt (m.getNoteNumber(), s);
+                if (p < 0)
+                    continue;
+                out.addEvent (juce::MidiMessage::noteOn (m.getChannel(), p,
+                                                         (juce::uint8) m.getVelocity()), s);
+                sounding.push_back ({ m.getChannel(), m.getNoteNumber(), m.getChannel(), p });
+            }
+            else if (m.isNoteOff())
+            {
+                for (auto it = sounding.begin(); it != sounding.end(); ++it)
+                    if (it->inChannel == m.getChannel() && it->inNote == m.getNoteNumber())
+                    {
+                        out.addEvent (juce::MidiMessage::noteOff (it->outChannel, it->outNote), s);
+                        sounding.erase (it);
+                        break;
+                    }
+            }
+            else
+            {
+                out.addEvent (m, s);
+            }
+        }
+    }
 }
 
 void Engine::prepare (double sampleRate)
@@ -155,146 +256,19 @@ void Engine::prepare (double sampleRate)
 
 void Engine::reset()
 {
-    held.fill (false);
-    activeGen.clear();
-    activePass.clear();
-    harmHeld.clear();
-    pendingEchoes.clear();
-    pendingQuant.clear();
-    pendingHuman.clear();
-    humanHeld.clear();
-    strumGroup = {};
-    pendingStrum.clear();
-    strumHeld.clear();
-    strumIndex = 0;
+    states.clear();
+    hostSounding.clear();
+    lastTopologyVersion = -1;
     fallbackQn = 0.0;
     wasPlaying = false;
-}
-
-int Engine::mapPitch (int note, int root, int scaleIndex,
-                      int progIndex, const Config& cfg) const
-{
-    int p = note;
-    // Scale Off means "don't force onto a scale", so the snap is simply skipped
-    // — passing notes stay chromatic.
-    if (cfg.hasScaleMod && cfg.scaleModScale != ModuleOptions::kScaleOff)
-        p = ScaleTables::snapToScale (p,
-                                      cfg.scaleModRoot  >= 0 ? cfg.scaleModRoot  : root,
-                                      cfg.scaleModScale >= 0 ? cfg.scaleModScale : scaleIndex);
-    if (cfg.hasProgression && cfg.progStepCount > 0)
-    {
-        const int i = juce::jlimit (0, cfg.progStepCount - 1, progIndex);
-        const int degree = cfg.progDegrees[(size_t) i];
-        const int octave = cfg.progOctaves[(size_t) i];
-        // Degree I / octave 0 is a strict no-op (like an idle Shift): the
-        // degree walk would otherwise snap out-of-scale notes to the scale.
-        if (degree != 0 || octave != 0)
-        {
-            if (degree != 0)
-            {
-                // Scale Off walks degrees chromatically (Chromatic's 12 members).
-                const int pScale = cfg.progScale == ModuleOptions::kScaleOff
-                                       ? ModuleOptions::kChromaticScale
-                                       : cfg.progScale >= 0 ? cfg.progScale : scaleIndex;
-                p = ScaleTables::stepInScale (p,
-                                              cfg.progRoot >= 0 ? cfg.progRoot : root,
-                                              pScale, degree);
-            }
-            p = juce::jlimit (0, 127, p + 12 * octave);
-        }
-    }
-    // Amount 0 is a strict no-op: degree-shifting snaps out-of-scale notes to
-    // the scale as part of the walk, but an idle Shift must not quantize.
-    if (cfg.hasShift && cfg.shiftAmount != 0)
-    {
-        if (cfg.shiftScale == ModuleOptions::kScaleOff)
-            p = juce::jlimit (0, 127, p + cfg.shiftAmount);
-        else
-            p = ScaleTables::stepInScale (p,
-                                          cfg.shiftRoot >= 0 ? cfg.shiftRoot : root,
-                                          cfg.shiftScale >= 0 ? cfg.shiftScale : scaleIndex,
-                                          cfg.shiftAmount);
-    }
-    if (cfg.hasMirror)
-    {
-        const bool chromatic = cfg.mirrorScale == ModuleOptions::kScaleOff;
-        const int  mRoot  = cfg.mirrorRoot  >= 0 ? cfg.mirrorRoot  : root;
-        const int  mScale = cfg.mirrorScale >= 0 ? cfg.mirrorScale : scaleIndex;
-
-        // Snap the window edges into the scale in diatonic mode so the whole
-        // module stays in key — a clamped straggler then also lands in-scale.
-        int lo = juce::jlimit (0, 127, cfg.mirrorLow);
-        int hi = juce::jlimit (0, 127, cfg.mirrorHigh);
-        if (! chromatic)
-        {
-            lo = ScaleTables::snapToScale (lo, mRoot, mScale);
-            hi = ScaleTables::snapToScale (hi, mRoot, mScale);
-        }
-        if (lo > hi)
-            std::swap (lo, hi);
-
-        // 1. Invert around the centre (Off = skip; the note falls straight
-        //    through to the window stage).
-        if (cfg.mirrorCenter >= 0)
-            p = reflectAround (p, cfg.mirrorCenter, mRoot, mScale, chromatic);
-
-        // 2. Keep it inside [lo, hi]. Limit drops an out-of-window note; Mirror
-        //    folds it once across the nearest edge, clamping if a single fold
-        //    still overshoots (a note more than a window-width out).
-        if (p < lo || p > hi)
-        {
-            if (cfg.mirrorBounds == ModuleOptions::kMirrorLimit)
-                return -1;   // dropped: the caller emits nothing, books no off
-            p = reflectAround (p, p < lo ? lo : hi, mRoot, mScale, chromatic);
-            p = juce::jlimit (lo, hi, p);
-        }
-    }
-    return p;
-}
-
-void Engine::flushGeneratedNotes (juce::MidiBuffer& midi, int sample)
-{
-    for (const auto& a : activeGen)
-        midi.addEvent (juce::MidiMessage::noteOff (a.channel, a.note), sample);
-    activeGen.clear();
-}
-
-void Engine::flushPassedNotes (juce::MidiBuffer& midi, int sample)
-{
-    for (const auto& p : activePass)
-        midi.addEvent (juce::MidiMessage::noteOff (p.outChannel, p.outNote), sample);
-    activePass.clear();
 }
 
 void Engine::process (juce::MidiBuffer& midi,
                       int numSamples,
                       const juce::Optional<juce::AudioPlayHead::PositionInfo>& pos,
                       int root, int scaleIndex,
-                      const Config& cfg)
+                      const GraphSnapshot* graph)
 {
-    // No modules on the canvas → true pass-through. If modules were just removed
-    // while notes were still sounding, release them (generated and mapped
-    // pass-through alike) so nothing hangs — the raw note-offs arriving from now
-    // on would no longer match what the chain emitted.
-    if (! cfg.anyModule())
-    {
-        if (! activeGen.empty())
-            flushGeneratedNotes (midi, 0);
-        if (! activePass.empty())
-            flushPassedNotes (midi, 0);
-        held.fill (false);
-        harmHeld.clear();
-        pendingEchoes.clear();
-        pendingQuant.clear();
-        pendingHuman.clear();
-        humanHeld.clear();
-        strumGroup = {};
-        pendingStrum.clear();
-        strumHeld.clear();
-        wasPlaying = false;
-        return;
-    }
-
     bool isPlaying = false;
     double bpm = 120.0;
     juce::Optional<double> hostPpq;
@@ -309,205 +283,636 @@ void Engine::process (juce::MidiBuffer& midi,
 
     const double samplesPerQn = juce::jmax (1.0, (60.0 / bpm) * sr);
 
-    // Transport start: nothing to rewind — every grid below is derived from
-    // the song position — but the ppq fallback re-anchors to zero so a host
-    // that reports no ppq still counts its grids from the moment play was
-    // pressed.
+    // Transport start: nothing to rewind — every grid is derived from the song
+    // position — but the ppq fallback re-anchors to zero so a host that
+    // reports no ppq still counts its grids from the moment play was pressed.
     if (isPlaying && ! wasPlaying && ! hostPpq.hasValue())
         fallbackQn = 0.0;
 
     // The block's song position in quarter notes, owning the half-open range
     // [blockStartQn, blockEndQn): a grid boundary exactly on the block start
     // fires here, one exactly on the end fires next block — so a host loop
-    // wrap landing on a boundary can neither double-fire nor skip it. All
-    // grids are re-derived from this each block (the LAM master-clock model);
-    // there are no counters to drift across loop wraps or tempo changes.
+    // wrap landing on a boundary can neither double-fire nor skip it.
     const double blockStartQn = hostPpq.hasValue() ? *hostPpq : fallbackQn;
     const double blockEndQn   = blockStartQn + (double) numSamples / samplesPerQn;
     // The fallback tracks the block end even while the host is supplying ppq,
-    // so a host that stops reporting it mid-run continues seamlessly from the
-    // last known position instead of jumping to a stale anchor.
+    // so a host that stops reporting it mid-run continues seamlessly.
     if (isPlaying)
         fallbackQn = blockEndQn;
 
-    // Capture the host's incoming events, then rebuild the buffer.
+    const bool justStopped = ! isPlaying && wasPlaying;
+    wasPlaying = isPlaying;
+
+    // Capture the host's incoming events; the buffer is rebuilt from the
+    // Output nodes' streams.
     juce::MidiBuffer incoming;
     incoming.swapWith (midi);
 
-    // Transport stop: everything the engine generated is released and the
-    // Delay's buffered echoes and Quantize's deferred notes are discarded (the
-    // shared transport rule). A discarded host-held note's eventual note-off
-    // finds no activePass entry and is simply ignored — nothing hangs.
-    // Passed-through host notes are not flushed — the host still owes their
-    // note-offs (a live key is released independently of the transport).
-    if (! isPlaying && wasPlaying)
+    // Empty graph (or none yet): silence — but first release anything still
+    // sounding at the host, so deleting the last module can't hang a note.
+    if (graph == nullptr || graph->nodes.empty())
     {
-        // Humanize first, before the generated-note flush below, so on/off stay
-        // exactly balanced across the stop. A note whose humanized note-on is
-        // still buffered never reached the synth, so cancel its pending gate in
-        // activeGen (otherwise the flush would emit a note-off the synth never
-        // got an on for); a buffered note-off is releasing a note the synth IS
-        // sounding, so emit it now (its activeGen entry is already gone). The
-        // flush then releases everything still genuinely held.
-        for (const auto& hev : pendingHuman)
-        {
-            if (hev.msg.isNoteOn())
-            {
-                for (auto it = activeGen.begin(); it != activeGen.end(); ++it)
-                    if (it->channel == hev.msg.getChannel()
-                        && it->note == hev.msg.getNoteNumber())
-                    {
-                        activeGen.erase (it);
-                        break;
-                    }
-            }
-            else if (hev.msg.isNoteOff())
-                midi.addEvent (hev.msg, 0);
-        }
-        pendingHuman.clear();
-        humanHeld.clear();
-
-        // Strum, same contract as Humanize (it runs at the same late stage): a
-        // buffered note-on never reached the synth, so cancel its activeGen gate
-        // before the flush; a buffered note-off is releasing a sounding note, so
-        // emit it now. The open group's withheld notes never sounded either, so
-        // its gates are cancelled and it is dropped. strumHeld is cleared — any
-        // still-held note's real note-off arrives later and passes through
-        // undelayed (pitch unchanged), still releasing it.
-        auto cancelGate = [&] (int channel, int note)
-        {
-            for (auto it = activeGen.begin(); it != activeGen.end(); ++it)
-                if (it->channel == channel && it->note == note)
-                {
-                    activeGen.erase (it);
-                    return;
-                }
-        };
-        for (const auto& sev : pendingStrum)
-        {
-            if (sev.msg.isNoteOn())
-                cancelGate (sev.msg.getChannel(), sev.msg.getNoteNumber());
-            else if (sev.msg.isNoteOff())
-                midi.addEvent (sev.msg, 0);
-        }
-        for (const auto& n : strumGroup.notes)
-            cancelGate (n.channel, n.note);
-        pendingStrum.clear();
-        strumGroup = {};
-        strumHeld.clear();
-
-        flushGeneratedNotes (midi, 0);
-        pendingEchoes.clear();
-        pendingQuant.clear();
+        for (const auto& k : hostSounding)
+            midi.addEvent (juce::MidiMessage::noteOff (k.channel, k.note), 0);
+        hostSounding.clear();
+        states.clear();
+        if (graph != nullptr)
+            lastTopologyVersion = graph->topologyVersion;
+        return;
     }
-    wasPlaying = isPlaying;
 
-    // While the arp is running it consumes the host notes (they are its input),
-    // so they don't also pass straight through. When stopped, host notes pass
-    // through so live playing stays audible.
-    const bool swallowHostNotes = cfg.hasArp && isPlaying;
-
-    // Delay: every emitted note-on (pass-through and generated) books its first
-    // echo here; a fired echo books the next one the same way. The chain ends
-    // when the decayed velocity drops below the floor or the shifted pitch
-    // leaves the MIDI range (deliberately not clamped — repeats piling up at
-    // the range edge sound worse than the run just ending).
-    const double delaySamples = juce::jmax (1.0, samplesPerQn * cfg.delayTimeQn);
-    auto scheduleEcho = [&] (int srcNote, int channel, int srcVelocity, int atSample)
+    // Patch rewired (module or cable added/removed): release everything and
+    // start from clean per-node state. Coarse but safe — per-node in-flight
+    // bookkeeping can't be trusted across an arbitrary rewire, and the flush
+    // guarantees no hanging notes whatever changed. Settings edits keep the
+    // version, so they never cut sounding notes.
+    if (graph->topologyVersion != lastTopologyVersion)
     {
-        if (! cfg.hasDelay)
-            return;
-        const int v = juce::roundToInt ((double) srcVelocity * cfg.delayFeedback);
-        // Per-echo shift mirrors Shift: chromatic semitones with the scale Off,
-        // scale degrees with a scale active. A zero shift is a strict no-op so
-        // an un-shifted echo is never snapped onto a scale.
-        int n = srcNote;
-        if (cfg.delayShift != 0)
-            n = cfg.delayScale == ModuleOptions::kScaleOff
-                    ? srcNote + cfg.delayShift
-                    : ScaleTables::stepInScale (srcNote,
-                                                cfg.delayRoot >= 0 ? cfg.delayRoot : root,
-                                                cfg.delayScale >= 0 ? cfg.delayScale : scaleIndex,
-                                                cfg.delayShift);
-        if (v < kMinEchoVelocity || n < 0 || n > 127)
-            return;
-        pendingEchoes.push_back ({ n, channel, v, atSample + (int) delaySamples });
-    };
+        for (const auto& k : hostSounding)
+            midi.addEvent (juce::MidiMessage::noteOff (k.channel, k.note), 0);
+        hostSounding.clear();
+        states.clear();
+        lastTopologyVersion = graph->topologyVersion;
+    }
 
-    // Quantize needs the transport grid, so it only re-times while playing;
-    // stopped, everything passes straight through (live playing stays live).
-    const bool   quantActive  = cfg.hasQuantize && isPlaying;
-    const double quantStepQn  = juce::jmax (0.001, cfg.quantStepQn);
-    const double quantSwingQn = juce::jlimit (0.0, 1.0, cfg.quantSwing)
-                                    * 0.5 * quantStepQn;
+    const BlockContext ctx { numSamples, isPlaying, justStopped,
+                             blockStartQn, blockEndQn, samplesPerQn,
+                             root, scaleIndex };
 
-    // The next swung grid point at or after block sample `s`, as a
-    // block-relative sample (possibly past this block's end). Boundary index
-    // j counts from the song's bar 0; swing pushes odd boundaries late by
-    // swing/2 of a step (pair-based model — even boundaries, the pair
-    // starts, stay put), so the parity — and with it the shuffle — is fixed
-    // to the song's bars, not to when play was pressed. The scan starts one
-    // boundary back because a swung odd point can still be ahead of `s` when
-    // its straight position has already passed.
-    auto quantTarget = [&] (int s) -> int
+    const int n = (int) graph->nodes.size();
+    if ((int) nodeBuf.size() < n)
+        nodeBuf.resize ((size_t) n);
+
+    juce::MidiBuffer inBuf;
+    for (int i = 0; i < n; ++i)
     {
-        // Half a sample of tolerance: `s` is itself rounded to a whole
-        // sample, so a note sitting exactly on a boundary can read as a hair
-        // past it — without the allowance it would be deferred a full step.
-        const double atQn = blockStartQn + ((double) s - 0.5) / samplesPerQn;
-        for (auto j = (juce::int64) std::floor (atQn / quantStepQn) - 1; ; ++j)
+        const auto& node = graph->nodes[(size_t) i];
+        nodeBuf[(size_t) i].clear();
+
+        inBuf.clear();
+        if (node.type == ModuleType::MidiIn)
+            inBuf.addEvents (incoming, 0, -1, 0);
+        else
+            for (int u : node.inputs)
+                if (u >= 0 && u < i)   // topological order guarantee, defensively checked
+                    inBuf.addEvents (nodeBuf[(size_t) u], 0, -1, 0);
+
+        processNode (node, states[node.id], inBuf, nodeBuf[(size_t) i], ctx);
+    }
+
+    for (int i = 0; i < n; ++i)
+        if (graph->nodes[(size_t) i].type == ModuleType::Output)
+            midi.addEvents (nodeBuf[(size_t) i], 0, -1, 0);
+
+    // Track what is now sounding at the host, for the topology-change flush.
+    for (const auto meta : midi)
+    {
+        const auto m = meta.getMessage();
+        if (m.isNoteOn())
+            hostSounding.push_back ({ m.getChannel(), m.getNoteNumber() });
+        else if (m.isNoteOff())
+            eraseKey (hostSounding, m.getChannel(), m.getNoteNumber());
+    }
+}
+
+void Engine::processNode (const GraphNode& node, NodeState& st,
+                          const juce::MidiBuffer& in, juce::MidiBuffer& out,
+                          const BlockContext& ctx)
+{
+    switch (node.type)
+    {
+        case ModuleType::MidiIn:      processMidiIn      (node, st, in, out, ctx); break;
+        case ModuleType::Output:      processOutput      (node, st, in, out, ctx); break;
+        case ModuleType::Random:      processRandom      (node, st, in, out, ctx); break;
+        case ModuleType::ScaleGen:    processScaleGen    (node, st, in, out, ctx); break;
+        case ModuleType::Lfo:         processLfo         (node, st, in, out, ctx); break;
+        case ModuleType::Chord:       processChord       (node, st, in, out, ctx); break;
+        case ModuleType::Drone:       processDrone       (node, st, in, out, ctx); break;
+        case ModuleType::Arp:         processArp         (node, st, in, out, ctx); break;
+        case ModuleType::Harmonizer:  processHarmonizer  (node, st, in, out, ctx); break;
+        case ModuleType::ScaleMod:    processScaleMod    (node, st, in, out, ctx); break;
+        case ModuleType::Progression: processProgression (node, st, in, out, ctx); break;
+        case ModuleType::Shift:       processShift       (node, st, in, out, ctx); break;
+        case ModuleType::Mirror:      processMirror      (node, st, in, out, ctx); break;
+        case ModuleType::Quantize:    processQuantize    (node, st, in, out, ctx); break;
+        case ModuleType::Delay:       processDelay       (node, st, in, out, ctx); break;
+        case ModuleType::Strum:       processStrum       (node, st, in, out, ctx); break;
+        case ModuleType::Humanize:    processHumanize    (node, st, in, out, ctx); break;
+    }
+}
+
+// --- I/O ---------------------------------------------------------------------
+
+void Engine::processMidiIn (const GraphNode& node, NodeState& st,
+                            const juce::MidiBuffer& in, juce::MidiBuffer& out,
+                            const BlockContext&)
+{
+    for (const auto meta : in)
+    {
+        const auto m = meta.getMessage();
+        const int  s = meta.samplePosition;
+
+        if (m.getChannel() <= 0)   // clock / sysex: not channel-filtered
         {
-            // (j & 1) is 1 for negative odd values too, so pre-roll
-            // boundaries keep the same parity rule. Shared swing helper — the
-            // one place the pair-based model lives (Humanize warps through it).
-            const double swungQn = swungBoundaryQn (j, quantStepQn, quantSwingQn);
-            if (swungQn >= atQn)
-                return juce::jmax (s, (int) std::llround ((swungQn - blockStartQn)
-                                                              * samplesPerQn));
+            out.addEvent (m, s);
+            continue;
         }
-    };
 
-    // Which progression step applies at block sample `s` (which may lie past
-    // this block for quantize-deferred notes — the pitch is decided by the
-    // step in force when the note will actually sound). Stopped transport
-    // pins the progression to its first step.
-    auto progIndexAt = [&] (int s) -> int
+        const bool match = node.params.channel == 0
+                            || m.getChannel() == node.params.channel;
+        if (m.isNoteOn())
+        {
+            if (! match)
+                continue;
+            st.inHeld.push_back ({ m.getChannel(), m.getNoteNumber() });
+            out.addEvent (m, s);
+        }
+        else if (m.isNoteOff())
+        {
+            // Admitted iff its note-on was, so a channel edit mid-note can
+            // neither hang the note nor leak a stray release.
+            if (eraseKey (st.inHeld, m.getChannel(), m.getNoteNumber()))
+                out.addEvent (m, s);
+        }
+        else if (match)
+        {
+            out.addEvent (m, s);
+        }
+    }
+}
+
+void Engine::processOutput (const GraphNode& node, NodeState& st,
+                            const juce::MidiBuffer& in, juce::MidiBuffer& out,
+                            const BlockContext&)
+{
+    const int outCh = juce::jlimit (1, 16, node.params.channel);
+    for (const auto meta : in)
     {
-        if (! isPlaying || cfg.progStepCount <= 0 || cfg.progRateQn <= 0.0)
-            return 0;
-        const double qn = blockStartQn + (double) s / samplesPerQn;
-        return wrapIndex ((juce::int64) std::floor (qn / cfg.progRateQn),
-                          cfg.progStepCount);
-    };
+        const auto m = meta.getMessage();
+        const int  s = meta.samplePosition;
 
-    // Harmonizer: the extra voices to stack above a played note (excluding the
-    // note itself, which passes through as the bass). Diatonic scale-degree
-    // stacking in the module's Root/Scale, or fixed chromatic intervals with the
-    // scale Off; the octaver types add an octave (+ fifth). Voices strictly above
-    // the played note, inversion re-voicing the harmony only, deduplicated so a
-    // collapsed voice can't be double-booked (which would leave a hanging off).
-    auto harmVoicesRaw = [&] (int played)
+        if (m.getChannel() <= 0)
+        {
+            out.addEvent (m, s);
+            continue;
+        }
+        if (m.isNoteOn())
+        {
+            out.addEvent (juce::MidiMessage::noteOn (outCh, m.getNoteNumber(),
+                                                     (juce::uint8) m.getVelocity()), s);
+            st.sounding.push_back ({ m.getChannel(), m.getNoteNumber(), outCh, m.getNoteNumber() });
+        }
+        else if (m.isNoteOff())
+        {
+            // Release on the channel the note-on was stamped with, even if the
+            // user edited the Output channel mid-note.
+            int ch = outCh;
+            for (auto it = st.sounding.begin(); it != st.sounding.end(); ++it)
+                if (it->inChannel == m.getChannel() && it->inNote == m.getNoteNumber())
+                {
+                    ch = it->outChannel;
+                    st.sounding.erase (it);
+                    break;
+                }
+            out.addEvent (juce::MidiMessage::noteOff (ch, m.getNoteNumber()), s);
+        }
+        else
+        {
+            auto copy = m;
+            copy.setChannel (outCh);
+            out.addEvent (copy, s);
+        }
+    }
+}
+
+// --- Generators --------------------------------------------------------------
+
+void Engine::processRandom (const GraphNode& node, NodeState& st,
+                            const juce::MidiBuffer&, juce::MidiBuffer& out,
+                            const BlockContext& ctx)
+{
+    if (ctx.justStopped)
+        flushActive (st.activeGen, out, 0);
+
+    if (ctx.isPlaying)
+    {
+        const auto& p = node.params;
+        // All in-scale pitches inside the module's range; drawn uniformly.
+        // Scale Off draws from all 12 chromatic pitches (the Chromatic scale
+        // is exactly that set).
+        const int rRoot  = p.root >= 0 ? p.root : ctx.root;
+        const int rScale = p.scale == ModuleOptions::kScaleOff
+                               ? ModuleOptions::kChromaticScale
+                               : p.scale >= 0 ? p.scale : ctx.scaleIndex;
+        const int lo = juce::jlimit (0, 127, juce::jmin (p.rangeFrom, p.rangeTo));
+        const int hi = juce::jlimit (0, 127, juce::jmax (p.rangeFrom, p.rangeTo));
+
+        std::vector<int> candidates;
+        for (int nn = lo; nn <= hi; ++nn)
+            if (ScaleTables::isInScale (nn, rRoot, rScale))
+                candidates.push_back (nn);
+        // A degenerate range can miss the scale entirely (e.g. from == to on a
+        // non-scale pitch); snap rather than fall silent.
+        if (candidates.empty())
+            candidates.push_back (ScaleTables::snapToScale ((lo + hi) / 2, rRoot, rScale));
+
+        runSteps (ctx, p.stepQn, p.gateFrac, [&] (juce::int64, int s, int gate)
+        {
+            const int pick = candidates[(size_t) rng.nextInt ((int) candidates.size())];
+            out.addEvent (juce::MidiMessage::noteOn (kGenChannel, pick, (juce::uint8) kGenVelocity), s);
+            st.activeGen.push_back ({ pick, kGenChannel, s + gate });
+        });
+    }
+
+    releaseDueGates (st.activeGen, out, ctx.numSamples);
+}
+
+void Engine::processScaleGen (const GraphNode& node, NodeState& st,
+                              const juce::MidiBuffer&, juce::MidiBuffer& out,
+                              const BlockContext& ctx)
+{
+    if (ctx.justStopped)
+        flushActive (st.activeGen, out, 0);
+
+    if (ctx.isPlaying)
+    {
+        const auto& p = node.params;
+        // Build the pattern: the scale walked from the root at octave 3
+        // (MIDI 48 + root) across `octaves`, optionally capped with the octave
+        // root; Down plays the same notes reversed.
+        const int sRoot  = p.root  >= 0 ? p.root  : ctx.root;
+        const int sScale = p.scale >= 0 ? p.scale : ctx.scaleIndex;
+        const int base   = 48 + juce::jlimit (0, 11, sRoot);
+        const int octs   = juce::jlimit (1, 4, p.octaves);
+
+        std::vector<int> pattern;
+        for (int o = 0; o < octs; ++o)
+            for (int iv : ScaleTables::intervalsForScale (sScale))
+                pattern.push_back (juce::jlimit (0, 127, base + o * 12 + iv));
+        if (p.endOnRoot)
+            pattern.push_back (juce::jlimit (0, 127, base + octs * 12));
+        if (p.mode == ModuleOptions::kModeDown)
+            std::reverse (pattern.begin(), pattern.end());
+
+        // Endless (window 0) loops the pattern back-to-back: the window is
+        // simply the pattern's own length.
+        const int window = stepsPerWindow (p.repeatQn, p.stepQn);
+        const int stepsPerRepeat = window > 0 ? window : (int) pattern.size();
+
+        runSteps (ctx, p.stepQn, p.gateFrac, [&] (juce::int64 k, int s, int gate)
+        {
+            // Position inside the repeat window; steps past the pattern's end
+            // are rests until the window wraps.
+            const int idx = wrapIndex (k, stepsPerRepeat);
+            if (idx < (int) pattern.size())
+            {
+                const int pick = pattern[(size_t) idx];
+                out.addEvent (juce::MidiMessage::noteOn (kGenChannel, pick, (juce::uint8) kGenVelocity), s);
+                st.activeGen.push_back ({ pick, kGenChannel, s + gate });
+            }
+        });
+    }
+
+    releaseDueGates (st.activeGen, out, ctx.numSamples);
+}
+
+void Engine::processLfo (const GraphNode& node, NodeState& st,
+                         const juce::MidiBuffer&, juce::MidiBuffer& out,
+                         const BlockContext& ctx)
+{
+    if (ctx.justStopped)
+        flushActive (st.activeGen, out, 0);
+
+    if (ctx.isPlaying)
+    {
+        const auto& p = node.params;
+        const int lRoot  = p.root >= 0 ? p.root : ctx.root;
+        // Scale Off maps chromatically (the Chromatic scale's 12 members).
+        const int lScale = p.scale == ModuleOptions::kScaleOff
+                               ? ModuleOptions::kChromaticScale
+                               : p.scale >= 0 ? p.scale : ctx.scaleIndex;
+        const int centre = 48 + juce::jlimit (0, 11, lRoot);   // root at octave 3,
+                                                               // like the Scale gen
+        // Depth in scale degrees: whole octaves are one scale-length each
+        // (7 degrees in a 7-note scale, 12 in Chromatic) plus extra steps.
+        const int degreesPerOctave = (int) ScaleTables::intervalsForScale (lScale).size();
+        const int depthDegrees = juce::jmax (0, p.lfoDepthOct) * degreesPerOctave
+                               + juce::jmax (0, p.lfoDepthSteps);
+        const double cycleQn = juce::jmax (0.001, p.lfoCycleQn);
+
+        runSteps (ctx, p.stepQn, p.gateFrac, [&] (juce::int64 k, int s, int gate)
+        {
+            // Position inside the cycle, from the grid position in the song
+            // plus the start-phase offset. x - floor(x) rather than fmod so a
+            // negative (pre-roll) position still lands in [0, 1).
+            double x = (double) k * p.stepQn / cycleQn + p.lfoPhase;
+            x -= std::floor (x);
+
+            double v = 0.0;   // bipolar shape value at x
+            switch (p.lfoShape)
+            {
+                case ModuleOptions::kLfoTriangle:
+                    // 0 rising at phase 0, +1 at 90°, -1 at 270° — aligned
+                    // with the sine so swapping shapes keeps the phase feel.
+                    v = x < 0.25 ? 4.0 * x
+                      : x < 0.75 ? 2.0 - 4.0 * x
+                                 : 4.0 * x - 4.0;
+                    break;
+                case ModuleOptions::kLfoSawUp:    v = 2.0 * x - 1.0; break;
+                case ModuleOptions::kLfoSawDown:  v = 1.0 - 2.0 * x; break;
+                case ModuleOptions::kLfoSquare:   v = x < 0.5 ? 1.0 : -1.0; break;
+                case ModuleOptions::kLfoRandom:
+                    v = rng.nextDouble() * 2.0 - 1.0;   // fresh draw per note
+                    break;
+                default:   // kLfoSine
+                    v = std::sin (x * juce::MathConstants<double>::twoPi);
+                    break;
+            }
+
+            const int offset = (int) std::llround (v * (double) depthDegrees);
+            const int pick = ScaleTables::stepInScale (centre, lRoot, lScale, offset);
+            out.addEvent (juce::MidiMessage::noteOn (kGenChannel, pick, (juce::uint8) kGenVelocity), s);
+            st.activeGen.push_back ({ pick, kGenChannel, s + gate });
+        });
+    }
+
+    releaseDueGates (st.activeGen, out, ctx.numSamples);
+}
+
+void Engine::processChord (const GraphNode& node, NodeState& st,
+                           const juce::MidiBuffer&, juce::MidiBuffer& out,
+                           const BlockContext& ctx)
+{
+    if (ctx.justStopped)
+        flushActive (st.activeGen, out, 0);
+
+    if (ctx.isPlaying)
+    {
+        const auto& p = node.params;
+        // Build the chord: the (root, scale) stacked per chordType on the
+        // chosen degree, from the shared generator centre (root at octave 3),
+        // then the lowest tones raised an octave per the inversion.
+        const int cRoot  = p.root  >= 0 ? p.root  : ctx.root;
+        const int cScale = p.scale >= 0 ? p.scale : ctx.scaleIndex;
+        const int base   = 48 + juce::jlimit (0, 11, cRoot);
+        const int chordBase = ScaleTables::stepInScale (base, cRoot, cScale,
+                                                        juce::jlimit (0, 6, p.chordDegree));
+
+        std::vector<int> tones;
+        for (int off : ModuleOptions::chordTypeDegrees (p.chordType))
+            tones.push_back (ScaleTables::stepInScale (chordBase, cRoot, cScale, off));
+        const int inv = juce::jlimit (0, (int) tones.size() - 1, p.chordInversion);
+        for (int i = 0; i < inv; ++i)
+            tones[(size_t) i] = juce::jmin (127, tones[(size_t) i] + 12);
+
+        // A chord starts every period and sounds for length; runSteps caps the
+        // gate one sample short of the period, so length >= period is seamless
+        // legato. Repeat Endless (period 0) re-triggers back-to-back.
+        const double periodQn = p.holdPeriodQn > 0.0
+                                    ? p.holdPeriodQn
+                                    : juce::jmax (0.001, p.holdLengthQn);
+        const double gateFrac = juce::jlimit (0.0, 1.0, p.holdLengthQn / periodQn);
+        runSteps (ctx, periodQn, gateFrac, [&] (juce::int64, int s, int gate)
+        {
+            for (int t : tones)
+            {
+                out.addEvent (juce::MidiMessage::noteOn (kGenChannel, t, (juce::uint8) kGenVelocity), s);
+                st.activeGen.push_back ({ t, kGenChannel, s + gate });
+            }
+        });
+    }
+
+    releaseDueGates (st.activeGen, out, ctx.numSamples);
+}
+
+void Engine::processDrone (const GraphNode& node, NodeState& st,
+                           const juce::MidiBuffer&, juce::MidiBuffer& out,
+                           const BlockContext& ctx)
+{
+    if (ctx.justStopped)
+        flushActive (st.activeGen, out, 0);
+
+    if (ctx.isPlaying)
+    {
+        const auto& p = node.params;
+        const int dRoot  = p.root  >= 0 ? p.root  : ctx.root;
+        const int dScale = p.scale >= 0 ? p.scale : ctx.scaleIndex;
+        const int base   = juce::jlimit (0, 127,
+                                         48 + juce::jlimit (0, 11, dRoot)
+                                         + 12 * juce::jlimit (-ModuleOptions::kDroneOctaveRange,
+                                                              ModuleOptions::kDroneOctaveRange,
+                                                              p.droneOctave));
+        // The voicing's pitches, deduplicated (a small scale can collapse two
+        // voicing tones onto one pitch, which would double-book a note-off).
+        std::vector<int> tones { base };
+        switch (p.droneVoicing)
+        {
+            case ModuleOptions::kVoicingRootFifth:
+                // A perfect fifth snapped into the scale, so e.g. Locrian
+                // holds its diminished fifth instead of leaving the scale.
+                tones.push_back (ScaleTables::snapToScale (juce::jmin (127, base + 7),
+                                                           dRoot, dScale));
+                break;
+            case ModuleOptions::kVoicingRootOctave:
+                tones.push_back (juce::jmin (127, base + 12));
+                break;
+            case ModuleOptions::kVoicingTriad:
+                tones.push_back (ScaleTables::stepInScale (base, dRoot, dScale, 2));
+                tones.push_back (ScaleTables::stepInScale (base, dRoot, dScale, 4));
+                break;
+            default:   // kVoicingRoot
+                break;
+        }
+        std::sort (tones.begin(), tones.end());
+        tones.erase (std::unique (tones.begin(), tones.end()), tones.end());
+
+        // Release every held drone note at block sample `s`. Returns the
+        // longest remaining hold time so a re-trigger can carry it over.
+        auto releaseDrone = [&] (int s)
+        {
+            int remaining = 0;
+            for (auto it = st.activeGen.begin(); it != st.activeGen.end();)
+            {
+                if (it->drone)
+                {
+                    remaining = juce::jmax (remaining, it->samplesLeft);
+                    out.addEvent (juce::MidiMessage::noteOff (it->channel, it->note), s);
+                    it = st.activeGen.erase (it);
+                }
+                else
+                    ++it;
+            }
+            return remaining;
+        };
+
+        auto startDrone = [&] (int s, int holdSamples)
+        {
+            for (int t : tones)
+            {
+                out.addEvent (juce::MidiMessage::noteOn (kGenChannel, t, (juce::uint8) kGenVelocity), s);
+                st.activeGen.push_back ({ t, kGenChannel, s + holdSamples, true });
+            }
+        };
+
+        // Re-trigger on harmony change: if what the drone is holding no longer
+        // matches what it should hold — a root/scale/voicing/octave edit — the
+        // old notes are released and the new ones start immediately, keeping
+        // the remainder of the hold. A drone resting between holds has nothing
+        // to re-trigger; the change simply shapes the next period's notes.
+        {
+            std::vector<int> have;
+            for (const auto& a : st.activeGen)
+                if (a.drone)
+                    have.push_back (a.note);
+            std::sort (have.begin(), have.end());
+            if (! have.empty() && have != tones)
+                startDrone (0, releaseDrone (0));
+        }
+
+        // Period boundaries: a fresh hold starts, releasing first — in linear
+        // playback the gate ended a sample earlier anyway, but a host loop
+        // wrap can land a boundary mid-hold. Repeat Endless (period 0)
+        // re-triggers back-to-back, like the Chord.
+        const double periodQn = p.holdPeriodQn > 0.0
+                                    ? p.holdPeriodQn
+                                    : juce::jmax (0.001, p.holdLengthQn);
+        const double gateFrac = juce::jlimit (0.0, 1.0, p.holdLengthQn / periodQn);
+        runSteps (ctx, periodQn, gateFrac, [&] (juce::int64, int s, int gate)
+        {
+            releaseDrone (s);
+            startDrone (s, gate);
+        });
+    }
+
+    releaseDueGates (st.activeGen, out, ctx.numSamples);
+}
+
+// --- Input transformers ------------------------------------------------------
+
+void Engine::processArp (const GraphNode& node, NodeState& st,
+                         const juce::MidiBuffer& in, juce::MidiBuffer& out,
+                         const BlockContext& ctx)
+{
+    if (ctx.justStopped)
+        flushActive (st.activeGen, out, 0);
+
+    // Input notes are the arp's data: consumed while playing (they don't also
+    // pass through), passed through while stopped so live playing stays
+    // audible. `passedOn` remembers which ons were passed, so exactly those
+    // offs pass too — a note passed while stopped releases cleanly even if
+    // the transport starts (and swallowing begins) mid-note.
+    for (const auto meta : in)
+    {
+        const auto m = meta.getMessage();
+        const int  s = meta.samplePosition;
+        if (m.isNoteOn())
+        {
+            st.held[(size_t) m.getNoteNumber()] = true;
+            if (! ctx.isPlaying)
+            {
+                out.addEvent (m, s);
+                st.passedOn.push_back ({ m.getChannel(), m.getNoteNumber() });
+            }
+        }
+        else if (m.isNoteOff())
+        {
+            st.held[(size_t) m.getNoteNumber()] = false;
+            if (eraseKey (st.passedOn, m.getChannel(), m.getNoteNumber()))
+                out.addEvent (m, s);
+        }
+        else
+        {
+            out.addEvent (m, s);
+        }
+    }
+
+    if (ctx.isPlaying)
+    {
+        const auto& p = node.params;
+        // The walk sequence: held notes ascending, repeated per octave of the
+        // span (the classic arp octave extension).
+        const int octs = juce::jlimit (1, 4, p.octaves);
+        std::vector<int> seq;
+        for (int o = 0; o < octs; ++o)
+            for (int nn = 0; nn < 128; ++nn)
+                if (st.held[(size_t) nn])
+                    seq.push_back (juce::jmin (127, nn + o * 12));
+
+        const int window = stepsPerWindow (p.repeatQn, p.stepQn);
+
+        runSteps (ctx, p.stepQn, p.gateFrac, [&] (juce::int64 k, int s, int gate)
+        {
+            if (seq.empty())
+                return;
+
+            // The walk position is the grid index itself (modded into the
+            // repeat window when one is set), so the phrase is a pure function
+            // of the song position: identical on every host loop pass, and
+            // re-joined mid-pattern when play starts mid-window.
+            const juce::int64 i = window > 0 ? (juce::int64) wrapIndex (k, window) : k;
+
+            const int nHeld = (int) seq.size();
+            int raw = seq.front();
+            switch (p.mode)
+            {
+                case ModuleOptions::kModeDown:
+                    raw = seq[(size_t) (nHeld - 1 - wrapIndex (i, nHeld))];
+                    break;
+                case ModuleOptions::kModeUpDown:
+                {
+                    // Classic up-down: endpoints aren't doubled, so the cycle
+                    // is 2n-2 steps (n > 1).
+                    const int cycle = nHeld > 1 ? 2 * nHeld - 2 : 1;
+                    const int j = wrapIndex (i, cycle);
+                    raw = seq[(size_t) (j < nHeld ? j : 2 * (nHeld - 1) - j)];
+                    break;
+                }
+                case ModuleOptions::kModeRandom:
+                    raw = seq[(size_t) rng.nextInt (nHeld)];
+                    break;
+                default:   // kModeUp
+                    raw = seq[(size_t) wrapIndex (i, nHeld)];
+                    break;
+            }
+            out.addEvent (juce::MidiMessage::noteOn (kGenChannel, raw, (juce::uint8) kGenVelocity), s);
+            st.activeGen.push_back ({ raw, kGenChannel, s + gate });
+        });
+    }
+
+    releaseDueGates (st.activeGen, out, ctx.numSamples);
+}
+
+void Engine::processHarmonizer (const GraphNode& node, NodeState& st,
+                                const juce::MidiBuffer& in, juce::MidiBuffer& out,
+                                const BlockContext& ctx)
+{
+    const auto& p = node.params;
+
+    // The extra voices to stack above a played note (excluding the note
+    // itself, which passes through as the bass). Diatonic scale-degree
+    // stacking in the module's Root/Scale, or fixed chromatic intervals with
+    // the scale Off; the octaver types add an octave (+ fifth). Voices
+    // strictly above the played note, inversion re-voicing the harmony only,
+    // deduplicated so a collapsed voice can't be double-booked.
+    auto voicesFor = [&] (int played)
     {
         std::vector<int> voices;
-        if (! cfg.hasHarmonizer)
-            return voices;
-
         std::vector<int> tones;   // full stack; tones[0] is the played-note slot
-        if (cfg.harmScale == ModuleOptions::kScaleOff)
+        if (p.scale == ModuleOptions::kScaleOff)
         {
-            for (int semi : ModuleOptions::harmonizerChromaticIntervals (cfg.harmType))
+            for (int semi : ModuleOptions::harmonizerChromaticIntervals (p.harmType))
                 tones.push_back (juce::jlimit (0, 127, played + semi));
         }
         else
         {
-            const int hRoot  = cfg.harmRoot  >= 0 ? cfg.harmRoot  : root;
-            const int hScale = cfg.harmScale >= 0 ? cfg.harmScale : scaleIndex;
-            if (cfg.harmType <= ModuleOptions::kHarm6th)
+            const int hRoot  = p.root  >= 0 ? p.root  : ctx.root;
+            const int hScale = p.scale >= 0 ? p.scale : ctx.scaleIndex;
+            if (p.harmType <= ModuleOptions::kHarm6th)
             {
-                for (int off : ModuleOptions::chordTypeDegrees (cfg.harmType))
+                for (int off : ModuleOptions::chordTypeDegrees (p.harmType))
                     tones.push_back (ScaleTables::stepInScale (played, hRoot, hScale, off));
             }
-            else if (cfg.harmType == ModuleOptions::kHarmOctave)
+            else if (p.harmType == ModuleOptions::kHarmOctave)
             {
                 tones.push_back (played);
                 tones.push_back (juce::jlimit (0, 127, played + 12));
@@ -526,7 +931,7 @@ void Engine::process (juce::MidiBuffer& midi,
         std::sort (voices.begin(), voices.end());
         // Inversion lifts the lowest `inv` voices an octave — the played note
         // stays the bass, so this re-voices the harmony without moving the root.
-        const int inv = juce::jlimit (0, (int) voices.size(), cfg.harmInversion);
+        const int inv = juce::jlimit (0, (int) voices.size(), p.harmInversion);
         for (int i = 0; i < inv; ++i)
             voices[(size_t) i] = juce::jmin (127, voices[(size_t) i] + 12);
         std::sort (voices.begin(), voices.end());
@@ -534,79 +939,51 @@ void Engine::process (juce::MidiBuffer& midi,
         return voices;
     };
 
-    // Emit one tone of a played note through the full chain: pitch-map it, then
-    // either defer to Quantize's grid or emit now (booking an echo + an
-    // activePass entry so the note-off releases exactly this). `isVoice` tags a
-    // Harmonizer-added voice. This is the single host-note emit path; a note with
-    // no Harmonizer is just its root tone.
-    auto emitHostTone = [&] (int rawTone, int inNote, int inChannel, int velocity,
-                             int s, bool isVoice)
+    // Emit one played note: its own pitch as the bass plus (when asked) the
+    // stacked voices, all sharing its channel/velocity and booked against the
+    // played key so its note-off releases the whole stack.
+    auto emitNote = [&] (int nn, int ch, int vel, int s, bool withVoices)
     {
-        const int target = quantActive ? quantTarget (s) : s;
-        const int p = mapPitch (rawTone, root, scaleIndex, progIndexAt (target), cfg);
-        if (p < 0)   // Mirror Limit dropped this tone — emit nothing, book no off.
-            return;
-        forEachOutChannel (cfg.outChannelMask, inChannel, [&] (int ch)
-        {
-            if (quantActive)
-            {
-                pendingQuant.push_back ({ p, ch, velocity, target, s, -1,
-                                          inNote, inChannel, true, isVoice });
-                return;
-            }
-            midi.addEvent (juce::MidiMessage::noteOn (ch, p, (juce::uint8) velocity), s);
-            activePass.push_back ({ inNote, inChannel, p, ch, isVoice });
-            scheduleEcho (p, ch, velocity, s);
-        });
-    };
-
-    // Emit a played note: its own pitch as the bass, plus (when asked, and a
-    // Harmonizer is present) the stacked voices.
-    auto emitHostNote = [&] (int nn, int ch, int velocity, int s, bool withVoices)
-    {
-        emitHostTone (nn, nn, ch, velocity, s, false);
+        out.addEvent (juce::MidiMessage::noteOn (ch, nn, (juce::uint8) vel), s);
+        st.sounding.push_back ({ ch, nn, ch, nn, false });
         if (withVoices)
-            for (int v : harmVoicesRaw (nn))
-                emitHostTone (v, nn, ch, velocity, s, true);
+            for (int v : voicesFor (nn))
+            {
+                out.addEvent (juce::MidiMessage::noteOn (ch, v, (juce::uint8) vel), s);
+                st.sounding.push_back ({ ch, nn, ch, v, true });
+            }
     };
 
-    // Release just the Harmonizer voices booked for one played note (its bass
-    // stays sounding) — Top mode uses this when a note stops being the top.
-    auto releaseHarmVoices = [&] (int inNote, int inChannel, int s)
+    // Release just the voices booked for one played note (its bass stays
+    // sounding) — Top mode uses this when a note stops being the top.
+    auto releaseVoices = [&] (int inNote, int inChannel, int s)
     {
-        for (auto it = activePass.begin(); it != activePass.end();)
+        for (auto it = st.sounding.begin(); it != st.sounding.end();)
         {
             if (it->harmVoice && it->inNote == inNote && it->inChannel == inChannel)
             {
-                midi.addEvent (juce::MidiMessage::noteOff (it->outChannel, it->outNote), s);
-                it = activePass.erase (it);
+                out.addEvent (juce::MidiMessage::noteOff (it->outChannel, it->outNote), s);
+                it = st.sounding.erase (it);
             }
             else
                 ++it;
         }
-        pendingQuant.erase (std::remove_if (pendingQuant.begin(), pendingQuant.end(),
-            [&] (const QuantNote& q) { return q.fromHost && q.harmVoice
-                                              && q.inNote == inNote && q.inChannel == inChannel; }),
-            pendingQuant.end());
     };
 
-    // Release everything sounding on a channel (bass + voices) — Replace mode is
-    // monophonic, so a new note cuts the previous note and its whole stack.
-    auto releaseHarmChannel = [&] (int inChannel, int s)
+    // Release everything sounding on a channel (bass + voices) — Replace mode
+    // is monophonic, so a new note cuts the previous note and its whole stack.
+    auto releaseChannel = [&] (int inChannel, int s)
     {
-        for (auto it = activePass.begin(); it != activePass.end();)
+        for (auto it = st.sounding.begin(); it != st.sounding.end();)
         {
             if (it->inChannel == inChannel)
             {
-                midi.addEvent (juce::MidiMessage::noteOff (it->outChannel, it->outNote), s);
-                it = activePass.erase (it);
+                out.addEvent (juce::MidiMessage::noteOff (it->outChannel, it->outNote), s);
+                it = st.sounding.erase (it);
             }
             else
                 ++it;
         }
-        pendingQuant.erase (std::remove_if (pendingQuant.begin(), pendingQuant.end(),
-            [&] (const QuantNote& q) { return q.fromHost && q.inChannel == inChannel; }),
-            pendingQuant.end());
     };
 
     // Highest held note on a channel (-1 = none) and its struck velocity — Top
@@ -614,991 +991,864 @@ void Engine::process (juce::MidiBuffer& midi,
     auto topHeldNote = [&] (int ch)
     {
         int top = -1;
-        for (const auto& h : harmHeld)
+        for (const auto& h : st.harmHeld)
             if (h.channel == ch)
                 top = juce::jmax (top, h.note);
         return top;
     };
     auto heldVelocity = [&] (int ch, int nn)
     {
-        for (const auto& h : harmHeld)
+        for (const auto& h : st.harmHeld)
             if (h.channel == ch && h.note == nn)
                 return h.velocity;
-        return 100;
+        return kGenVelocity;
     };
 
-    // --- Host events: input filter, held tracking, pass-through -------------
-    for (const auto meta : incoming)
+    for (const auto meta : in)
     {
         const auto m = meta.getMessage();
         const int  s = meta.samplePosition;
 
         if (m.isNoteOn())
         {
-            // The channel filter is the graph's front door: a rejected note-on
-            // doesn't reach the arp either.
-            if (! inputAccepts (cfg.inChannelMask, m.getChannel()))
-                continue;
-
             const int nn  = m.getNoteNumber();
             const int ch  = m.getChannel();
             const int vel = m.getVelocity();
-            held[(size_t) nn] = true;
-            if (! swallowHostNotes)
+            switch (p.harmMode)
             {
-                // The Harmonizer (when present) stacks a chord on the note; its
-                // Mode decides how simultaneous held notes interact. Pitch,
-                // Quantize deferral and echoes are all handled inside
-                // emitHostNote/emitHostTone (a note without a Harmonizer is just
-                // its bass tone).
-                if (cfg.hasHarmonizer)
+                case ModuleOptions::kHarmReplace:
+                    // Monophonic: cut the previous note and its stack, then
+                    // harmonise the new note alone.
+                    releaseChannel (ch, s);
+                    emitNote (nn, ch, vel, s, true);
+                    break;
+                case ModuleOptions::kHarmTop:
                 {
-                    switch (cfg.harmMode)
+                    // Harmonise only the highest held note. A new note above
+                    // the current top takes the harmony (the old top loses its
+                    // voices, keeps its bass); a lower note passes through dry.
+                    const int oldTop = topHeldNote (ch);   // before nn joins
+                    if (oldTop < 0 || nn > oldTop)
                     {
-                        case ModuleOptions::kHarmReplace:
-                            // Monophonic: cut the previous note and its stack,
-                            // then harmonise the new note alone.
-                            releaseHarmChannel (ch, s);
-                            emitHostNote (nn, ch, vel, s, true);
-                            break;
-                        case ModuleOptions::kHarmTop:
-                        {
-                            // Harmonise only the highest held note. A new note at
-                            // or above the current top takes the harmony (the old
-                            // top loses its voices, keeps its bass); a lower note
-                            // passes through dry.
-                            const int oldTop = topHeldNote (ch);   // before nn joins
-                            if (oldTop < 0 || nn > oldTop)
-                            {
-                                if (oldTop >= 0)
-                                    releaseHarmVoices (oldTop, ch, s);
-                                emitHostNote (nn, ch, vel, s, true);
-                            }
-                            else
-                                emitHostNote (nn, ch, vel, s, false);
-                            break;
-                        }
-                        default:   // kHarmAdd
-                            emitHostNote (nn, ch, vel, s, true);
-                            break;
+                        if (oldTop >= 0)
+                            releaseVoices (oldTop, ch, s);
+                        emitNote (nn, ch, vel, s, true);
                     }
+                    else
+                        emitNote (nn, ch, vel, s, false);
+                    break;
                 }
-                else
-                {
-                    emitHostNote (nn, ch, vel, s, false);
-                }
+                default:   // kHarmAdd
+                    emitNote (nn, ch, vel, s, true);
+                    break;
             }
-            // Track the held key for the Harmonizer's Mode logic (after the
-            // on-logic above, which reads the pre-existing held set).
-            harmHeld.push_back ({ ch, nn, vel });
+            st.harmHeld.push_back ({ ch, nn, vel });
         }
         else if (m.isNoteOff())
         {
-            // Note-offs bypass the input filter and any swallowing: whatever was
-            // actually emitted for this key (recorded in activePass) is released
-            // exactly as it sounded, even if the config changed since the on.
-            held[(size_t) m.getNoteNumber()] = false;
-            for (auto it = activePass.begin(); it != activePass.end();)
+            const int nn = m.getNoteNumber();
+            const int ch = m.getChannel();
+
+            // Release everything booked for this key (bass + voices). A key
+            // with no bookings (Replace cut it earlier) releases nothing.
+            for (auto it = st.sounding.begin(); it != st.sounding.end();)
             {
-                if (it->inNote == m.getNoteNumber() && it->inChannel == m.getChannel())
+                if (it->inNote == nn && it->inChannel == ch)
                 {
-                    midi.addEvent (juce::MidiMessage::noteOff (it->outChannel, it->outNote), s);
-                    it = activePass.erase (it);
+                    out.addEvent (juce::MidiMessage::noteOff (it->outChannel, it->outNote), s);
+                    it = st.sounding.erase (it);
                 }
                 else
                     ++it;
             }
-            // Key released while its quantized note-on is still waiting: keep
-            // the played duration — the note now releases itself that long
-            // after it finally sounds (activeGen), instead of via activePass.
-            for (auto& q : pendingQuant)
-                if (q.fromHost && q.gateSamples < 0
-                    && q.inNote == m.getNoteNumber() && q.inChannel == m.getChannel())
+
+            for (auto it = st.harmHeld.begin(); it != st.harmHeld.end(); ++it)
+                if (it->channel == ch && it->note == nn)
+                {
+                    st.harmHeld.erase (it);
+                    break;
+                }
+
+            // Top mode: if the released note was the top, promote the new
+            // highest held note — give it the harmony the old top gave up.
+            if (p.harmMode == ModuleOptions::kHarmTop)
+            {
+                const int newTop = topHeldNote (ch);
+                if (newTop >= 0 && nn > newTop)
+                    for (int v : voicesFor (newTop))
+                    {
+                        out.addEvent (juce::MidiMessage::noteOn (ch, v,
+                                          (juce::uint8) heldVelocity (ch, newTop)), s);
+                        st.sounding.push_back ({ ch, newTop, ch, v, true });
+                    }
+            }
+        }
+        else
+        {
+            out.addEvent (m, s);
+        }
+    }
+}
+
+// --- Pitch mappers -----------------------------------------------------------
+
+void Engine::processScaleMod (const GraphNode& node, NodeState& st,
+                              const juce::MidiBuffer& in, juce::MidiBuffer& out,
+                              const BlockContext& ctx)
+{
+    const auto& p = node.params;
+    // Scale Off means "don't force onto a scale": an identity map, but still
+    // bookkept so on/off pairing survives a mid-note settings change.
+    const bool snap  = p.scale != ModuleOptions::kScaleOff;
+    const int  mRoot = p.root  >= 0 ? p.root  : ctx.root;
+    const int  mScale = p.scale >= 0 ? p.scale : ctx.scaleIndex;
+    mapNoteStream (in, out, st.sounding, [&] (int note, int)
+    {
+        return snap ? ScaleTables::snapToScale (note, mRoot, mScale) : note;
+    });
+}
+
+void Engine::processProgression (const GraphNode& node, NodeState& st,
+                                 const juce::MidiBuffer& in, juce::MidiBuffer& out,
+                                 const BlockContext& ctx)
+{
+    const auto& p = node.params;
+
+    // Which progression step applies at block sample `s`. Stopped transport
+    // pins the progression to its first step, so auditioning matches how
+    // playback will start.
+    auto stepAt = [&] (int s) -> int
+    {
+        if (! ctx.isPlaying || p.progStepCount <= 0 || p.progRateQn <= 0.0)
+            return 0;
+        const double qn = ctx.blockStartQn + (double) s / ctx.samplesPerQn;
+        return wrapIndex ((juce::int64) std::floor (qn / p.progRateQn), p.progStepCount);
+    };
+
+    mapNoteStream (in, out, st.sounding, [&] (int note, int s)
+    {
+        if (p.progStepCount <= 0)
+            return note;
+        const int i = stepAt (s);
+        const int degree = p.progDegrees[(size_t) i];
+        const int octave = p.progOctaves[(size_t) i];
+        int q = note;
+        // Degree I / octave 0 is a strict no-op (like an idle Shift): the
+        // degree walk would otherwise snap out-of-scale notes to the scale.
+        if (degree != 0 || octave != 0)
+        {
+            if (degree != 0)
+            {
+                // Scale Off walks degrees chromatically (Chromatic's 12 members).
+                const int pScale = p.scale == ModuleOptions::kScaleOff
+                                       ? ModuleOptions::kChromaticScale
+                                       : p.scale >= 0 ? p.scale : ctx.scaleIndex;
+                q = ScaleTables::stepInScale (q,
+                                              p.root >= 0 ? p.root : ctx.root,
+                                              pScale, degree);
+            }
+            q = juce::jlimit (0, 127, q + 12 * octave);
+        }
+        return q;
+    });
+}
+
+void Engine::processShift (const GraphNode& node, NodeState& st,
+                           const juce::MidiBuffer& in, juce::MidiBuffer& out,
+                           const BlockContext& ctx)
+{
+    const auto& p = node.params;
+    mapNoteStream (in, out, st.sounding, [&] (int note, int)
+    {
+        // Amount 0 is a strict no-op: degree-shifting snaps out-of-scale notes
+        // to the scale as part of the walk, but an idle Shift must not quantize.
+        if (p.shiftAmount == 0)
+            return note;
+        if (p.scale == ModuleOptions::kScaleOff)
+            return juce::jlimit (0, 127, note + p.shiftAmount);
+        return ScaleTables::stepInScale (note,
+                                         p.root  >= 0 ? p.root  : ctx.root,
+                                         p.scale >= 0 ? p.scale : ctx.scaleIndex,
+                                         p.shiftAmount);
+    });
+}
+
+void Engine::processMirror (const GraphNode& node, NodeState& st,
+                            const juce::MidiBuffer& in, juce::MidiBuffer& out,
+                            const BlockContext& ctx)
+{
+    const auto& p = node.params;
+    const bool chromatic = p.scale == ModuleOptions::kScaleOff;
+    const int  mRoot  = p.root  >= 0 ? p.root  : ctx.root;
+    const int  mScale = p.scale >= 0 ? p.scale : ctx.scaleIndex;
+
+    // Snap the window edges into the scale in diatonic mode so the whole
+    // module stays in key — a clamped straggler then also lands in-scale.
+    int lo = juce::jlimit (0, 127, p.mirrorLow);
+    int hi = juce::jlimit (0, 127, p.mirrorHigh);
+    if (! chromatic)
+    {
+        lo = ScaleTables::snapToScale (lo, mRoot, mScale);
+        hi = ScaleTables::snapToScale (hi, mRoot, mScale);
+    }
+    if (lo > hi)
+        std::swap (lo, hi);
+
+    mapNoteStream (in, out, st.sounding, [&] (int note, int)
+    {
+        int q = note;
+        // 1. Invert around the centre (Off = skip; the note falls straight
+        //    through to the window stage).
+        if (p.mirrorCenter >= 0)
+            q = reflectAround (q, p.mirrorCenter, mRoot, mScale, chromatic);
+
+        // 2. Keep it inside [lo, hi]. Limit drops an out-of-window note;
+        //    Mirror folds it once across the nearest edge, clamping if a
+        //    single fold still overshoots (a note more than a window-width out).
+        if (q < lo || q > hi)
+        {
+            if (p.mirrorBounds == ModuleOptions::kMirrorLimit)
+                return -1;   // dropped: nothing emitted, no off booked
+            q = reflectAround (q, q < lo ? lo : hi, mRoot, mScale, chromatic);
+            q = juce::jlimit (lo, hi, q);
+        }
+        return q;
+    });
+}
+
+// --- Time modulators ---------------------------------------------------------
+
+void Engine::processQuantize (const GraphNode& node, NodeState& st,
+                              const juce::MidiBuffer& in, juce::MidiBuffer& out,
+                              const BlockContext& ctx)
+{
+    const auto& p = node.params;
+
+    if (ctx.justStopped)
+    {
+        // The deferred queue is buffered material: discarded on stop (the
+        // shared transport rule). Notes already fired but converted to a gate
+        // release now, like every gate list.
+        st.pendingQuant.clear();
+        flushActive (st.activeGen, out, 0);
+    }
+
+    if (! ctx.isPlaying)
+    {
+        // No grid to quantize to: pass everything through, but keep the
+        // sounding bookkeeping so offs pair with ons across a transport start.
+        for (const auto meta : in)
+        {
+            const auto m = meta.getMessage();
+            const int  s = meta.samplePosition;
+            if (m.isNoteOn())
+            {
+                out.addEvent (m, s);
+                st.quantSounding.push_back ({ m.getChannel(), m.getNoteNumber() });
+            }
+            else if (m.isNoteOff())
+            {
+                // Swallow an off whose on was discarded (stop) or never fired.
+                if (eraseKey (st.quantSounding, m.getChannel(), m.getNoteNumber()))
+                    out.addEvent (m, s);
+            }
+            else
+                out.addEvent (m, s);
+        }
+        releaseDueGates (st.activeGen, out, ctx.numSamples);
+        return;
+    }
+
+    const double stepQn  = juce::jmax (0.001, p.stepQn);
+    const double swingQn = juce::jlimit (0.0, 1.0, p.swing) * 0.5 * stepQn;
+
+    // The next swung grid point at or after block sample `s`, as a
+    // block-relative sample (possibly past this block's end). Boundary index j
+    // counts from the song's bar 0; swing pushes odd boundaries late by
+    // swing/2 of a step (pair-based model — even boundaries, the pair starts,
+    // stay put), so the parity — and with it the shuffle — is fixed to the
+    // song's bars, not to when play was pressed. The scan starts one boundary
+    // back because a swung odd point can still be ahead of `s` when its
+    // straight position has already passed.
+    auto quantTarget = [&] (int s) -> int
+    {
+        // Half a sample of tolerance: `s` is itself rounded to a whole sample,
+        // so a note sitting exactly on a boundary can read as a hair past it —
+        // without the allowance it would be deferred a full step.
+        const double atQn = ctx.blockStartQn + ((double) s - 0.5) / ctx.samplesPerQn;
+        for (auto j = (juce::int64) std::floor (atQn / stepQn) - 1; ; ++j)
+        {
+            const double swungQn = swungBoundaryQn (j, stepQn, swingQn);
+            if (swungQn >= atQn)
+                return juce::jmax (s, (int) std::llround ((swungQn - ctx.blockStartQn)
+                                                              * ctx.samplesPerQn));
+        }
+    };
+
+    for (const auto meta : in)
+    {
+        const auto m = meta.getMessage();
+        const int  s = meta.samplePosition;
+        if (m.isNoteOn())
+        {
+            st.pendingQuant.push_back ({ m.getNoteNumber(), m.getChannel(),
+                                         (int) m.getVelocity(), quantTarget (s), s, -1 });
+        }
+        else if (m.isNoteOff())
+        {
+            // Released while its on is still waiting: keep the played duration
+            // — the note now releases itself that long after it finally sounds.
+            bool converted = false;
+            for (auto& q : st.pendingQuant)
+                if (q.gateSamples < 0 && q.note == m.getNoteNumber()
+                    && q.channel == m.getChannel())
+                {
                     q.gateSamples = juce::jmax (1, s - q.arrivalOffset);
-
-            // Harmonizer bookkeeping: drop the released key. In Top mode, if the
-            // released note was the top, promote the new highest held note —
-            // give it the harmony the old top gave up (a re-trigger of its
-            // voices at the release point). The old top's own voices were just
-            // released by the activePass loop above.
-            for (auto it = harmHeld.begin(); it != harmHeld.end(); ++it)
-                if (it->channel == m.getChannel() && it->note == m.getNoteNumber())
-                {
-                    harmHeld.erase (it);
+                    converted = true;
                     break;
                 }
-            if (cfg.hasHarmonizer && cfg.harmMode == ModuleOptions::kHarmTop
-                && ! swallowHostNotes)
+            if (! converted)
             {
-                const int ch      = m.getChannel();
-                const int newTop  = topHeldNote (ch);
-                if (newTop >= 0 && m.getNoteNumber() > newTop)
-                    for (int v : harmVoicesRaw (newTop))
-                        emitHostTone (v, newTop, ch, heldVelocity (ch, newTop), s, true);
+                if (eraseKey (st.quantSounding, m.getChannel(), m.getNoteNumber()))
+                    out.addEvent (m, s);
+                // else: the on was discarded on a stop — swallow.
             }
-        }
-        else if (m.getChannel() > 0)
-        {
-            // CC / pitch-bend / aftertouch: same channel filter and Output
-            // stamping as notes, so a controller follows its notes to the synth.
-            if (! inputAccepts (cfg.inChannelMask, m.getChannel()))
-                continue;
-            forEachOutChannel (cfg.outChannelMask, m.getChannel(), [&] (int ch)
-            {
-                auto copy = m;
-                copy.setChannel (ch);
-                midi.addEvent (copy, s);
-            });
         }
         else
         {
-            midi.addEvent (m, s);   // non-channel messages (clock, sysex) pass untouched
+            out.addEvent (m, s);
         }
     }
 
-    // --- Stepped modules: each fires on its own step grid --------------------
-    if (isPlaying)
+    // Sound the deferred notes whose grid point lands this block (including
+    // ones booked just above, when the target sits within the block).
+    for (auto& q : st.pendingQuant)
     {
-        // Map through the modulator chain and emit on the Output channel(s),
-        // remembering the note for its gate-timed release. With Quantize
-        // active the note is deferred to its grid point instead (keeping its
-        // gate), which is how a straight generator picks up the swing.
-        auto emitGenerated = [&] (int rawPitch, int sample, int gateSamples)
-        {
-            const int target = quantActive ? quantTarget (sample) : sample;
-            const int p = mapPitch (rawPitch, root, scaleIndex,
-                                    progIndexAt (target), cfg);
-            if (p < 0)   // Mirror Limit dropped this step — emit nothing.
-                return;
-            forEachOutChannel (cfg.outChannelMask, 1, [&] (int ch)
-            {
-                if (quantActive)
-                {
-                    pendingQuant.push_back ({ p, ch, 100, target, sample, gateSamples,
-                                              0, 0, false });
-                    return;
-                }
-                midi.addEvent (juce::MidiMessage::noteOn (ch, p, (juce::uint8) 100), sample);
-                activeGen.push_back ({ p, ch, sample + gateSamples });
-                scheduleEcho (p, ch, 100, sample);
-            });
-        };
-
-        // Walk one module's grid across this block: a step fires at every
-        // boundary k * stepQn inside [blockStartQn, blockEndQn), and `step`
-        // receives the boundary's index counted from the song's bar 0 (which
-        // is what locates repeat windows and cycles) plus its block sample.
-        // The gate is capped one sample short of the step so even a 100%
-        // gate's note-off can't collide with the next same-pitch note-on.
-        auto runSteps = [&] (double stepQn, double gateFrac, auto&& step)
-        {
-            const double q           = juce::jmax (0.001, stepQn);
-            const double stepSamples = juce::jmax (1.0, samplesPerQn * q);
-            const int    gateSamples = juce::jlimit (1, juce::jmax (1, (int) stepSamples - 1),
-                                                     (int) (stepSamples * gateFrac));
-            // std::ceil, not integer truncation: a negative block start (host
-            // pre-roll) must still round up to the boundary at or after it.
-            for (auto k = (juce::int64) std::ceil (blockStartQn / q); ; ++k)
-            {
-                const double qn = (double) k * q;
-                if (qn >= blockEndQn)
-                    break;
-                const int s = juce::jlimit (0, numSamples - 1,
-                                            (int) std::llround ((qn - blockStartQn) * samplesPerQn));
-                step (k, s, gateSamples);
-            }
-        };
-
-        // How many steps fit in a repeat window; 0 = Endless (no window).
-        auto stepsPerWindow = [] (double repeatQn, double stepQn)
-        {
-            return repeatQn > 0.0
-                ? juce::jmax (1, (int) std::llround (repeatQn / juce::jmax (0.001, stepQn)))
-                : 0;
-        };
-
-        if (cfg.hasArp)
-        {
-            // The walk sequence: held notes ascending, repeated per octave of
-            // the span (the classic arp octave extension).
-            const int octs = juce::jlimit (1, 4, cfg.arpOctaves);
-            std::vector<int> seq;
-            for (int o = 0; o < octs; ++o)
-                for (int n = 0; n < 128; ++n)
-                    if (held[(size_t) n])
-                        seq.push_back (juce::jmin (127, n + o * 12));
-
-            const int window = stepsPerWindow (cfg.arpRepeatQn, cfg.arpStepQn);
-
-            runSteps (cfg.arpStepQn, cfg.arpGateFrac, [&] (juce::int64 k, int s, int gate)
-            {
-                if (seq.empty())
-                    return;
-
-                // The walk position is the grid index itself (modded into the
-                // repeat window when one is set), so the phrase is a pure
-                // function of the song position: identical on every host loop
-                // pass, and re-joined mid-pattern when play starts mid-window.
-                const juce::int64 i = window > 0 ? (juce::int64) wrapIndex (k, window) : k;
-
-                const int n = (int) seq.size();
-                int raw = seq.front();
-                switch (cfg.arpMode)
-                {
-                    case ModuleOptions::kModeDown:
-                        raw = seq[(size_t) (n - 1 - wrapIndex (i, n))];
-                        break;
-                    case ModuleOptions::kModeUpDown:
-                    {
-                        // Classic up-down: endpoints aren't doubled, so the
-                        // cycle is 2n-2 steps (n > 1).
-                        const int cycle = n > 1 ? 2 * n - 2 : 1;
-                        const int j = wrapIndex (i, cycle);
-                        raw = seq[(size_t) (j < n ? j : 2 * (n - 1) - j)];
-                        break;
-                    }
-                    case ModuleOptions::kModeRandom:
-                        raw = seq[(size_t) rng.nextInt (n)];
-                        break;
-                    default:   // kModeUp
-                        raw = seq[(size_t) wrapIndex (i, n)];
-                        break;
-                }
-                emitGenerated (raw, s, gate);
-            });
-        }
-
-        if (cfg.hasRandom)
-        {
-            // All in-scale pitches inside the module's range; drawn uniformly.
-            // Scale Off draws from all 12 chromatic pitches (the Chromatic scale
-            // is exactly that set).
-            const int rRoot  = cfg.randomRoot  >= 0 ? cfg.randomRoot  : root;
-            const int rScale = cfg.randomScale == ModuleOptions::kScaleOff
-                                   ? ModuleOptions::kChromaticScale
-                                   : cfg.randomScale >= 0 ? cfg.randomScale : scaleIndex;
-            const int lo = juce::jlimit (0, 127, juce::jmin (cfg.randomFrom, cfg.randomTo));
-            const int hi = juce::jlimit (0, 127, juce::jmax (cfg.randomFrom, cfg.randomTo));
-
-            std::vector<int> candidates;
-            for (int n = lo; n <= hi; ++n)
-                if (ScaleTables::isInScale (n, rRoot, rScale))
-                    candidates.push_back (n);
-            // A degenerate range can miss the scale entirely (e.g. from == to
-            // on a non-scale pitch); snap rather than fall silent.
-            if (candidates.empty())
-                candidates.push_back (ScaleTables::snapToScale ((lo + hi) / 2, rRoot, rScale));
-
-            runSteps (cfg.randomStepQn, cfg.randomGateFrac, [&] (juce::int64, int s, int gate)
-            {
-                emitGenerated (candidates[(size_t) rng.nextInt ((int) candidates.size())], s, gate);
-            });
-        }
-
-        if (cfg.hasScaleGen)
-        {
-            // Build the pattern: the scale walked from the root at octave 3
-            // (MIDI 48 + root) across `scaleOctaves`, optionally capped with
-            // the octave root; Down plays the same notes reversed.
-            const int sRoot  = cfg.scaleRoot  >= 0 ? cfg.scaleRoot  : root;
-            const int sScale = cfg.scaleScale >= 0 ? cfg.scaleScale : scaleIndex;
-            const int base   = 48 + juce::jlimit (0, 11, sRoot);
-            const int octs   = juce::jlimit (1, 4, cfg.scaleOctaves);
-
-            std::vector<int> pattern;
-            for (int o = 0; o < octs; ++o)
-                for (int iv : ScaleTables::intervalsForScale (sScale))
-                    pattern.push_back (juce::jlimit (0, 127, base + o * 12 + iv));
-            if (cfg.scaleEndOnRoot)
-                pattern.push_back (juce::jlimit (0, 127, base + octs * 12));
-            if (cfg.scaleMode == ModuleOptions::kModeDown)
-                std::reverse (pattern.begin(), pattern.end());
-
-            // Endless (window 0) loops the pattern back-to-back: the window is
-            // simply the pattern's own length.
-            const int window = stepsPerWindow (cfg.scaleRepeatQn, cfg.scaleStepQn);
-            const int stepsPerRepeat = window > 0 ? window : (int) pattern.size();
-
-            runSteps (cfg.scaleStepQn, cfg.scaleGateFrac, [&] (juce::int64 k, int s, int gate)
-            {
-                // Position inside the repeat window; steps past the pattern's
-                // end are rests until the window wraps.
-                const int idx = wrapIndex (k, stepsPerRepeat);
-                if (idx < (int) pattern.size())
-                    emitGenerated (pattern[(size_t) idx], s, gate);
-            });
-        }
-
-        if (cfg.hasLfo)
-        {
-            const int lRoot  = cfg.lfoRoot  >= 0 ? cfg.lfoRoot  : root;
-            // Scale Off maps chromatically (the Chromatic scale's 12 members).
-            const int lScale = cfg.lfoScale == ModuleOptions::kScaleOff
-                                   ? ModuleOptions::kChromaticScale
-                                   : cfg.lfoScale >= 0 ? cfg.lfoScale : scaleIndex;
-            const int centre = 48 + juce::jlimit (0, 11, lRoot);   // root at octave 3,
-                                                                   // like the Scale gen
-            // Depth in scale degrees: whole octaves are one scale-length each
-            // (7 degrees in a 7-note scale, 12 in Chromatic) plus extra steps.
-            const int degreesPerOctave = (int) ScaleTables::intervalsForScale (lScale).size();
-            const int depthDegrees = juce::jmax (0, cfg.lfoDepthOct) * degreesPerOctave
-                                   + juce::jmax (0, cfg.lfoDepthSteps);
-            const double cycleQn = juce::jmax (0.001, cfg.lfoCycleQn);
-
-            runSteps (cfg.lfoStepQn, cfg.lfoGateFrac, [&] (juce::int64 k, int s, int gate)
-            {
-                // Position inside the cycle, from the grid position in the
-                // song plus the start-phase offset. x - floor(x) rather than
-                // fmod so a negative (pre-roll) position still lands in
-                // [0, 1).
-                double x = (double) k * cfg.lfoStepQn / cycleQn + cfg.lfoPhase;
-                x -= std::floor (x);
-
-                double v = 0.0;   // bipolar shape value at x
-                switch (cfg.lfoShape)
-                {
-                    case ModuleOptions::kLfoTriangle:
-                        // 0 rising at phase 0, +1 at 90°, -1 at 270° — aligned
-                        // with the sine so swapping shapes keeps the phase feel.
-                        v = x < 0.25 ? 4.0 * x
-                          : x < 0.75 ? 2.0 - 4.0 * x
-                                     : 4.0 * x - 4.0;
-                        break;
-                    case ModuleOptions::kLfoSawUp:    v = 2.0 * x - 1.0; break;
-                    case ModuleOptions::kLfoSawDown:  v = 1.0 - 2.0 * x; break;
-                    case ModuleOptions::kLfoSquare:   v = x < 0.5 ? 1.0 : -1.0; break;
-                    case ModuleOptions::kLfoRandom:
-                        v = rng.nextDouble() * 2.0 - 1.0;   // fresh draw per note
-                        break;
-                    default:   // kLfoSine
-                        v = std::sin (x * juce::MathConstants<double>::twoPi);
-                        break;
-                }
-
-                const int offset = (int) std::llround (v * (double) depthDegrees);
-                emitGenerated (ScaleTables::stepInScale (centre, lRoot, lScale, offset),
-                               s, gate);
-            });
-        }
-
-        if (cfg.hasChord)
-        {
-            // Build the chord: the (root, scale) stacked per chordType on the
-            // chosen degree, from the shared generator centre (root at octave
-            // 3), then the lowest tones raised an octave per the inversion.
-            const int cRoot  = cfg.chordRoot  >= 0 ? cfg.chordRoot  : root;
-            const int cScale = cfg.chordScale >= 0 ? cfg.chordScale : scaleIndex;
-            const int base   = 48 + juce::jlimit (0, 11, cRoot);
-            const int chordBase = ScaleTables::stepInScale (base, cRoot, cScale,
-                                                            juce::jlimit (0, 6, cfg.chordDegree));
-
-            std::vector<int> tones;
-            for (int off : ModuleOptions::chordTypeDegrees (cfg.chordType))
-                tones.push_back (ScaleTables::stepInScale (chordBase, cRoot, cScale, off));
-            const int inv = juce::jlimit (0, (int) tones.size() - 1, cfg.chordInversion);
-            for (int i = 0; i < inv; ++i)
-                tones[(size_t) i] = juce::jmin (127, tones[(size_t) i] + 12);
-
-            // A chord starts every period and sounds for length; runSteps caps
-            // the gate one sample short of the period, so length >= period is
-            // seamless legato. Emission goes through the normal generated path
-            // (modulator chain, Quantize, Delay), one note per chord tone.
-            // Repeat Endless (period 0) re-triggers back-to-back (period =
-            // length), so the chord sounds continuously — the same "loops
-            // back-to-back" reading Endless has on the stepped generators.
-            const double periodQn = cfg.chordPeriodQn > 0.0
-                                        ? cfg.chordPeriodQn
-                                        : juce::jmax (0.001, cfg.chordLengthQn);
-            const double gateFrac = juce::jlimit (0.0, 1.0, cfg.chordLengthQn / periodQn);
-            runSteps (periodQn, gateFrac, [&] (juce::int64, int s, int gate)
-            {
-                for (int p : tones)
-                    emitGenerated (p, s, gate);
-            });
-        }
-
-        if (cfg.hasDrone)
-        {
-            const int dRoot  = cfg.droneRoot  >= 0 ? cfg.droneRoot  : root;
-            const int dScale = cfg.droneScale >= 0 ? cfg.droneScale : scaleIndex;
-            const int base   = juce::jlimit (0, 127,
-                                             48 + juce::jlimit (0, 11, dRoot)
-                                             + 12 * juce::jlimit (-ModuleOptions::kDroneOctaveRange,
-                                                                  ModuleOptions::kDroneOctaveRange,
-                                                                  cfg.droneOctave));
-            std::vector<int> raw { base };
-            switch (cfg.droneVoicing)
-            {
-                case ModuleOptions::kVoicingRootFifth:
-                    // A perfect fifth snapped into the scale, so e.g. Locrian
-                    // holds its diminished fifth instead of leaving the scale.
-                    raw.push_back (ScaleTables::snapToScale (juce::jmin (127, base + 7),
-                                                             dRoot, dScale));
-                    break;
-                case ModuleOptions::kVoicingRootOctave:
-                    raw.push_back (juce::jmin (127, base + 12));
-                    break;
-                case ModuleOptions::kVoicingTriad:
-                    raw.push_back (ScaleTables::stepInScale (base, dRoot, dScale, 2));
-                    raw.push_back (ScaleTables::stepInScale (base, dRoot, dScale, 4));
-                    break;
-                default:   // kVoicingRoot
-                    break;
-            }
-
-            // The pitches the drone should be sounding if it (re)started at
-            // block sample `s`, mapped through the modulator chain. Mapping
-            // can collapse two voicing tones onto one pitch — deduplicated so
-            // a note-off can't be double-booked.
-            auto mappedTones = [&] (int s)
-            {
-                std::vector<int> out;
-                for (int r : raw)
-                {
-                    const int p = mapPitch (r, root, scaleIndex, progIndexAt (s), cfg);
-                    if (p < 0)   // Mirror Limit dropped this voicing tone.
-                        continue;
-                    if (std::find (out.begin(), out.end(), p) == out.end())
-                        out.push_back (p);
-                }
-                return out;
-            };
-
-            // Release every held drone note at block sample `s`. Returns the
-            // longest remaining hold time so a re-trigger can carry it over.
-            auto releaseDrone = [&] (int s)
-            {
-                int remaining = 0;
-                for (auto it = activeGen.begin(); it != activeGen.end();)
-                {
-                    if (it->drone)
-                    {
-                        remaining = juce::jmax (remaining, it->samplesLeft);
-                        midi.addEvent (juce::MidiMessage::noteOff (it->channel, it->note), s);
-                        it = activeGen.erase (it);
-                    }
-                    else
-                        ++it;
-                }
-                return remaining;
-            };
-
-            auto startDrone = [&] (int s, int holdSamples)
-            {
-                for (int p : mappedTones (s))
-                    forEachOutChannel (cfg.outChannelMask, 1, [&] (int ch)
-                    {
-                        midi.addEvent (juce::MidiMessage::noteOn (ch, p, (juce::uint8) 100), s);
-                        activeGen.push_back ({ p, ch, s + holdSamples, true });
-                    });
-            };
-
-            // Re-trigger on harmony change: if what the drone is holding no
-            // longer matches what it should hold — a root/scale/voicing edit,
-            // an Output channel change, or an upstream Progression step — the
-            // old notes are released and the new ones start immediately,
-            // keeping the remainder of the hold. A drone resting between
-            // holds has nothing to re-trigger; the change simply shapes the
-            // next period's notes.
-            {
-                std::vector<std::pair<int, int>> want;   // (pitch, channel)
-                for (int p : mappedTones (0))
-                    forEachOutChannel (cfg.outChannelMask, 1,
-                                       [&] (int ch) { want.emplace_back (p, ch); });
-                std::sort (want.begin(), want.end());
-
-                std::vector<std::pair<int, int>> have;
-                for (const auto& a : activeGen)
-                    if (a.drone)
-                        have.emplace_back (a.note, a.channel);
-                std::sort (have.begin(), have.end());
-
-                if (! have.empty() && want != have)
-                    startDrone (0, releaseDrone (0));
-            }
-
-            // Period boundaries: a fresh hold starts, releasing first — in
-            // linear playback the gate ended a sample earlier anyway, but a
-            // host loop wrap can land a boundary mid-hold. The drone
-            // deliberately bypasses Quantize and the Delay (see Engine.h).
-            // Repeat Endless (period 0) re-triggers back-to-back, like the Chord.
-            const double periodQn = cfg.dronePeriodQn > 0.0
-                                        ? cfg.dronePeriodQn
-                                        : juce::jmax (0.001, cfg.droneLengthQn);
-            const double gateFrac = juce::jlimit (0.0, 1.0, cfg.droneLengthQn / periodQn);
-            runSteps (periodQn, gateFrac, [&] (juce::int64, int s, int gate)
-            {
-                releaseDrone (s);
-                startDrone (s, gate);
-            });
-        }
-    }
-
-    // --- Quantize: sound the deferred notes whose grid point lands this block --
-    // Runs before the Delay sweep so echoes booked here can still fire within
-    // the same block when the delay time is short.
-    if (! cfg.hasQuantize)
-    {
-        // Module removed mid-wait: its buffered notes go with it (the shared
-        // "buffered material is discarded" rule, same as the Delay below).
-        pendingQuant.clear();
-    }
-    else if (! pendingQuant.empty())
-    {
-        for (auto& q : pendingQuant)
-        {
-            if (q.samplesUntil >= numSamples)
-                continue;
-            const int at = juce::jmax (0, q.samplesUntil);
-            midi.addEvent (juce::MidiMessage::noteOn (q.channel, q.note,
-                                                      (juce::uint8) q.velocity), at);
-            if (q.gateSamples >= 0)
-                activeGen.push_back ({ q.note, q.channel, q.samplesUntil + q.gateSamples });
-            else
-                activePass.push_back ({ q.inNote, q.inChannel, q.note, q.channel, q.harmVoice });
-            scheduleEcho (q.note, q.channel, q.velocity, at);
-            q.velocity = 0;   // mark as fired for the sweep below
-        }
-        pendingQuant.erase (std::remove_if (pendingQuant.begin(), pendingQuant.end(),
-                                            [] (const QuantNote& q) { return q.velocity == 0; }),
-                            pendingQuant.end());
-        for (auto& q : pendingQuant)
-        {
-            q.samplesUntil  -= numSamples;
-            q.arrivalOffset -= numSamples;
-        }
-    }
-
-    // --- Delay: fire the echoes due this block --------------------------------
-    // Runs whether or not the transport is playing (a live key echoes too).
-    // Index loop on purpose: a fired echo appends its successor, which may
-    // itself be due within this block (short delay times / big buffers) and is
-    // then reached later in the same sweep.
-    if (! cfg.hasDelay)
-    {
-        // Module removed mid-chain: its buffered echoes go with it (already-
-        // sounding ones release normally through activeGen).
-        pendingEchoes.clear();
-    }
-    else if (! pendingEchoes.empty())
-    {
-        const int gateSamples = juce::jmax (1, (int) (delaySamples * 0.5) - 1);
-        for (size_t i = 0; i < pendingEchoes.size(); ++i)
-        {
-            const auto ec = pendingEchoes[i];   // by value — push_back may reallocate
-            if (ec.samplesUntil >= numSamples)
-                continue;
-            midi.addEvent (juce::MidiMessage::noteOn (ec.channel, ec.note,
-                                                      (juce::uint8) ec.velocity),
-                           juce::jmax (0, ec.samplesUntil));
-            activeGen.push_back ({ ec.note, ec.channel, ec.samplesUntil + gateSamples });
-            scheduleEcho (ec.note, ec.channel, ec.velocity, ec.samplesUntil);
-            pendingEchoes[i].velocity = 0;   // mark as fired for the sweep below
-        }
-        pendingEchoes.erase (std::remove_if (pendingEchoes.begin(), pendingEchoes.end(),
-                                             [] (const EchoNote& e) { return e.velocity == 0; }),
-                             pendingEchoes.end());
-        for (auto& e : pendingEchoes)
-            e.samplesUntil -= numSamples;
-    }
-
-    // --- Release generated notes whose gate ends this block ------------------
-    for (auto it = activeGen.begin(); it != activeGen.end();)
-    {
-        if (it->samplesLeft < numSamples)
-        {
-            midi.addEvent (juce::MidiMessage::noteOff (it->channel, it->note),
-                           juce::jmax (0, it->samplesLeft));
-            it = activeGen.erase (it);
-        }
+        if (q.samplesUntil >= ctx.numSamples)
+            continue;
+        const int at = juce::jmax (0, q.samplesUntil);
+        out.addEvent (juce::MidiMessage::noteOn (q.channel, q.note, (juce::uint8) q.velocity), at);
+        if (q.gateSamples >= 0)
+            st.activeGen.push_back ({ q.note, q.channel, q.samplesUntil + q.gateSamples });
         else
+            st.quantSounding.push_back ({ q.channel, q.note });
+        q.velocity = 0;   // mark as fired for the sweep below
+    }
+    st.pendingQuant.erase (std::remove_if (st.pendingQuant.begin(), st.pendingQuant.end(),
+                                           [] (const QuantNote& q) { return q.velocity == 0; }),
+                           st.pendingQuant.end());
+    for (auto& q : st.pendingQuant)
+    {
+        q.samplesUntil  -= ctx.numSamples;
+        q.arrivalOffset -= ctx.numSamples;
+    }
+
+    releaseDueGates (st.activeGen, out, ctx.numSamples);
+}
+
+void Engine::processDelay (const GraphNode& node, NodeState& st,
+                           const juce::MidiBuffer& in, juce::MidiBuffer& out,
+                           const BlockContext& ctx)
+{
+    const auto& p = node.params;
+
+    if (ctx.justStopped)
+    {
+        // Buffered echoes are discarded on stop; sounding ones release now.
+        st.pendingEchoes.clear();
+        flushActive (st.activeGen, out, 0);
+    }
+
+    const double delaySamples = juce::jmax (1.0, ctx.samplesPerQn * p.stepQn);
+
+    // Book the next echo of a note: velocity decays by the feedback, pitch
+    // moves by the per-echo shift (chromatic semitones with the scale Off,
+    // scale degrees with a scale active — a zero shift is a strict no-op so an
+    // un-shifted echo is never snapped onto a scale). The chain ends when the
+    // velocity drops below the floor or the pitch leaves the MIDI range
+    // (deliberately not clamped — repeats piling up at the range edge sound
+    // worse than the run just ending).
+    auto scheduleEcho = [&] (int srcNote, int channel, int srcVelocity, int atSample)
+    {
+        const int v = juce::roundToInt ((double) srcVelocity * p.delayFeedback);
+        int nn = srcNote;
+        if (p.delayShift != 0)
+            nn = p.scale == ModuleOptions::kScaleOff
+                     ? srcNote + p.delayShift
+                     : ScaleTables::stepInScale (srcNote,
+                                                 p.root  >= 0 ? p.root  : ctx.root,
+                                                 p.scale >= 0 ? p.scale : ctx.scaleIndex,
+                                                 p.delayShift);
+        if (v < kMinEchoVelocity || nn < 0 || nn > 127)
+            return;
+        st.pendingEchoes.push_back ({ nn, channel, v, atSample + (int) delaySamples });
+    };
+
+    // The source stream passes through untouched; every note-on books an echo.
+    for (const auto meta : in)
+    {
+        const auto m = meta.getMessage();
+        out.addEvent (m, meta.samplePosition);
+        if (m.isNoteOn())
+            scheduleEcho (m.getNoteNumber(), m.getChannel(), m.getVelocity(),
+                          meta.samplePosition);
+    }
+
+    // Fire the echoes due this block. Echoes run whether or not the transport
+    // is playing (a live key echoes too). Index loop on purpose: a fired echo
+    // appends its successor, which may itself be due within this block (short
+    // delay times / big buffers) and is then reached later in the same sweep.
+    const int gateSamples = juce::jmax (1, (int) (delaySamples * 0.5) - 1);
+    for (size_t i = 0; i < st.pendingEchoes.size(); ++i)
+    {
+        const auto ec = st.pendingEchoes[i];   // by value — push_back may reallocate
+        if (ec.samplesUntil >= ctx.numSamples)
+            continue;
+        out.addEvent (juce::MidiMessage::noteOn (ec.channel, ec.note, (juce::uint8) ec.velocity),
+                      juce::jmax (0, ec.samplesUntil));
+        st.activeGen.push_back ({ ec.note, ec.channel, ec.samplesUntil + gateSamples });
+        scheduleEcho (ec.note, ec.channel, ec.velocity, ec.samplesUntil);
+        st.pendingEchoes[i].velocity = 0;   // mark as fired for the sweep below
+    }
+    st.pendingEchoes.erase (std::remove_if (st.pendingEchoes.begin(), st.pendingEchoes.end(),
+                                            [] (const EchoNote& e) { return e.velocity == 0; }),
+                            st.pendingEchoes.end());
+    for (auto& e : st.pendingEchoes)
+        e.samplesUntil -= ctx.numSamples;
+
+    releaseDueGates (st.activeGen, out, ctx.numSamples);
+}
+
+void Engine::processStrum (const GraphNode& node, NodeState& st,
+                           const juce::MidiBuffer& in, juce::MidiBuffer& out,
+                           const BlockContext& ctx)
+{
+    const auto& p = node.params;
+
+    if (ctx.justStopped)
+    {
+        // Shared transport rule: buffered material is discarded. Buffered
+        // note-ons never sounded, so they are dropped — and their upstream
+        // note-offs, which will still arrive (the source flushes its gates on
+        // the same stop), must then be swallowed on arrival (swallowOffs). A
+        // buffered note-off releases a note that IS sounding, so it fires now
+        // — unless its own on was just dropped, in which case both vanish.
+        std::vector<KeyRef> droppedOns;
+        for (const auto& e : st.pendingStrum)
+            if (e.msg.isNoteOn())
+                droppedOns.push_back ({ e.msg.getChannel(), e.msg.getNoteNumber() });
+        for (const auto& e : st.pendingStrum)
+            if (e.msg.isNoteOff())
+            {
+                if (! eraseKey (droppedOns, e.msg.getChannel(), e.msg.getNoteNumber()))
+                    out.addEvent (e.msg, 0);
+            }
+        // An open group's withheld notes never sounded either; a grouped note
+        // whose off already arrived (held in the group) vanishes with it.
+        for (const auto& gn : st.strumGroup.notes)
         {
-            it->samplesLeft -= numSamples;
-            ++it;
+            bool offArrived = false;
+            for (const auto& o : st.strumGroup.offs)
+                if (o.msg.getChannel() == gn.channel && o.msg.getNoteNumber() == gn.note)
+                {
+                    offArrived = true;
+                    break;
+                }
+            if (! offArrived)
+                droppedOns.push_back ({ gn.channel, gn.note });
+        }
+        for (const auto& k : droppedOns)
+            st.swallowOffs.push_back (k);
+        st.pendingStrum.clear();
+        st.strumGroup = {};
+        // Sounding strummed notes stay: their upstream offs arrive this block
+        // (or later, for live keys) and pass through undelayed, releasing them.
+        st.strumHeld.clear();
+    }
+
+    const double spreadSamples = juce::jmax (0.0, p.strumSpreadSec) * sr;
+    // The fan only needs a detection window when it actually reshapes the
+    // chord. With spread and both reshapers off, notes pass straight through
+    // (window 0 = each note is its own one-note group, zero added latency).
+    const bool fanActive = spreadSamples > 0.0 || p.strumVelTilt != 0.0
+                                               || p.strumJitter != 0.0;
+    const int  groupWindow = fanActive
+                                 ? juce::jmax (1, (int) std::llround (kStrumGroupWindowSec * sr))
+                                 : 0;
+
+    auto scheduleStrum = [&] (const juce::MidiMessage& msg, int at)
+    {
+        if (at < ctx.numSamples)
+            out.addEvent (msg, juce::jmax (0, at));
+        else
+            st.pendingStrum.push_back ({ msg, at });
+    };
+
+    // A song-position tick index for the deterministic jitter hash, so a
+    // looped part strums identically on every pass.
+    auto strumGridIndex = [&] (int baseSample)
+    {
+        return (juce::int64) std::llround ((ctx.blockStartQn + (double) baseSample / ctx.samplesPerQn)
+                                               * 960.0);
+    };
+
+    // Fan a finished chord out from `baseSample`: sort by pitch, order per
+    // Direction, then emit each note delayed by its curve position (+jitter)
+    // over the spread, ramping velocity across the fan. Records each note as
+    // sounding (for its off's matching delay and for Repeat), and re-times any
+    // off that arrived before the chord finished.
+    auto finalizeStrum = [&] (std::vector<StrumInNote>& notes,
+                              std::vector<StrumInOff>& offs,
+                              int baseSample, juce::int64 si)
+    {
+        const int nNotes = (int) notes.size();
+        if (nNotes == 0)
+            return;
+        std::sort (notes.begin(), notes.end(),
+                   [] (const StrumInNote& a, const StrumInNote& b) { return a.note < b.note; });
+
+        std::vector<int> order ((size_t) nNotes);      // strum position k -> pitch index
+        for (int i = 0; i < nNotes; ++i)
+            order[(size_t) i] = i;                     // Up = ascending
+        bool descending = false;
+        switch (p.mode)
+        {
+            case ModuleOptions::kModeDown:   descending = true; break;
+            case ModuleOptions::kModeUpDown: descending = (si & 1) != 0; break;   // alternate per strum
+            case ModuleOptions::kModeRandom:
+                for (int i = nNotes - 1; i > 0; --i)
+                    std::swap (order[(size_t) i], order[(size_t) rng.nextInt (i + 1)]);
+                break;
+            default: break;   // kModeUp
+        }
+        if (descending)
+            std::reverse (order.begin(), order.end());
+
+        const juce::int64 gi = strumGridIndex (baseSample);
+        for (int k = 0; k < nNotes; ++k)
+        {
+            auto& note = notes[(size_t) order[(size_t) k]];
+            const double pos = nNotes > 1 ? (double) k / (double) (nNotes - 1) : 0.0;
+
+            double f = pos;   // cumulative offset fraction, shaped by the curve
+            if (p.strumCurve == ModuleOptions::kStrumCurveAccelerate)
+                f = 1.0 - (1.0 - pos) * (1.0 - pos);   // concave: bunch toward the end
+            else if (p.strumCurve == ModuleOptions::kStrumCurveDecelerate)
+                f = pos * pos;                          // convex: bunch toward the start
+
+            const int key = note.note * 16 + note.channel;
+            const double jitterSamples = hash01 (gi, key, kStrumSaltTime)
+                                             * p.strumJitter * kStrumJitterTimeFrac * spreadSamples;
+            const int emit = baseSample + (int) std::llround (f * spreadSamples + jitterSamples);
+
+            const double ramp   = 2.0 * pos - 1.0;   // first struck note -1, last +1
+            const double velJit = (hash01 (gi, key, kStrumSaltVel) * 2.0 - 1.0)
+                                      * p.strumJitter * kStrumJitterVelRange;
+            const int vel = juce::jlimit (1, 127,
+                (int) std::llround ((double) note.velocity
+                                        * (1.0 + p.strumVelTilt * ramp * kStrumVelTiltDepth)
+                                    + velJit));
+
+            const int delay = emit - note.arrival;   // total shift, reused for the off
+            scheduleStrum (juce::MidiMessage::noteOn (note.channel, note.note, (juce::uint8) vel), emit);
+
+            st.strumHeld.erase (std::remove_if (st.strumHeld.begin(), st.strumHeld.end(),
+                [&] (const StrumHeld& h) { return h.channel == note.channel && h.note == note.note; }),
+                st.strumHeld.end());
+            st.strumHeld.push_back ({ note.channel, note.note, note.velocity, delay });
+
+            for (auto& o : offs)
+                if (o.msg.getChannel() == note.channel && o.msg.getNoteNumber() == note.note)
+                    scheduleStrum (o.msg, o.arrival + delay);
+        }
+        notes.clear();
+        offs.clear();
+    };
+
+    auto finalizeOpenGroup = [&] (int baseSample)
+    {
+        finalizeStrum (st.strumGroup.notes, st.strumGroup.offs, baseSample, st.strumIndex++);
+        st.strumGroup.open = false;
+    };
+
+    // 1) Fire buffered events (fanned ons + delayed offs) due this block.
+    for (auto& e : st.pendingStrum)
+        if (e.samplesUntil < ctx.numSamples)
+        {
+            out.addEvent (e.msg, juce::jmax (0, e.samplesUntil));
+            e.samplesUntil = std::numeric_limits<int>::min();   // mark fired
+        }
+    st.pendingStrum.erase (std::remove_if (st.pendingStrum.begin(), st.pendingStrum.end(),
+                                           [] (const StrumEvent& e)
+                                           { return e.samplesUntil == std::numeric_limits<int>::min(); }),
+                           st.pendingStrum.end());
+
+    // 2) Repeat: re-strum the currently-sounding chord on the bar grid. Needs
+    //    the transport, so it only fires while playing. Each boundary releases
+    //    the sounding instance and re-strikes it as a fresh strum (a new
+    //    strumIndex, so Up-Down alternates its stroke across repeats).
+    if (ctx.isPlaying && p.repeatQn > 0.0 && ! st.strumHeld.empty())
+    {
+        const double repQn = p.repeatQn;
+        for (auto k = (juce::int64) std::ceil (ctx.blockStartQn / repQn); ; ++k)
+        {
+            const double qn = (double) k * repQn;
+            if (qn >= ctx.blockEndQn)
+                break;
+            const int s = juce::jlimit (0, ctx.numSamples - 1,
+                                        (int) std::llround ((qn - ctx.blockStartQn) * ctx.samplesPerQn));
+            if (st.strumHeld.empty())
+                break;
+            std::vector<StrumInNote> chord;
+            for (const auto& h : st.strumHeld)
+            {
+                chord.push_back ({ h.note, h.channel, h.velocity, s });
+                out.addEvent (juce::MidiMessage::noteOff (h.channel, h.note), s);   // release the old instance
+            }
+            st.strumHeld.clear();
+            std::vector<StrumInOff> none;
+            finalizeStrum (chord, none, s, st.strumIndex++);
         }
     }
 
-    // --- Strum: fan a chord's simultaneous note-ons out over a short window ---
-    // Runs after the generated-note releases (so the buffer holds matched
-    // on/off events, exactly the shape Humanize also relies on) and before
-    // Humanize. Delay-only: a chord's notes are held back and released one after
-    // another, and each note-off is delayed by the same amount as its note-on so
-    // lengths and order are preserved. Grouping adds a small fixed latency (the
-    // detection window), the price of knowing the whole chord before choosing
-    // the fan order.
-    if (! cfg.hasStrum)
+    // 3) Group this block's fresh note events and fan the finished chords.
+    for (const auto meta : in)
     {
-        // Module removed mid-flight: emit any buffered offs so nothing hangs,
-        // then drop the rest (buffered ons never sounded; an open group's notes
-        // never sounded either).
-        for (const auto& e : pendingStrum)
-            if (! e.msg.isNoteOn())
-                midi.addEvent (e.msg, 0);
-        pendingStrum.clear();
-        strumGroup = {};
-        strumHeld.clear();
-    }
-    else
-    {
-        const double spreadSamples = juce::jmax (0.0, cfg.strumSpreadSec) * sr;
-        // The fan only needs a detection window when it actually reshapes the
-        // chord. With spread and both reshapers off, notes pass straight through
-        // (window 0 = each note is its own one-note group, zero added latency) —
-        // the "spread 0 = effective bypass" the spec calls for. A Repeat still
-        // works off the sounding-note bookkeeping, so it needs no window either.
-        const bool fanActive = spreadSamples > 0.0 || cfg.strumVelTilt != 0.0
-                                                   || cfg.strumJitter != 0.0;
-        const int  groupWindow = fanActive
-                                     ? juce::jmax (1, (int) std::llround (kStrumGroupWindowSec * sr))
-                                     : 0;
+        const auto msg = meta.getMessage();
+        const int  s   = meta.samplePosition;
 
-        auto scheduleStrum = [&] (const juce::MidiMessage& msg, int at)
+        // A chord is finished once this event sits at or past the group's
+        // detection deadline; fan it from the deadline (the earliest the full
+        // chord is known) before handling the event itself.
+        if (st.strumGroup.open && s >= st.strumGroup.deadline)
+            finalizeOpenGroup (st.strumGroup.deadline);
+
+        if (msg.isNoteOn())
         {
-            if (at < numSamples)
-                midi.addEvent (msg, juce::jmax (0, at));
-            else
-                pendingStrum.push_back ({ msg, at });
-        };
-
-        // A song-position tick index for the deterministic jitter hash, so a
-        // looped part strums identically on every pass. Derived from the block's
-        // song position at the fan's base sample.
-        auto strumGridIndex = [&] (int baseSample)
-        {
-            return (juce::int64) std::llround ((blockStartQn + (double) baseSample / samplesPerQn)
-                                                   * 960.0);
-        };
-
-        // Fan a finished chord out from `baseSample`: sort by pitch, order per
-        // Direction, then emit each note delayed by its curve position (+jitter)
-        // over the spread, ramping velocity across the fan. Records each note as
-        // sounding (for its off's matching delay and for Repeat), and re-times
-        // any off that arrived before the chord finished.
-        auto finalizeStrum = [&] (std::vector<StrumInNote>& notes,
-                                  std::vector<StrumInOff>& offs,
-                                  int baseSample, juce::int64 si)
-        {
-            const int n = (int) notes.size();
-            if (n == 0)
-                return;
-            std::sort (notes.begin(), notes.end(),
-                       [] (const StrumInNote& a, const StrumInNote& b) { return a.note < b.note; });
-
-            std::vector<int> order (n);           // strum position k -> pitch index
-            for (int i = 0; i < n; ++i)
-                order[(size_t) i] = i;            // Up = ascending
-            bool descending = false;
-            switch (cfg.strumMode)
+            // A fresh on for a key whose swallowed off never came means the
+            // source reused the key; forget the stale swallow so the new
+            // note's off passes.
+            eraseKey (st.swallowOffs, msg.getChannel(), msg.getNoteNumber());
+            if (groupWindow <= 0)
             {
-                case ModuleOptions::kModeDown:   descending = true; break;
-                case ModuleOptions::kModeUpDown: descending = (si & 1) != 0; break;   // alternate per strum
-                case ModuleOptions::kModeRandom:
-                    for (int i = n - 1; i > 0; --i)
-                        std::swap (order[(size_t) i], order[(size_t) rng.nextInt (i + 1)]);
-                    break;
-                default: break;   // kModeUp
-            }
-            if (descending)
-                std::reverse (order.begin(), order.end());
-
-            const juce::int64 gi = strumGridIndex (baseSample);
-            for (int k = 0; k < n; ++k)
-            {
-                auto& note   = notes[(size_t) order[(size_t) k]];
-                const double pos = n > 1 ? (double) k / (double) (n - 1) : 0.0;
-
-                double f = pos;   // cumulative offset fraction, shaped by the curve
-                if (cfg.strumCurve == ModuleOptions::kStrumCurveAccelerate)
-                    f = 1.0 - (1.0 - pos) * (1.0 - pos);   // concave: bunch toward the end
-                else if (cfg.strumCurve == ModuleOptions::kStrumCurveDecelerate)
-                    f = pos * pos;                          // convex: bunch toward the start
-
-                const int key = note.note * 16 + note.channel;
-                const double jitterSamples = hash01 (gi, key, kStrumSaltTime)
-                                                 * cfg.strumJitter * kStrumJitterTimeFrac * spreadSamples;
-                const int emit = baseSample + (int) std::llround (f * spreadSamples + jitterSamples);
-
-                const double ramp   = 2.0 * pos - 1.0;   // first struck note -1, last +1
-                const double velJit = (hash01 (gi, key, kStrumSaltVel) * 2.0 - 1.0)
-                                          * cfg.strumJitter * kStrumJitterVelRange;
-                const int vel = juce::jlimit (1, 127,
-                    (int) std::llround ((double) note.velocity
-                                            * (1.0 + cfg.strumVelTilt * ramp * kStrumVelTiltDepth)
-                                        + velJit));
-
-                const int delay = emit - note.arrival;   // total shift, reused for the off
-                scheduleStrum (juce::MidiMessage::noteOn (note.channel, note.note, (juce::uint8) vel), emit);
-
-                strumHeld.erase (std::remove_if (strumHeld.begin(), strumHeld.end(),
-                    [&] (const StrumHeld& h) { return h.channel == note.channel && h.note == note.note; }),
-                    strumHeld.end());
-                strumHeld.push_back ({ note.channel, note.note, note.velocity, delay });
-
-                for (auto& o : offs)
-                    if (o.msg.getChannel() == note.channel && o.msg.getNoteNumber() == note.note)
-                        scheduleStrum (o.msg, o.arrival + delay);
-            }
-            notes.clear();
-            offs.clear();
-        };
-
-        auto finalizeOpenGroup = [&] (int baseSample)
-        {
-            finalizeStrum (strumGroup.notes, strumGroup.offs, baseSample, strumIndex++);
-            strumGroup.open = false;
-        };
-
-        // Pull the block's straight output aside and rebuild it strummed.
-        juce::MidiBuffer straight;
-        straight.swapWith (midi);
-
-        // 1) Fire buffered events (fanned ons + delayed offs) due this block.
-        for (auto& e : pendingStrum)
-            if (e.samplesUntil < numSamples)
-            {
-                midi.addEvent (e.msg, juce::jmax (0, e.samplesUntil));
-                e.samplesUntil = std::numeric_limits<int>::min();   // mark fired
-            }
-        pendingStrum.erase (std::remove_if (pendingStrum.begin(), pendingStrum.end(),
-                                            [] (const StrumEvent& e)
-                                            { return e.samplesUntil == std::numeric_limits<int>::min(); }),
-                            pendingStrum.end());
-
-        // 2) Repeat: re-strum the currently-sounding chord on the bar grid.
-        //    Needs the transport, so it only fires while playing. Each boundary
-        //    releases the sounding instance and re-strikes it as a fresh strum
-        //    (a new strumIndex, so Up-Down alternates its stroke across repeats).
-        if (isPlaying && cfg.strumRepeatQn > 0.0 && ! strumHeld.empty())
-        {
-            const double repQn = cfg.strumRepeatQn;
-            for (auto k = (juce::int64) std::ceil (blockStartQn / repQn); ; ++k)
-            {
-                const double qn = (double) k * repQn;
-                if (qn >= blockEndQn)
-                    break;
-                const int s = juce::jlimit (0, numSamples - 1,
-                                            (int) std::llround ((qn - blockStartQn) * samplesPerQn));
-                if (strumHeld.empty())
-                    break;
-                std::vector<StrumInNote> chord;
-                for (const auto& h : strumHeld)
-                {
-                    chord.push_back ({ h.note, h.channel, h.velocity, s });
-                    midi.addEvent (juce::MidiMessage::noteOff (h.channel, h.note), s);   // release the old instance
-                }
-                strumHeld.clear();
+                // Bypass path: pass the note straight through, but still book
+                // it as sounding so its off tracks and Repeat can find it.
+                std::vector<StrumInNote> one { { msg.getNoteNumber(), msg.getChannel(),
+                                                 (int) msg.getVelocity(), s } };
                 std::vector<StrumInOff> none;
-                finalizeStrum (chord, none, s, strumIndex++);
+                finalizeStrum (one, none, s, st.strumIndex++);
+            }
+            else
+            {
+                if (! st.strumGroup.open)
+                {
+                    st.strumGroup = {};
+                    st.strumGroup.open = true;
+                    st.strumGroup.deadline = s + groupWindow;
+                }
+                st.strumGroup.notes.push_back ({ msg.getNoteNumber(), msg.getChannel(),
+                                                 (int) msg.getVelocity(), s });
             }
         }
-
-        // 3) Group this block's fresh note events and fan the finished chords.
-        for (const auto meta : straight)
+        else if (msg.isNoteOff())
         {
-            const auto msg = meta.getMessage();
-            const int  s   = meta.samplePosition;
+            if (eraseKey (st.swallowOffs, msg.getChannel(), msg.getNoteNumber()))
+                continue;   // releasing a note whose on was discarded on a stop
 
-            // A chord is finished once this event sits at or past the group's
-            // detection deadline; fan it from the deadline (the earliest the
-            // full chord is known) before handling the event itself.
-            if (strumGroup.open && s >= strumGroup.deadline)
-                finalizeOpenGroup (strumGroup.deadline);
-
-            if (msg.isNoteOn())
-            {
-                if (groupWindow <= 0)
-                {
-                    // Bypass path: pass the note straight through, but still book
-                    // it as sounding so its off tracks and Repeat can find it.
-                    std::vector<StrumInNote> one { { msg.getNoteNumber(), msg.getChannel(),
-                                                     msg.getVelocity(), s } };
-                    std::vector<StrumInOff> none;
-                    finalizeStrum (one, none, s, strumIndex++);
-                }
-                else
-                {
-                    if (! strumGroup.open)
+            bool inGroup = false;
+            if (st.strumGroup.open)
+                for (const auto& gnv : st.strumGroup.notes)
+                    if (gnv.channel == msg.getChannel() && gnv.note == msg.getNoteNumber())
                     {
-                        strumGroup = {};
-                        strumGroup.open = true;
-                        strumGroup.deadline = s + groupWindow;
+                        inGroup = true;
+                        break;
                     }
-                    strumGroup.notes.push_back ({ msg.getNoteNumber(), msg.getChannel(),
-                                                  msg.getVelocity(), s });
-                }
-            }
-            else if (msg.isNoteOff())
-            {
-                bool inGroup = false;
-                if (strumGroup.open)
-                    for (const auto& gnv : strumGroup.notes)
-                        if (gnv.channel == msg.getChannel() && gnv.note == msg.getNoteNumber())
-                        {
-                            inGroup = true;
-                            break;
-                        }
-                if (inGroup)
-                    strumGroup.offs.push_back ({ msg, s });   // released before the chord finished
-                else
-                {
-                    // Release a sounding strummed note delayed by the same amount
-                    // its on was; an unknown note (never strummed) passes straight.
-                    int delay = 0;
-                    for (auto it = strumHeld.begin(); it != strumHeld.end(); ++it)
-                        if (it->channel == msg.getChannel() && it->note == msg.getNoteNumber())
-                        {
-                            delay = it->delay;
-                            strumHeld.erase (it);
-                            break;
-                        }
-                    scheduleStrum (msg, s + delay);
-                }
-            }
+            if (inGroup)
+                st.strumGroup.offs.push_back ({ msg, s });   // released before the chord finished
             else
             {
-                midi.addEvent (msg, s);   // CC / pitch-bend / clock: left in place
-            }
-        }
-
-        // A group whose deadline lands within this block but that no later event
-        // closed finalizes now; one still open past the block carries over (its
-        // samples aged like every other pending buffer).
-        if (strumGroup.open)
-        {
-            if (strumGroup.deadline < numSamples)
-                finalizeOpenGroup (strumGroup.deadline);
-            else
-            {
-                strumGroup.deadline -= numSamples;
-                for (auto& gnv : strumGroup.notes) gnv.arrival -= numSamples;
-                for (auto& o   : strumGroup.offs)  o.arrival   -= numSamples;
-            }
-        }
-
-        // Age the still-buffered events into the next block.
-        for (auto& e : pendingStrum)
-            e.samplesUntil -= numSamples;
-    }
-
-    // --- Humanize: final-stage feel warp over the whole outgoing stream -------
-    // Runs last, so it shapes everything already in the buffer: pass-through,
-    // generated, quantized, and delayed notes alike. Only warps while playing —
-    // stopped (or with the module removed) it passes events straight through for
-    // immediate live feel, but still flushes any buffered note-offs at sample 0
-    // so a note whose off was in flight can't hang.
-    const bool humanizeActive = cfg.hasHumanize && isPlaying;
-    if (! humanizeActive)
-    {
-        if (! pendingHuman.empty())
-        {
-            for (const auto& e : pendingHuman)
-                if (! e.msg.isNoteOn())   // release / CC — dropping these could hang a note
-                    midi.addEvent (e.msg, 0);
-            pendingHuman.clear();
-        }
-        humanHeld.clear();
-    }
-    else
-    {
-        const double stepQn  = juce::jmax (0.001, cfg.humanizeStepQn);
-        const double swingQn = cfg.humanizeSwing * 0.5 * stepQn;
-        const double layQn   = cfg.humanizeLayback * kHumanizeLaybackFrac * stepQn;
-
-        // Pull the block's straight output aside and rebuild it warped.
-        juce::MidiBuffer straight;
-        straight.swapWith (midi);
-
-        auto emitOrDefer = [&] (const juce::MidiMessage& msg, int newSample)
-        {
-            if (newSample < numSamples)
-                midi.addEvent (msg, juce::jmax (0, newSample));
-            else
-                pendingHuman.push_back ({ msg, newSample });
-        };
-
-        // 1) Fire buffered events whose warped time lands in this block; the
-        //    rest are decremented at the end (like pendingEchoes / pendingQuant).
-        for (auto& e : pendingHuman)
-            if (e.samplesUntil < numSamples)
-            {
-                midi.addEvent (e.msg, juce::jmax (0, e.samplesUntil));
-                e.samplesUntil = std::numeric_limits<int>::min();   // mark fired
-            }
-        pendingHuman.erase (std::remove_if (pendingHuman.begin(), pendingHuman.end(),
-                                            [] (const HumanEvent& e)
-                                            { return e.samplesUntil == std::numeric_limits<int>::min(); }),
-                            pendingHuman.end());
-
-        // 2) Warp this block's fresh events. The swing + lay-back offset is a
-        //    pure function of song position (applied to every note event, on and
-        //    off, so durations follow the groove); note-ons additionally take a
-        //    random late nudge and velocity shaping, note-offs a random
-        //    lengthening — all delay-only, so nothing ever moves before it
-        //    arrived. A note-off reuses its on's timing jitter (kept in
-        //    humanHeld) so the jitter never changes the note's length.
-        for (const auto meta : straight)
-        {
-            const auto msg = meta.getMessage();
-            const int  s   = meta.samplePosition;
-            const double qn       = blockStartQn + (double) s / samplesPerQn;
-            const double warpedQn = swingWarpQn (qn, stepQn, swingQn) + layQn;
-            const juce::int64 gi  = (juce::int64) std::floor (qn / stepQn);
-            auto sampleForQn = [&] (double targetQn)
-            {
-                return juce::jmax (s, (int) std::llround ((targetQn - blockStartQn) * samplesPerQn));
-            };
-
-            if (msg.isNoteOn())
-            {
-                const int chan  = msg.getChannel();
-                const int pitch = msg.getNoteNumber();
-                const int key   = pitch * 16 + chan;
-
-                const double jitterQn = hash01 (gi, key, kSaltTime)
-                                            * cfg.humanizeTimeJit * kHumanizeTimeJitFrac * stepQn;
-
-                // Accent: strong beats (even step of the swing pair) louder,
-                // weak beats softer; then a symmetric random touch on top.
-                const bool   strong = (gi & 1) == 0;
-                const double accent = 1.0 + cfg.humanizeAccent * kHumanizeAccentDepth
-                                                * (strong ? 1.0 : -1.0);
-                const double velJit = (hash01 (gi, key, kSaltVel) * 2.0 - 1.0)
-                                          * cfg.humanizeVelJit * kHumanizeVelRange;
-                const int newVel = juce::jlimit (1, 127,
-                                                 (int) std::llround ((double) msg.getVelocity() * accent + velJit));
-
-                humanHeld.push_back ({ chan, pitch, jitterQn });
-                emitOrDefer (juce::MidiMessage::noteOn (chan, pitch, (juce::uint8) newVel),
-                             sampleForQn (warpedQn + jitterQn));
-            }
-            else if (msg.isNoteOff())
-            {
-                // Reuse the matching on's timing jitter so the note keeps its
-                // length; add an independent one-sided lengthening on top.
-                double onJitterQn = 0.0;
-                for (auto it = humanHeld.begin(); it != humanHeld.end(); ++it)
+                // Release a sounding strummed note delayed by the same amount
+                // its on was; an unknown note (never strummed) passes straight.
+                int delay = 0;
+                for (auto it = st.strumHeld.begin(); it != st.strumHeld.end(); ++it)
                     if (it->channel == msg.getChannel() && it->note == msg.getNoteNumber())
                     {
-                        onJitterQn = it->jitterQn;
-                        humanHeld.erase (it);
+                        delay = it->delay;
+                        st.strumHeld.erase (it);
                         break;
                     }
-                const double lenQn = hash01 (gi, msg.getNoteNumber() * 16 + msg.getChannel(), kSaltLen)
-                                         * cfg.humanizeLenJit * kHumanizeLenJitFrac * stepQn;
-                emitOrDefer (msg, sampleForQn (warpedQn + onJitterQn + lenQn));
-            }
-            else
-            {
-                // CC / pitch-bend / clock / sysex: left on their original sample
-                // (shifting a controller or clock off its note would do more harm
-                // than the groove is worth).
-                midi.addEvent (msg, s);
+                scheduleStrum (msg, s + delay);
             }
         }
-
-        // 3) Age the still-buffered events into the next block.
-        for (auto& e : pendingHuman)
-            e.samplesUntil -= numSamples;
+        else
+        {
+            out.addEvent (msg, s);   // CC / pitch-bend / clock: left in place
+        }
     }
 
+    // A group whose deadline lands within this block but that no later event
+    // closed finalizes now; one still open past the block carries over (its
+    // samples aged like every other pending buffer).
+    if (st.strumGroup.open)
+    {
+        if (st.strumGroup.deadline < ctx.numSamples)
+            finalizeOpenGroup (st.strumGroup.deadline);
+        else
+        {
+            st.strumGroup.deadline -= ctx.numSamples;
+            for (auto& gnv : st.strumGroup.notes) gnv.arrival -= ctx.numSamples;
+            for (auto& o   : st.strumGroup.offs)  o.arrival   -= ctx.numSamples;
+        }
+    }
+
+    // Age the still-buffered events into the next block.
+    for (auto& e : st.pendingStrum)
+        e.samplesUntil -= ctx.numSamples;
+}
+
+void Engine::processHumanize (const GraphNode& node, NodeState& st,
+                              const juce::MidiBuffer& in, juce::MidiBuffer& out,
+                              const BlockContext& ctx)
+{
+    const auto& p = node.params;
+
+    if (ctx.justStopped)
+    {
+        // Same contract as Strum's stop path: buffered ons never sounded, so
+        // they are dropped and their eventual input offs swallowed; a buffered
+        // off releases a sounding note and fires now — unless its own on was
+        // just dropped, in which case both vanish.
+        std::vector<KeyRef> droppedOns;
+        for (const auto& e : st.pendingHuman)
+            if (e.msg.isNoteOn())
+                droppedOns.push_back ({ e.msg.getChannel(), e.msg.getNoteNumber() });
+        for (const auto& e : st.pendingHuman)
+            if (! e.msg.isNoteOn())
+            {
+                if (! (e.msg.isNoteOff()
+                       && eraseKey (droppedOns, e.msg.getChannel(), e.msg.getNoteNumber())))
+                    out.addEvent (e.msg, 0);
+            }
+        for (const auto& k : droppedOns)
+            st.swallowOffs.push_back (k);
+        st.pendingHuman.clear();
+        st.humanHeld.clear();
+    }
+
+    if (! ctx.isPlaying)
+    {
+        // Stopped: no grid to groove against — events pass straight through
+        // for immediate live feel (minus the offs owed to dropped ons).
+        for (const auto meta : in)
+        {
+            const auto m = meta.getMessage();
+            if (m.isNoteOn())
+                eraseKey (st.swallowOffs, m.getChannel(), m.getNoteNumber());
+            else if (m.isNoteOff()
+                     && eraseKey (st.swallowOffs, m.getChannel(), m.getNoteNumber()))
+                continue;
+            out.addEvent (m, meta.samplePosition);
+        }
+        return;
+    }
+
+    const double stepQn  = juce::jmax (0.001, p.stepQn);
+    const double swingQn = p.swing * 0.5 * stepQn;
+    const double layQn   = p.humanizeLayback * kHumanizeLaybackFrac * stepQn;
+
+    auto emitOrDefer = [&] (const juce::MidiMessage& msg, int newSample)
+    {
+        if (newSample < ctx.numSamples)
+            out.addEvent (msg, juce::jmax (0, newSample));
+        else
+            st.pendingHuman.push_back ({ msg, newSample });
+    };
+
+    // 1) Fire buffered events whose warped time lands in this block; the rest
+    //    are decremented at the end (like the echo/quantize buffers).
+    for (auto& e : st.pendingHuman)
+        if (e.samplesUntil < ctx.numSamples)
+        {
+            out.addEvent (e.msg, juce::jmax (0, e.samplesUntil));
+            e.samplesUntil = std::numeric_limits<int>::min();   // mark fired
+        }
+    st.pendingHuman.erase (std::remove_if (st.pendingHuman.begin(), st.pendingHuman.end(),
+                                           [] (const HumanEvent& e)
+                                           { return e.samplesUntil == std::numeric_limits<int>::min(); }),
+                           st.pendingHuman.end());
+
+    // 2) Warp this block's fresh events. The swing + lay-back offset is a pure
+    //    function of song position (applied to every note event, on and off,
+    //    so durations follow the groove); note-ons additionally take a random
+    //    late nudge and velocity shaping, note-offs a random lengthening — all
+    //    delay-only, so nothing ever moves before it arrived. A note-off
+    //    reuses its on's timing jitter (kept in humanHeld) so the jitter never
+    //    changes the note's length.
+    for (const auto meta : in)
+    {
+        const auto msg = meta.getMessage();
+        const int  s   = meta.samplePosition;
+        const double qn       = ctx.blockStartQn + (double) s / ctx.samplesPerQn;
+        const double warpedQn = swingWarpQn (qn, stepQn, swingQn) + layQn;
+        const juce::int64 gi  = (juce::int64) std::floor (qn / stepQn);
+        auto sampleForQn = [&] (double targetQn)
+        {
+            return juce::jmax (s, (int) std::llround ((targetQn - ctx.blockStartQn) * ctx.samplesPerQn));
+        };
+
+        if (msg.isNoteOn())
+        {
+            const int chan  = msg.getChannel();
+            const int pitch = msg.getNoteNumber();
+            const int key   = pitch * 16 + chan;
+            eraseKey (st.swallowOffs, chan, pitch);   // key reused — forget the stale swallow
+
+            const double jitterQn = hash01 (gi, key, kSaltTime)
+                                        * p.humanizeTimeJit * kHumanizeTimeJitFrac * stepQn;
+
+            // Accent: strong beats (even step of the swing pair) louder, weak
+            // beats softer; then a symmetric random touch on top.
+            const bool   strong = (gi & 1) == 0;
+            const double accent = 1.0 + p.humanizeAccent * kHumanizeAccentDepth
+                                            * (strong ? 1.0 : -1.0);
+            const double velJit = (hash01 (gi, key, kSaltVel) * 2.0 - 1.0)
+                                      * p.humanizeVelJit * kHumanizeVelRange;
+            const int newVel = juce::jlimit (1, 127,
+                                             (int) std::llround ((double) msg.getVelocity() * accent + velJit));
+
+            st.humanHeld.push_back ({ chan, pitch, jitterQn });
+            emitOrDefer (juce::MidiMessage::noteOn (chan, pitch, (juce::uint8) newVel),
+                         sampleForQn (warpedQn + jitterQn));
+        }
+        else if (msg.isNoteOff())
+        {
+            if (eraseKey (st.swallowOffs, msg.getChannel(), msg.getNoteNumber()))
+                continue;   // releasing a note whose on was discarded on a stop
+
+            // Reuse the matching on's timing jitter so the note keeps its
+            // length; add an independent one-sided lengthening on top.
+            double onJitterQn = 0.0;
+            for (auto it = st.humanHeld.begin(); it != st.humanHeld.end(); ++it)
+                if (it->channel == msg.getChannel() && it->note == msg.getNoteNumber())
+                {
+                    onJitterQn = it->jitterQn;
+                    st.humanHeld.erase (it);
+                    break;
+                }
+            const double lenQn = hash01 (gi, msg.getNoteNumber() * 16 + msg.getChannel(), kSaltLen)
+                                     * p.humanizeLenJit * kHumanizeLenJitFrac * stepQn;
+            emitOrDefer (msg, sampleForQn (warpedQn + onJitterQn + lenQn));
+        }
+        else
+        {
+            // CC / pitch-bend / clock / sysex: left on their original sample
+            // (shifting a controller or clock off its note would do more harm
+            // than the groove is worth).
+            out.addEvent (msg, s);
+        }
+    }
+
+    // 3) Age the still-buffered events into the next block.
+    for (auto& e : st.pendingHuman)
+        e.samplesUntil -= ctx.numSamples;
 }

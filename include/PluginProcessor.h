@@ -3,8 +3,10 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <vector>
 #include <atomic>
+#include <memory>
 #include "ModuleTypes.h"
 #include "ModuleSettings.h"
+#include "EngineGraph.h"
 #include "Engine.h"
 
 // Parameter ids for the global settings. Central so the editor's combos and the
@@ -31,17 +33,27 @@ struct ModuleInstance
     ModuleSettings settings;
 };
 
-// Phase 2 processor: a MIDI effect whose processBlock produces no audio and
-// drives the Engine (fixed implicit module chain, see Engine.h). The module
-// layout lives here (not in the editor) so it survives the editor being closed
-// and reopened and is persisted in the DAW project state.
+// One cable on the canvas: the `from` module's output port wired into the
+// `to` module's input port. Modules have at most one port of each direction,
+// so the module ids identify the connection completely.
+struct ModuleConnection
+{
+    int fromId = 0;
+    int toId   = 0;
+};
+
+// The processor: a MIDI effect whose processBlock produces no audio and drives
+// the Engine with the wired module graph. The canvas model (modules +
+// connections) lives here (not in the editor) so it survives the editor being
+// closed and reopened and is persisted in the DAW project state.
 //
-// Threading: the module list is touched only from the message thread (editor +
-// canvas). The audio thread never reads it directly — it reads a lock-free
-// presence snapshot (per-module-type atomics) republished by
-// refreshEngineConfig() after every model change. Once real port wiring lands
-// and the audio thread needs the graph topology, this handoff will need a
-// bigger snapshot (e.g. a swapped immutable graph), not just flags.
+// Threading: the model is touched only from the message thread (editor +
+// canvas). After every change, rebuildGraph() bakes it into an immutable
+// GraphSnapshot (settings resolved to engine units, nodes topologically
+// sorted) and publishes it under a SpinLock; processBlock try-locks to adopt
+// the newest snapshot and otherwise keeps using its previous one, so the audio
+// thread never blocks. This replaced the per-module-type atomic flags of the
+// fixed-chain era once real wiring landed.
 class CurrentAudioProcessor : public juce::AudioProcessor
 {
 public:
@@ -95,11 +107,22 @@ public:
     const std::vector<ModuleInstance>& modules() const { return moduleList; }
     int  addModule (ModuleType type, float x, float y);   // returns new id
     void moveModule (int id, float x, float y);
-    void removeModule (int id);
+    void removeModule (int id);                           // also drops its cables
     void setModuleChannel (int id, int channel);
     int  getModuleChannel (int id) const;
     void setModuleSettings (int id, const ModuleSettings& settings);
     ModuleSettings getModuleSettings (int id) const;
+
+    // --- Connections (message thread only) ----------------------------------
+    // A connection runs from `fromId`'s output port to `toId`'s input port.
+    // canConnect is the single validity rule: both modules exist, the ports
+    // exist (generators/MIDI In have no input, Output has no output), no
+    // duplicate, no self-loop, and no cycle — the engine runs the graph in
+    // topological order, so a feedback loop can never be published.
+    const std::vector<ModuleConnection>& connections() const { return connectionList; }
+    bool canConnect (int fromId, int toId) const;
+    bool addConnection (int fromId, int toId);            // false if canConnect refuses
+    void removeConnection (int fromId, int toId);
 
     // Fires when the model is replaced wholesale behind the editor's back
     // (setStateInformation while the editor is open — project revert, preset
@@ -110,121 +133,34 @@ public:
 private:
     juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
-    // Publish which module types are present for the audio thread. Called on the
-    // message thread after any change to moduleList; read lock-free (per-flag
-    // atomics) in processBlock. Position never affects DSP in Phase 2, so only
-    // presence is published.
-    void refreshEngineConfig();
+    // Bake the canvas model into a fresh GraphSnapshot and publish it for the
+    // audio thread. Called on the message thread after every model change.
+    // Topology edits (modules/cables added or removed) bump topologyVersion
+    // first, which tells the engine to cut sounding notes and reset per-node
+    // state; settings edits republish under the same version so notes ring on.
+    void rebuildGraph();
+
+    const ModuleInstance* findModule (int id) const;
+    ModuleParams paramsFor (const ModuleInstance& m) const;
 
     juce::AudioProcessorValueTreeState parameters;
 
-    std::vector<ModuleInstance> moduleList;
-    int nextModuleId = 1;
+    std::vector<ModuleInstance>   moduleList;
+    std::vector<ModuleConnection> connectionList;
+    int nextModuleId    = 1;
+    int topologyVersion = 1;
 
-    // Audio-thread-facing engine + its config snapshot. The masks carry the I/O
-    // modules' channel settings (see Engine::Config for their semantics); each
-    // field is independently atomic, which is fine because a block that sees a
-    // half-updated combination is indistinguishable from the edit landing one
-    // block later.
     Engine engine;
-    std::atomic<bool> engHasArp { false }, engHasRandom { false },
-                      engHasScaleGen { false }, engHasLfo { false },
-                      engHasChord { false }, engHasDrone { false },
-                      engHasQuantize { false }, engHasScaleMod { false },
-                      engHasProgression { false }, engHasShift { false },
-                      engHasMirror { false }, engHasHarmonizer { false },
-                      engHasDelay { false }, engHasStrum { false },
-                      engHasMidiIn { false }, engHasOutput { false };
-    std::atomic<std::uint16_t> engInChannelMask { 0xffff }, engOutChannelMask { 0 };
 
-    // Module settings for the audio thread, from the first Arp / Random /
-    // Scale module on the canvas (the implicit chain runs one of each; extra
-    // copies share the first one's settings until wiring lands). Rates,
-    // repeats, and gates are published as option-table indices; processBlock
-    // converts to quarter notes / fractions. Root/scale of -1 = follow the
-    // global parameter.
-    std::atomic<int> engArpMode { ModuleOptions::kModeUp },
-                     engArpRate { ModuleOptions::kRate1_16 },
-                     engArpOctaves { 1 },
-                     engArpGate { ModuleOptions::kGateHalf },
-                     engArpRepeat { ModuleOptions::kRepeatEndless };
-    std::atomic<int> engRandomRoot { -1 }, engRandomScale { -1 },
-                     engRandomRate { ModuleOptions::kRate1_16 },
-                     engRandomGate { ModuleOptions::kGateHalf },
-                     engRandomFrom { 24 }, engRandomTo { 48 };
-    std::atomic<int> engScaleRoot { -1 }, engScaleScale { -1 },
-                     engScaleRate { ModuleOptions::kRate1_8 },
-                     engScaleGate { ModuleOptions::kGateHalf },
-                     engScaleRepeat { ModuleOptions::kRepeatOneBar },
-                     engScaleOctaves { 1 },
-                     engScaleMode { ModuleOptions::kModeUp };
-    std::atomic<bool> engScaleEndOnRoot { true };
-    std::atomic<int> engLfoRoot { -1 }, engLfoScale { -1 },
-                     engLfoRate { ModuleOptions::kRate1_16 },
-                     engLfoGate { ModuleOptions::kGateHalf },
-                     engLfoCycle { ModuleOptions::kBarsOneBar },
-                     engLfoShape { ModuleOptions::kLfoSine },
-                     engLfoDepthOct { 1 }, engLfoDepthSteps { 0 },
-                     engLfoPhase { 0 };
-    std::atomic<int> engChordRoot { -1 }, engChordScale { -1 },
-                     engChordDegree { 0 }, engChordType { 0 },
-                     engChordInversion { 0 },
-                     engChordLength { ModuleOptions::kBarsOneBar },
-                     engChordRepeat { ModuleOptions::kRepeatOneBar };
-    std::atomic<int> engDroneRoot { -1 }, engDroneScale { -1 },
-                     engDroneVoicing { ModuleOptions::kVoicingRoot },
-                     engDroneOctave { 0 },
-                     engDroneLength { ModuleOptions::kBarsFourBars },
-                     engDroneRepeat { ModuleOptions::kRepeatFourBars };
-    std::atomic<int> engQuantRate { ModuleOptions::kRate1_16 },
-                     engQuantSwing { ModuleOptions::kSwingOff };
-    std::atomic<int> engScaleModRoot { -1 }, engScaleModScale { -1 };
-    // Progression steps ride in one atomic each, packed as
-    // degree * 16 + (octave + kProgOctaveRange) — see packProgStep below.
-    std::atomic<int> engProgRoot { -1 }, engProgScale { -1 },
-                     engProgRate { ModuleOptions::kBarsOneBar },
-                     engProgCount { 0 };
-    std::array<std::atomic<int>, ModuleOptions::kMaxProgSteps> engProgSteps {};
-    std::atomic<int> engShiftAmount { 0 },
-                     engShiftScale { ModuleOptions::kScaleGlobal },
-                     engShiftRoot { ModuleOptions::kScaleGlobal };
-    // Mirror: centre note (kMirrorCenterOff = Off), the [low, high] window, the
-    // bounds mode (Limit / Fold), and the shared root/scale (Off = chromatic).
-    std::atomic<int> engMirrorCenter { 60 },
-                     engMirrorLow { 36 },
-                     engMirrorHigh { 84 },
-                     engMirrorBounds { ModuleOptions::kMirrorFold },
-                     engMirrorScale { ModuleOptions::kScaleGlobal },
-                     engMirrorRoot { ModuleOptions::kScaleGlobal };
-    std::atomic<int> engDelayRate { ModuleOptions::kRate1_8 },
-                     engDelayFeedback { ModuleOptions::kFeedbackHalf },
-                     engDelayShift { 0 },
-                     engDelayScale { ModuleOptions::kScaleGlobal },
-                     engDelayRoot { ModuleOptions::kScaleGlobal };
-    // Harmonizer: chord Type + Inversion (Chord generator's lists) + Mode
-    // (Add/Replace/Top) + the shared root/scale (Off = chromatic stacking).
-    std::atomic<int> engHarmType { 0 },
-                     engHarmInversion { 0 },
-                     engHarmMode { ModuleOptions::kHarmAdd },
-                     engHarmScale { ModuleOptions::kScaleGlobal },
-                     engHarmRoot { ModuleOptions::kScaleGlobal };
-    // Strum: spread (0..10 -> ms) + Direction (shared mode) + curve + signed
-    // velocity tilt + jitter + Repeat (shared repeat list). Reuses the shared
-    // mode/repeat semantics but publishes them on its own atomics.
-    std::atomic<int> engStrumSpread { 4 },
-                     engStrumMode { ModuleOptions::kModeUp },
-                     engStrumCurve { ModuleOptions::kStrumCurveEven },
-                     engStrumVelTilt { 0 },
-                     engStrumJitter { 0 },
-                     engStrumRepeat { ModuleOptions::kRepeatEndless };
-    // Humanize: the groove grid (rate) + swing + the five feel amounts, each a
-    // 0..10 UI index converted to a 0..1 fraction in processBlock.
-    std::atomic<bool> engHasHumanize { false };
-    std::atomic<int> engHumanizeRate { ModuleOptions::kRate1_16 },
-                     engHumanizeSwing { ModuleOptions::kSwingOff },
-                     engHumanizeLayback { 0 }, engHumanizeAccent { 0 },
-                     engHumanizeTimeJit { 0 }, engHumanizeVelJit { 0 },
-                     engHumanizeLenJit { 0 };
+    // The published snapshot and the audio thread's adopted copy. The lock
+    // guards only the shared_ptr swap; the audio thread try-locks, so a
+    // rebuild can never block processBlock (it just keeps last block's graph
+    // one block longer). audioGraph is audio-thread-only; releasing a
+    // superseded snapshot may deallocate on the audio thread, which this
+    // codebase already accepts elsewhere (the engine's own buffers grow there).
+    juce::SpinLock graphLock;
+    std::shared_ptr<const GraphSnapshot> publishedGraph;
+    std::shared_ptr<const GraphSnapshot> audioGraph;
 
     // Cached parameter pointers (set in the ctor, read every block).
     std::atomic<float>* rootParam  = nullptr;
